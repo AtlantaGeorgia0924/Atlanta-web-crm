@@ -1272,6 +1272,216 @@ class BackendRuntime:
             'row_values': row_values,
         }
 
+    def get_pending_service_deals(self, force_refresh=False):
+        main_values = self.get_main_values(force_refresh=force_refresh)
+        if not main_values:
+            return {
+                'items': [],
+                'count': 0,
+            }
+
+        header_row_idx = detect_sheet_header_row(main_values)
+        headers = [str(cell or '').strip() for cell in (main_values[header_row_idx] if header_row_idx < len(main_values) else [])]
+        headers_upper = [header.upper() for header in headers]
+        if not headers:
+            return {
+                'items': [],
+                'count': 0,
+            }
+
+        name_col = svc_stock_header_index(headers_upper, 'NAME', 'CLIENT NAME', 'CUSTOMER NAME')
+        phone_col = svc_stock_header_index(headers_upper, 'PHONE NUMBER', 'PHONE', 'WHATSAPP NUMBER', 'WHATSAPP', 'NUMBER')
+        description_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'MODEL', 'DEVICE')
+        status_col = svc_stock_header_index(headers_upper, 'STATUS')
+        paid_col = svc_stock_header_index(headers_upper, 'AMOUNT PAID', 'AMOUNT PAID ') 
+        price_col = svc_stock_header_index(headers_upper, 'PRICE')
+        imei_col = svc_stock_header_index(headers_upper, 'IMEI')
+        date_col = svc_stock_header_index(headers_upper, 'DATE')
+
+        if status_col is None:
+            return {
+                'items': [],
+                'count': 0,
+            }
+
+        items = []
+        for row_index in range(header_row_idx + 1, len(main_values)):
+            row = main_values[row_index] if row_index < len(main_values) else []
+            status_text = str(row[status_col] if status_col < len(row) else '').strip().upper()
+            if status_text not in {'UNPAID', 'PART PAYMENT'}:
+                continue
+
+            imei_value = str(row[imei_col] if imei_col is not None and imei_col < len(row) else '').strip()
+            if imei_value:
+                continue
+
+            price_value = clean_amount(row[price_col] if price_col is not None and price_col < len(row) else '')
+            paid_value = clean_amount(row[paid_col] if paid_col is not None and paid_col < len(row) else '')
+            if price_value <= 0:
+                continue
+
+            items.append({
+                'kind': 'service',
+                'row_num': row_index + 1,
+                'name': str(row[name_col] if name_col is not None and name_col < len(row) else '').strip().upper(),
+                'phone': normalize_phone_number(row[phone_col] if phone_col is not None and phone_col < len(row) else ''),
+                'description': str(row[description_col] if description_col is not None and description_col < len(row) else '').strip(),
+                'status': status_text,
+                'amount_paid': str(row[paid_col] if paid_col is not None and paid_col < len(row) else '').strip(),
+                'price': str(row[price_col] if price_col is not None and price_col < len(row) else '').strip(),
+                'balance': max(0, price_value - paid_value),
+                'date': str(row[date_col] if date_col is not None and date_col < len(row) else '').strip(),
+            })
+
+        items.sort(key=lambda item: int(item.get('row_num') or 0), reverse=True)
+        return {
+            'items': items,
+            'count': len(items),
+        }
+
+    def update_service_pending_payment(self, row_num, payment_status, amount_paid=None, force_refresh=False):
+        status_text = str(payment_status or '').strip().upper()
+        if status_text in {'PARTIAL PAYMENT', 'PARTIAL'}:
+            status_text = 'PART PAYMENT'
+        if status_text not in {'PAID', 'PART PAYMENT', 'UNPAID'}:
+            return {'error': 'Payment status must be PAID, PART PAYMENT, or UNPAID.'}
+
+        main_values = self.get_main_values(force_refresh=force_refresh)
+        if not main_values:
+            return {'error': 'Main inventory sheet is empty.'}
+
+        header_row_idx = detect_sheet_header_row(main_values)
+        headers = [str(cell or '').strip() for cell in (main_values[header_row_idx] if header_row_idx < len(main_values) else [])]
+        headers_upper = [header.upper() for header in headers]
+        row_num = int(row_num or 0)
+        if row_num <= header_row_idx + 1 or row_num > len(main_values):
+            return {'error': f'Inventory row {row_num} is no longer available.'}
+
+        status_col = svc_stock_header_index(headers_upper, 'STATUS')
+        paid_col = svc_stock_header_index(headers_upper, 'AMOUNT PAID', 'AMOUNT PAID ')
+        price_col = svc_stock_header_index(headers_upper, 'PRICE')
+        imei_col = svc_stock_header_index(headers_upper, 'IMEI')
+        if status_col is None:
+            return {'error': 'STATUS column is missing in the inventory sheet.'}
+
+        row = main_values[row_num - 1] if row_num - 1 < len(main_values) else []
+        imei_value = str(row[imei_col] if imei_col is not None and imei_col < len(row) else '').strip()
+        if imei_value:
+            return {'error': 'This pending row is a stock sale, not a service deal.'}
+
+        current_paid = clean_amount(row[paid_col] if paid_col is not None and paid_col < len(row) else '')
+        price_value = clean_amount(row[price_col] if price_col is not None and price_col < len(row) else '')
+        explicit_amount = None if amount_paid is None or str(amount_paid).strip() == '' else clean_amount(amount_paid)
+
+        if status_text == 'PAID':
+            resolved_amount = explicit_amount if explicit_amount and explicit_amount > 0 else price_value
+        elif status_text == 'UNPAID':
+            resolved_amount = explicit_amount if explicit_amount is not None else 0
+        else:
+            resolved_amount = explicit_amount if explicit_amount is not None else current_paid
+
+        queued_operation_ids = []
+        queue_id = self._enqueue_db_first_operation(
+            'service',
+            'main_update_status',
+            {
+                'kind': 'main_update_cell',
+                'row': row_num,
+                'col': status_col + 1,
+                'value': status_text,
+            },
+            cache_apply_callable=lambda rn=row_num, cn=status_col + 1, nv=status_text: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv) if self.postgres_ready else None,
+        )
+        queued_operation_ids.append(queue_id)
+
+        if paid_col is not None:
+            queue_id = self._enqueue_db_first_operation(
+                'service',
+                'main_update_amount_paid',
+                {
+                    'kind': 'main_update_cell',
+                    'row': row_num,
+                    'col': paid_col + 1,
+                    'value': resolved_amount,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=paid_col + 1, nv=resolved_amount: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv) if self.postgres_ready else None,
+            )
+            queued_operation_ids.append(queue_id)
+
+        try:
+            self.replay_pending_queue_now(limit=120)
+        except Exception:
+            pass
+
+        return {
+            'row_num': row_num,
+            'payment_status': status_text,
+            'queued_operation_ids': queued_operation_ids,
+            'message': f'Service deal row #{row_num} updated to {status_text}.',
+        }
+
+    def return_service_deal(self, row_num, force_refresh=False):
+        main_values = self.get_main_values(force_refresh=force_refresh)
+        if not main_values:
+            return {'error': 'Main inventory sheet is empty.'}
+
+        header_row_idx = detect_sheet_header_row(main_values)
+        headers = [str(cell or '').strip() for cell in (main_values[header_row_idx] if header_row_idx < len(main_values) else [])]
+        headers_upper = [header.upper() for header in headers]
+        row_num = int(row_num or 0)
+        if row_num <= header_row_idx + 1 or row_num > len(main_values):
+            return {'error': f'Inventory row {row_num} is no longer available.'}
+
+        status_col = svc_stock_header_index(headers_upper, 'STATUS')
+        paid_col = svc_stock_header_index(headers_upper, 'AMOUNT PAID', 'AMOUNT PAID ')
+        imei_col = svc_stock_header_index(headers_upper, 'IMEI')
+        if status_col is None:
+            return {'error': 'STATUS column is missing in the inventory sheet.'}
+
+        row = main_values[row_num - 1] if row_num - 1 < len(main_values) else []
+        imei_value = str(row[imei_col] if imei_col is not None and imei_col < len(row) else '').strip()
+        if imei_value:
+            return {'error': 'This pending row is a stock sale, not a service deal.'}
+
+        queued_operation_ids = []
+        queue_id = self._enqueue_db_first_operation(
+            'service_return',
+            'main_update_status',
+            {
+                'kind': 'main_update_cell',
+                'row': row_num,
+                'col': status_col + 1,
+                'value': 'RETURNED',
+            },
+            cache_apply_callable=lambda rn=row_num, cn=status_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, 'RETURNED') if self.postgres_ready else None,
+        )
+        queued_operation_ids.append(queue_id)
+
+        if paid_col is not None:
+            queue_id = self._enqueue_db_first_operation(
+                'service_return',
+                'main_update_amount_paid',
+                {
+                    'kind': 'main_update_cell',
+                    'row': row_num,
+                    'col': paid_col + 1,
+                    'value': 0,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=paid_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, 0) if self.postgres_ready else None,
+            )
+            queued_operation_ids.append(queue_id)
+
+        try:
+            self.replay_pending_queue_now(limit=120)
+        except Exception:
+            pass
+
+        return {
+            'row_num': row_num,
+            'queued_operation_ids': queued_operation_ids,
+            'message': f'Service deal row #{row_num} returned/refunded successfully.',
+        }
+
     def return_stock_item(self, row_num, force_refresh=False):
         stock_values, stock_header_row_idx, stock_headers, stock_headers_upper, _, _ = self._ensure_stock_required_columns(force_refresh=force_refresh)
         row_num = int(row_num or 0)

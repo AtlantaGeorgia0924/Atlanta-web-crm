@@ -131,6 +131,10 @@ class StockLivePendingPaymentUpdateRequest(BaseModel):
     force_refresh: bool = False
 
 
+class StockLiveServicePendingRequest(BaseModel):
+    force_refresh: bool = False
+
+
 class StockCartItem(BaseModel):
     stock_row_num: int
     buyer_name: str = ''
@@ -280,6 +284,40 @@ def update_live_stock_row(payload: StockLiveUpdateRowRequest, runtime=Depends(ge
 def add_live_service_record(payload: StockLiveServiceAddRequest, runtime=Depends(get_runtime)):
     try:
         result = runtime.add_service_record(payload.values_by_header, force_refresh=payload.force_refresh)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if result.get('error'):
+        raise HTTPException(status_code=400, detail=result['error'])
+    return result
+
+
+@router.get('/live/service/pending')
+def list_live_pending_service_records(force_refresh: bool = False, runtime=Depends(get_runtime)):
+    return runtime.get_pending_service_deals(force_refresh=force_refresh)
+
+
+@router.post('/live/service/return')
+def return_live_service_record(payload: StockLiveReturnRequest, runtime=Depends(get_runtime)):
+    try:
+        result = runtime.return_service_deal(payload.row_num, force_refresh=payload.force_refresh)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if result.get('error'):
+        raise HTTPException(status_code=400, detail=result['error'])
+    return result
+
+
+@router.post('/live/service/payment')
+def update_live_service_payment(payload: StockLivePendingPaymentUpdateRequest, runtime=Depends(get_runtime)):
+    try:
+        result = runtime.update_service_pending_payment(
+            payload.row_num,
+            payload.payment_status,
+            amount_paid=payload.amount_paid,
+            force_refresh=payload.force_refresh,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

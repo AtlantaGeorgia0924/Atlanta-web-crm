@@ -43,6 +43,37 @@ export async function addServiceRecord({ valuesByHeader, forceRefresh = false })
   });
 }
 
+export async function fetchPendingServiceDeals({ forceRefresh = false, signal } = {}) {
+  return requestJson('/api/stock/live/service/pending', {
+    query: {
+      force_refresh: forceRefresh,
+    },
+    signal,
+  });
+}
+
+export async function returnServiceDeal({ rowNum, forceRefresh = false }) {
+  return requestJson('/api/stock/live/service/return', {
+    method: 'POST',
+    body: {
+      row_num: rowNum,
+      force_refresh: forceRefresh,
+    },
+  });
+}
+
+export async function updateServiceDealPayment({ rowNum, paymentStatus, amountPaid = null, forceRefresh = false }) {
+  return requestJson('/api/stock/live/service/payment', {
+    method: 'POST',
+    body: {
+      row_num: rowNum,
+      payment_status: paymentStatus,
+      amount_paid: amountPaid,
+      force_refresh: forceRefresh,
+    },
+  });
+}
+
 export async function returnStockItem({ rowNum, forceRefresh = false }) {
   return requestJson('/api/stock/live/return', {
     method: 'POST',

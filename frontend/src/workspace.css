@@ -1329,6 +1329,10 @@ button:focus-visible {
   min-width: 140px;
 }
 
+.pending-search-group {
+  margin-bottom: 16px;
+}
+
 .field-block--wide {
   grid-column: span 2;
 }

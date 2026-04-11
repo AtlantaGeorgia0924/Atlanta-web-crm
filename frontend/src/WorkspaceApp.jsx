@@ -1,7 +1,7 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 'react';
 
 import { getApiLabel } from './api/http';
-import { addServiceRecord, checkoutSaleCart, fetchStockDashboard, returnStockItem, updatePendingDealPayment, updateStockRow } from './api/stock';
+import { addServiceRecord, checkoutSaleCart, fetchPendingServiceDeals, fetchStockDashboard, returnServiceDeal, returnStockItem, updatePendingDealPayment, updateServiceDealPayment, updateStockRow } from './api/stock';
 import {
   addStockRecord,
   applyAllNameFixes,
@@ -1123,11 +1123,11 @@ function CartView({
   setServiceDraft,
   onSubmitService,
   serviceBusy,
-  pendingDealRows,
+  pendingDealEntries,
   onReturnPendingDeal,
   onUpdatePendingDealPayment,
-  returningPendingRow,
-  updatingPendingRow,
+  returningPendingKey,
+  updatingPendingKey,
   clientNameOptions,
   sellerPhoneOptions,
   currentTimeLabel,
@@ -1142,10 +1142,11 @@ function CartView({
   const [cartModalOpen, setCartModalOpen] = useState(false);
   const [serviceModalOpen, setServiceModalOpen] = useState(false);
   const [pendingModalOpen, setPendingModalOpen] = useState(false);
+  const [pendingSearchText, setPendingSearchText] = useState('');
   const [pendingPaymentDrafts, setPendingPaymentDrafts] = useState({});
 
   function derivePendingDraftFromRow(row) {
-    const rawStatus = String(row?.inventory_status || '').trim().toUpperCase();
+    const rawStatus = String(row?.inventory_status || row?.status || '').trim().toUpperCase();
     const status = rawStatus === 'PAID' || rawStatus === 'PART PAYMENT' || rawStatus === 'UNPAID'
       ? rawStatus
       : 'UNPAID';
@@ -1156,15 +1157,15 @@ function CartView({
   }
 
   function getPendingDraft(row) {
-    const key = String(row?.row_num || '');
+    const key = `${row?.kind || 'stock'}-${row?.row_num || ''}`;
     if (!key) {
       return { status: 'UNPAID', amount_paid: '' };
     }
     return pendingPaymentDrafts[key] || derivePendingDraftFromRow(row);
   }
 
-  function updatePendingDraft(rowNum, field, value) {
-    const key = String(rowNum);
+  function updatePendingDraft(rowKey, field, value) {
+    const key = String(rowKey || '');
     setPendingPaymentDrafts((current) => ({
       ...current,
       [key]: {
@@ -1174,6 +1175,26 @@ function CartView({
       },
     }));
   }
+
+  const filteredPendingDeals = useMemo(() => {
+    const query = normalizeSearchValue(pendingSearchText);
+    if (!query) {
+      return pendingDealEntries || [];
+    }
+    return (pendingDealEntries || []).filter((row) => {
+      const haystack = [
+        row.kind,
+        row.description,
+        row.buyer_name,
+        row.name,
+        row.buyer_phone,
+        row.phone,
+        row.imei,
+        row.row_num,
+      ].map((value) => String(value || '')).join(' ');
+      return normalizeSearchValue(haystack).includes(query);
+    });
+  }, [pendingDealEntries, pendingSearchText]);
 
   return (
     <div className="workspace-stack">
@@ -1272,7 +1293,7 @@ function CartView({
           title="Pending deals"
         >
           ⏳
-          <span className="floating-action-badge">{formatCount((pendingDealRows || []).length)}</span>
+          <span className="floating-action-badge">{formatCount((pendingDealEntries || []).length)}</span>
         </button>
         <button
           type="button"
@@ -1488,35 +1509,48 @@ function CartView({
             <div className="modal-sheet__header">
               <div className="panel-header">
                 <h3>Pending Deals</h3>
-                <p>Update payment fulfillment directly here. Changes sync to both stock and inventory.</p>
+                <p>Manage both stock and service deals here. Search, update payment fulfillment, or return/refund unsuccessful deals.</p>
               </div>
               <button type="button" className="secondary-button" onClick={() => setPendingModalOpen(false)}>Close</button>
+            </div>
+            <div className="search-group pending-search-group">
+              <label htmlFor="pending-deal-search">Search pending deals:</label>
+              <input
+                id="pending-deal-search"
+                type="search"
+                placeholder="Search by type, customer, phone, description, IMEI..."
+                value={pendingSearchText}
+                onChange={(event) => setPendingSearchText(event.target.value)}
+              />
             </div>
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
                   <tr>
+                    <th>Type</th>
                     <th>Row</th>
                     <th>Description</th>
-                    <th>Buyer</th>
+                    <th>Customer</th>
                     <th>Payment Fulfillment</th>
                     <th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(pendingDealRows || []).length ? (pendingDealRows || []).map((row) => {
+                  {filteredPendingDeals.length ? filteredPendingDeals.map((row) => {
                     const draft = getPendingDraft(row);
-                    const rowBusy = returningPendingRow === row.row_num || updatingPendingRow === row.row_num;
+                    const rowKey = `${row.kind || 'stock'}-${row.row_num}`;
+                    const rowBusy = returningPendingKey === rowKey || updatingPendingKey === rowKey;
                     return (
-                      <tr key={`cart-pending-${row.row_num}`}>
+                      <tr key={`cart-pending-${rowKey}`}>
+                        <td>{row.kind === 'service' ? 'Service' : 'Stock'}</td>
                         <td>#{row.row_num}</td>
-                        <td>{getProductCellValue(row, headers, ['DESCRIPTION', 'MODEL', 'DEVICE']) || '—'}</td>
-                        <td>{getProductCellValue(row, headers, ['NAME OF BUYER']) || '—'}</td>
+                        <td>{row.description || getProductCellValue(row, headers, ['DESCRIPTION', 'MODEL', 'DEVICE']) || '—'}</td>
+                        <td>{row.buyer_name || row.name || getProductCellValue(row, headers, ['NAME OF BUYER']) || '—'}</td>
                         <td>
                           <div className="inline-action-row">
                             <select
                               value={draft.status}
-                              onChange={(event) => updatePendingDraft(row.row_num, 'status', event.target.value)}
+                              onChange={(event) => updatePendingDraft(rowKey, 'status', event.target.value)}
                               disabled={rowBusy}
                             >
                               <option value="PAID">PAID</option>
@@ -1527,7 +1561,7 @@ function CartView({
                               type="text"
                               inputMode="numeric"
                               value={draft.amount_paid}
-                              onChange={(event) => updatePendingDraft(row.row_num, 'amount_paid', normalizeDigits(event.target.value))}
+                              onChange={(event) => updatePendingDraft(rowKey, 'amount_paid', normalizeDigits(event.target.value))}
                               placeholder="Amount paid (optional)"
                               disabled={rowBusy}
                             />
@@ -1538,18 +1572,18 @@ function CartView({
                             <button
                               type="button"
                               className="primary-button"
-                              onClick={() => onUpdatePendingDealPayment(row.row_num, draft.status, draft.amount_paid)}
+                              onClick={() => onUpdatePendingDealPayment(row, draft.status, draft.amount_paid)}
                               disabled={rowBusy}
                             >
-                              {updatingPendingRow === row.row_num ? 'Updating...' : 'Apply'}
+                              {updatingPendingKey === rowKey ? 'Updating...' : 'Apply'}
                             </button>
                             <button
                               type="button"
                               className="secondary-button"
-                              onClick={() => onReturnPendingDeal(row.row_num)}
+                              onClick={() => onReturnPendingDeal(row)}
                               disabled={rowBusy}
                             >
-                              {returningPendingRow === row.row_num ? 'Returning...' : 'Return'}
+                              {returningPendingKey === rowKey ? 'Returning...' : 'Return'}
                             </button>
                           </div>
                         </td>
@@ -1557,7 +1591,7 @@ function CartView({
                     );
                   }) : (
                     <tr>
-                      <td colSpan={5} className="empty-state">No pending deals found.</td>
+                      <td colSpan={6} className="empty-state">No pending deals matched the current filter.</td>
                     </tr>
                   )}
                 </tbody>
@@ -2470,8 +2504,9 @@ function WorkspaceApp() {
     status: 'UNPAID',
   });
   const [serviceBusy, setServiceBusy] = useState(false);
-  const [returningPendingRow, setReturningPendingRow] = useState(0);
-  const [updatingPendingRow, setUpdatingPendingRow] = useState(0);
+  const [servicePendingDeals, setServicePendingDeals] = useState({ items: [], count: 0 });
+  const [returningPendingKey, setReturningPendingKey] = useState('');
+  const [updatingPendingKey, setUpdatingPendingKey] = useState('');
   const [currentTimeLabel, setCurrentTimeLabel] = useState(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
 
   const [clientsData, setClientsData] = useState({ entries: [], registry: {}, stats: {} });
@@ -2585,6 +2620,24 @@ function WorkspaceApp() {
     () => (stockView?.all_rows_cache || []).filter((row) => String(row.label || '').toUpperCase() === 'PENDING DEAL'),
     [stockView?.all_rows_cache]
   );
+  const pendingDealEntries = useMemo(() => {
+    const stockEntries = (pendingDealRows || []).map((row) => ({
+      kind: 'stock',
+      row_num: row.row_num,
+      description: getProductCellValue(row, stockView?.headers || [], ['DESCRIPTION', 'MODEL', 'DEVICE']) || '',
+      buyer_name: getProductCellValue(row, stockView?.headers || [], ['NAME OF BUYER']) || '',
+      buyer_phone: getProductCellValue(row, stockView?.headers || [], ['PHONE NUMBER OF BUYER']) || '',
+      imei: getProductCellValue(row, stockView?.headers || [], ['IMEI']) || '',
+      inventory_status: row.inventory_status,
+      inventory_amount_paid: row.inventory_amount_paid,
+    }));
+    const serviceEntries = (servicePendingDeals.items || []).map((row) => ({
+      ...row,
+      inventory_status: row.status,
+      inventory_amount_paid: row.amount_paid,
+    }));
+    return [...serviceEntries, ...stockEntries].sort((left, right) => Number(right.row_num || 0) - Number(left.row_num || 0));
+  }, [pendingDealRows, servicePendingDeals.items, stockView?.headers]);
 
   function applyClientRegistryToState(registry) {
     const nextData = buildClientsDataFromRegistry(registry);
@@ -2596,13 +2649,14 @@ function WorkspaceApp() {
     setCoreLoading(true);
     setWorkspaceError('');
 
-    const [debtorsResult, salesResult, clientsResult, syncResult, whatsappHistoryResult, unpaidTodayResult] = await Promise.allSettled([
+    const [debtorsResult, salesResult, clientsResult, syncResult, whatsappHistoryResult, unpaidTodayResult, pendingServicesResult] = await Promise.allSettled([
       fetchLiveDebtors({ forceRefresh }),
       fetchLiveSalesSnapshot({ forceRefresh }),
       fetchClients({ forceReload: true }),
       fetchSyncStatus(),
       fetchWhatsappHistory({ forceRefresh }),
       fetchUnpaidToday({ forceRefresh }),
+      fetchPendingServiceDeals({ forceRefresh }),
     ]);
 
     const failures = [];
@@ -2641,6 +2695,12 @@ function WorkspaceApp() {
 
     if (unpaidTodayResult.status === 'fulfilled') {
       setUnpaidTodaySummary(unpaidTodayResult.value || { count: 0, with_phone_count: 0, customers: [] });
+    }
+
+    if (pendingServicesResult.status === 'fulfilled') {
+      setServicePendingDeals(pendingServicesResult.value || { items: [], count: 0 });
+    } else {
+      failures.push(pendingServicesResult.reason?.message || 'Could not load pending service deals.');
     }
 
     setLastLoadedAt(new Date());
@@ -3413,36 +3473,59 @@ function WorkspaceApp() {
     setStatusText(`Removed stock row #${stockRowNum} from the cart.`);
   }
 
-  async function handleReturnPendingDeal(stockRowNum) {
-    setReturningPendingRow(stockRowNum);
+  async function handleReturnPendingDeal(entry) {
+    const pendingKey = `${entry?.kind || 'stock'}-${entry?.row_num || entry}`;
+    setReturningPendingKey(pendingKey);
     try {
-      await returnStockItem({ rowNum: stockRowNum, forceRefresh: false });
+      if (entry?.kind === 'service') {
+        await returnServiceDeal({ rowNum: entry.row_num, forceRefresh: false });
+      } else {
+        await returnStockItem({ rowNum: entry.row_num || entry, forceRefresh: false });
+      }
       await Promise.all([loadStock(true), loadCoreWorkspace(false)]);
-      setStatusText(`Pending deal row #${stockRowNum} returned and marked available.`);
+      setStatusText(
+        entry?.kind === 'service'
+          ? `Service deal row #${entry.row_num} returned/refunded successfully.`
+          : `Pending deal row #${entry?.row_num || entry} returned and marked available.`
+      );
     } catch (error) {
       setStatusText(error.message || 'Could not return this pending deal.');
     } finally {
-      setReturningPendingRow(0);
+      setReturningPendingKey('');
     }
   }
 
-  async function handleUpdatePendingDealPayment(stockRowNum, paymentStatus, amountPaid) {
-    setUpdatingPendingRow(stockRowNum);
+  async function handleUpdatePendingDealPayment(entry, paymentStatus, amountPaid) {
+    const pendingKey = `${entry?.kind || 'stock'}-${entry?.row_num || entry}`;
+    setUpdatingPendingKey(pendingKey);
     try {
       const normalizedStatus = String(paymentStatus || '').trim().toUpperCase();
       const normalizedAmount = String(amountPaid || '').trim();
-      await updatePendingDealPayment({
-        rowNum: stockRowNum,
-        paymentStatus: normalizedStatus,
-        amountPaid: normalizedAmount || null,
-        forceRefresh: false,
-      });
+      if (entry?.kind === 'service') {
+        await updateServiceDealPayment({
+          rowNum: entry.row_num,
+          paymentStatus: normalizedStatus,
+          amountPaid: normalizedAmount || null,
+          forceRefresh: false,
+        });
+      } else {
+        await updatePendingDealPayment({
+          rowNum: entry.row_num || entry,
+          paymentStatus: normalizedStatus,
+          amountPaid: normalizedAmount || null,
+          forceRefresh: false,
+        });
+      }
       await Promise.all([loadStock(true), loadCoreWorkspace(false)]);
-      setStatusText(`Pending deal row #${stockRowNum} updated to ${normalizedStatus}.`);
+      setStatusText(
+        entry?.kind === 'service'
+          ? `Service deal row #${entry.row_num} updated to ${normalizedStatus}.`
+          : `Pending deal row #${entry?.row_num || entry} updated to ${normalizedStatus}.`
+      );
     } catch (error) {
       setStatusText(error.message || 'Could not update this pending deal payment status.');
     } finally {
-      setUpdatingPendingRow(0);
+      setUpdatingPendingKey('');
     }
   }
 
@@ -3687,11 +3770,11 @@ function WorkspaceApp() {
           setServiceDraft={setServiceDraft}
           onSubmitService={handleSubmitService}
           serviceBusy={serviceBusy}
-          pendingDealRows={pendingDealRows}
+          pendingDealEntries={pendingDealEntries}
           onReturnPendingDeal={handleReturnPendingDeal}
           onUpdatePendingDealPayment={handleUpdatePendingDealPayment}
-          returningPendingRow={returningPendingRow}
-          updatingPendingRow={updatingPendingRow}
+          returningPendingKey={returningPendingKey}
+          updatingPendingKey={updatingPendingKey}
           clientNameOptions={clientNameOptions}
           sellerPhoneOptions={sellerPhoneOptions}
           currentTimeLabel={currentTimeLabel}
