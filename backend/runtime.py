@@ -114,7 +114,36 @@ class BackendRuntime:
         env_dsn = os.getenv('POSTGRES_DSN') or os.getenv('DATABASE_URL')
         if env_dsn:
             config['postgres_dsn'] = env_dsn
+
+        # Render/production-friendly overrides so secrets can come from env vars.
+        env_sheet_id = os.getenv('SHEET_ID') or os.getenv('MAIN_SHEET_ID')
+        if env_sheet_id:
+            config['sheet_id'] = env_sheet_id
+
+        env_stock_sheet_id = os.getenv('PHONE_STOCK_SHEET_ID') or os.getenv('STOCK_SHEET_ID')
+        if env_stock_sheet_id:
+            config['phone_stock_sheet_id'] = env_stock_sheet_id
+
+        env_credentials_file = os.getenv('GOOGLE_CREDENTIALS_FILE') or os.getenv('CREDENTIALS_FILE')
+        if env_credentials_file:
+            config['credentials_file'] = env_credentials_file
+
         return config
+
+    def _load_service_account_credentials(self, scopes):
+        raw_json = (os.environ.get('GOOGLE_CREDS_JSON') or '').strip()
+        if not raw_json:
+            raise RuntimeError('Missing GOOGLE_CREDS_JSON environment variable for Google Sheets authentication')
+
+        try:
+            info = json.loads(raw_json)
+        except Exception as exc:
+            raise RuntimeError(f'Invalid GOOGLE_CREDS_JSON: {exc}') from exc
+
+        try:
+            return ServiceAccountCredentials.from_service_account_info(info, scopes=scopes)
+        except Exception as exc:
+            raise RuntimeError(f'GOOGLE_CREDS_JSON could not initialize credentials: {exc}') from exc
 
     def _load_clients_from_disk(self):
         if not os.path.exists(self.clients_file):
@@ -185,19 +214,19 @@ class BackendRuntime:
             self.logger.warning('Backend runtime shutdown warning: %s', exc)
 
     def _connect_sheets(self):
-        credentials_file = str(self.config.get('credentials_file', 'credentials.json')).strip()
-        if not credentials_file:
+        main_sheet_id = self._extract_sheet_id(self.config.get('sheet_id', ''))
+        if not main_sheet_id:
             self.sync_state['sheets_connected'] = False
-            self.sync_state['sheet_error'] = 'credentials_file is empty'
+            self.sync_state['sheet_error'] = 'sheet_id is empty (set SHEET_ID or config.json sheet_id)'
             return False
 
         try:
             scopes = ['https://www.googleapis.com/auth/spreadsheets']
-            self.creds = ServiceAccountCredentials.from_service_account_file(credentials_file, scopes=scopes)
+            self.creds = self._load_service_account_credentials(scopes)
             with self._sheet_lock:
                 self.gspread_client = gspread.authorize(self.creds)
                 self.sheets_api_service = build('sheets', 'v4', credentials=self.creds, cache_discovery=False)
-                self.main_spreadsheet = self.gspread_client.open_by_key(self._extract_sheet_id(self.config.get('sheet_id', '')))
+                self.main_spreadsheet = self.gspread_client.open_by_key(main_sheet_id)
                 self.main_sheet = self.main_spreadsheet.sheet1
             self.sync_state['sheets_connected'] = True
             self.sync_state['sheet_error'] = ''
