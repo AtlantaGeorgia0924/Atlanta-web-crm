@@ -943,7 +943,17 @@ class BackendRuntime:
 
     def _enqueue_db_first_operation(self, entity_name, operation, payload, cache_apply_callable=None):
         if not self.postgres_ready:
-            raise RuntimeError('PostgreSQL sync is not ready. Configure postgres_dsn or POSTGRES_DSN before DB-first API writes.')
+            # Fallback path for deployments without PostgreSQL:
+            # execute the write directly against Google Sheets so core workflows
+            # (sell, return, service add, payment update) still work.
+            if not bool(self.config.get('legacy_sheet_fallback', True)):
+                raise RuntimeError('PostgreSQL sync is not ready. Configure postgres_dsn or POSTGRES_DSN before DB-first API writes.')
+
+            if not self._ensure_sheet_connection():
+                raise RuntimeError(self.sync_state.get('sheet_error') or 'Google Sheets connection unavailable')
+
+            self._replay_queue_operation({'payload_json': payload})
+            return 'direct-sheet-write'
 
         queue_id = self.postgres_sync_manager.enqueue_operation(entity_name, operation, payload)
         if queue_id is None:
