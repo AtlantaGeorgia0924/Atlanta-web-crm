@@ -1,0 +1,116 @@
+{
+    "TEST": {
+        "send_count": 4,
+        "last_sent_at": "2026-04-10T06:19:33",
+        "events": [
+            {
+                "sent_at": "2026-04-10T06:04:57",
+                "source": "bulk_today"
+            },
+            {
+                "sent_at": "2026-04-10T06:05:18",
+                "source": "bulk_today"
+            },
+            {
+                "sent_at": "2026-04-10T06:05:27",
+                "source": "bulk_today"
+            },
+            {
+                "sent_at": "2026-04-10T06:19:33",
+                "source": "today_list"
+            }
+        ]
+    },
+    "STARBOX": {
+        "send_count": 4,
+        "last_sent_at": "2026-04-10T18:20:08",
+        "events": [
+            {
+                "sent_at": "2026-04-10T16:03:39",
+                "source": "today_list"
+            },
+            {
+                "sent_at": "2026-04-10T18:19:31",
+                "source": "today_list"
+            },
+            {
+                "sent_at": "2026-04-10T18:19:43",
+                "source": "today_list"
+            },
+            {
+                "sent_at": "2026-04-10T18:20:08",
+                "source": "single"
+            }
+        ]
+    },
+    "IGEE": {
+        "send_count": 2,
+        "last_sent_at": "2026-04-10T22:21:21",
+        "events": [
+            {
+                "sent_at": "2026-04-10T16:07:59",
+                "source": "today_list"
+            },
+            {
+                "sent_at": "2026-04-10T22:21:21",
+                "source": "today_list"
+            }
+        ]
+    },
+    "STAR BUSSY": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-10T16:14:23",
+        "events": [
+            {
+                "sent_at": "2026-04-10T16:14:23",
+                "source": "today_list"
+            }
+        ]
+    },
+    "DEMIGLOBAL MULTISERVICE": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-10T17:41:02",
+        "events": [
+            {
+                "sent_at": "2026-04-10T17:41:02",
+                "source": "single"
+            }
+        ]
+    },
+    "HOLLAH GADGET": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-10T17:47:44",
+        "events": [
+            {
+                "sent_at": "2026-04-10T17:47:44",
+                "source": "single"
+            }
+        ]
+    },
+    "CH4": {
+        "send_count": 5,
+        "last_sent_at": "2026-04-10T18:21:36",
+        "events": [
+            {
+                "sent_at": "2026-04-10T18:21:09",
+                "source": "today_list"
+            },
+            {
+                "sent_at": "2026-04-10T18:21:13",
+                "source": "today_list"
+            },
+            {
+                "sent_at": "2026-04-10T18:21:17",
+                "source": "today_list"
+            },
+            {
+                "sent_at": "2026-04-10T18:21:21",
+                "source": "today_list"
+            },
+            {
+                "sent_at": "2026-04-10T18:21:36",
+                "source": "single"
+            }
+        ]
+    }
+}

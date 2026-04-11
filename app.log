@@ -1,0 +1,100 @@
+2026-03-23 07:57:49 [INFO] Debtors Summary updated on the spreadsheet.
+2026-04-03 17:51:19 [INFO] Please visit this URL to authorize this application: https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=508472144265-3nhcc1d3v3b0bhl7ijts72qg19sg4542.apps.googleusercontent.com&redirect_uri=http%3A%2F%2Flocalhost%3A63760%2F&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcontacts.readonly&state=0JJA5YaTU14jlw6a2mzVtMuoYAlQWP&code_challenge=FTy5HnssVHWpmi7qtbAdNu9T-g3vg6BkJIReh2lSjBk&code_challenge_method=S256&access_type=offline
+2026-04-03 17:52:01 [INFO] Please visit this URL to authorize this application: https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=508472144265-3nhcc1d3v3b0bhl7ijts72qg19sg4542.apps.googleusercontent.com&redirect_uri=http%3A%2F%2Flocalhost%3A63761%2F&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcontacts.readonly&state=KstEKBE4beTaTOUeSNWRuU08RHnYLj&code_challenge=tw7CKPptwEWpmBPURu_1J7gJ-QLTrD4f8sHcmenDMTw&code_challenge_method=S256&access_type=offline
+2026-04-03 17:58:29 [INFO] Please visit this URL to authorize this application: https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=508472144265-3nhcc1d3v3b0bhl7ijts72qg19sg4542.apps.googleusercontent.com&redirect_uri=http%3A%2F%2Flocalhost%3A63818%2F&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcontacts.readonly&state=KWpHAezuIZb8OPHI3ygNoOwwSXkG2e&code_challenge=nKBCoRrU966o28QrnLNu_rLTi4umCp5PHZ91BxCkmpg&code_challenge_method=S256&access_type=offline
+2026-04-03 17:58:48 [INFO] "GET /?state=KWpHAezuIZb8OPHI3ygNoOwwSXkG2e&iss=https://accounts.google.com&code=4/0Aci98E-sgoeEBi1yB8Txu99qOsCGq8CQ5Zgt2E-7EXWkCE4zwyTc5BU6QyLk3cXkewKjjQ&scope=https://www.googleapis.com/auth/contacts.readonly HTTP/1.1" 200 65
+2026-04-04 16:15:56 [INFO] Client directory sheet synced with 4 entries.
+2026-04-04 16:15:58 [INFO] Updated 15 sheet phone number cell(s) from client registry.
+2026-04-04 16:16:05 [INFO] Client directory sheet synced with 4 entries.
+2026-04-04 16:16:06 [WARNING] Could not apply sheet validation: 'Spreadsheet' object has no attribute 'spreadsheet'
+2026-04-04 16:16:07 [INFO] Client directory sheet synced with 4 entries.
+2026-04-04 16:16:09 [INFO] Applied phone autofill formulas to 1022 row(s).
+2026-04-04 17:58:49 [INFO] Debtors Summary updated on the spreadsheet.
+2026-04-04 17:58:51 [INFO] Client directory sheet synced with 4 entries.
+2026-04-04 17:58:52 [INFO] Updated 15 sheet phone number cell(s) from client registry.
+2026-04-04 17:58:53 [WARNING] Could not apply sheet validation: 'Spreadsheet' object has no attribute 'spreadsheet'
+2026-04-04 17:58:55 [INFO] Client directory sheet synced with 4 entries.
+2026-04-04 17:58:56 [INFO] Applied phone autofill formulas to 1022 row(s).
+2026-04-06 16:27:46 [INFO] Debtors Summary updated on the spreadsheet.
+2026-04-06 16:27:46 [INFO] Payment applied: Full payment of NGN 990,000 applied to RICHIE APPLE ID. All statuses set to PAID.
+2026-04-06 16:35:33 [INFO] Debtors Summary updated on the spreadsheet.
+2026-04-06 16:35:33 [INFO] Payment applied: Partial payment of NGN 2,500 applied to TEE BEST GADGET. Started with PURPLE 12 IOS UPDATE.
+2026-04-06 16:47:13 [INFO] Debtors Summary updated on the spreadsheet.
+2026-04-06 16:47:19 [INFO] Client directory sheet synced with 6 entries.
+2026-04-06 16:47:21 [WARNING] Could not apply sheet validation: 'Spreadsheet' object has no attribute 'spreadsheet'
+2026-04-06 16:47:24 [INFO] Client directory sheet synced with 6 entries.
+2026-04-06 16:47:25 [INFO] Applied phone autofill formulas to 1022 row(s).
+2026-04-06 18:41:27 [WARNING] PostgreSQL cache enabled but psycopg2 is unavailable; using legacy sheet mode.
+2026-04-06 18:46:20 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 19:54:26 [WARNING] Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("HTTPSConnection(host='oauth2.googleapis.com', port=443): Failed to resolve 'oauth2.googleapis.com' ([Errno 8] nodename nor servname provided, or not known)")': /token
+2026-04-06 19:54:26 [WARNING] Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("HTTPSConnection(host='oauth2.googleapis.com', port=443): Failed to resolve 'oauth2.googleapis.com' ([Errno 8] nodename nor servname provided, or not known)")': /token
+2026-04-06 19:54:26 [WARNING] Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NameResolutionError("HTTPSConnection(host='oauth2.googleapis.com', port=443): Failed to resolve 'oauth2.googleapis.com' ([Errno 8] nodename nor servname provided, or not known)")': /token
+2026-04-06 21:44:29 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 21:45:08 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 22:05:36 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 22:13:51 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 22:17:31 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 22:19:49 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 22:25:14 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 22:26:18 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 22:26:25 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 22:27:07 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 22:27:20 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-06 22:27:43 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-07 13:34:56 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-07 14:17:46 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-07 14:17:53 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-07 14:18:50 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-07 15:56:23 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-08 12:31:41 [WARNING] PostgreSQL cache enabled but postgres_dsn is empty; using legacy sheet mode.
+2026-04-08 12:38:53 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-08 12:38:55 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 12:38:55 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 12:38:59 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-08 12:39:01 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 12:39:01 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 12:52:17 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-08 12:52:20 [INFO] RECORD_ID rollout pull phase: main_updated=1 stock_updated=0 main_err= stock_err=
+2026-04-08 12:52:21 [INFO] RECORD_ID rollout pull phase: main_updated=1 stock_updated=0 main_err= stock_err=
+2026-04-08 12:52:54 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-08 12:52:57 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 12:52:57 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 12:53:01 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-08 12:53:04 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 12:53:04 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 13:01:07 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-08 13:01:12 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 13:01:14 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 13:33:41 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-08 13:33:45 [INFO] RECORD_ID rollout pull phase: main_updated=1 stock_updated=0 main_err= stock_err=
+2026-04-08 13:33:45 [INFO] RECORD_ID rollout pull phase: main_updated=1 stock_updated=0 main_err= stock_err=
+2026-04-08 13:33:53 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-08 13:33:56 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 13:33:57 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-08 13:37:30 [INFO] Client directory sheet synced with 6 entries.
+2026-04-08 13:37:31 [WARNING] Could not apply sheet validation: 'Spreadsheet' object has no attribute 'spreadsheet'
+2026-04-08 13:37:34 [INFO] Client directory sheet synced with 6 entries.
+2026-04-08 13:37:36 [INFO] Applied phone autofill formulas to 1022 row(s).
+2026-04-08 13:38:18 [INFO] Client directory sheet synced with 21 entries.
+2026-04-08 13:38:21 [INFO] Updated 1 sheet phone number cell(s) from client registry.
+2026-04-08 13:38:22 [WARNING] Could not apply sheet validation: 'Spreadsheet' object has no attribute 'spreadsheet'
+2026-04-08 13:38:25 [INFO] Client directory sheet synced with 21 entries.
+2026-04-08 13:38:27 [INFO] Applied phone autofill formulas to 1022 row(s).
+2026-04-08 13:41:04 [INFO] Client directory sheet synced with 22 entries.
+2026-04-08 13:41:07 [WARNING] Could not apply sheet validation: 'Spreadsheet' object has no attribute 'spreadsheet'
+2026-04-08 13:41:11 [INFO] Client directory sheet synced with 22 entries.
+2026-04-08 13:41:13 [INFO] Applied phone autofill formulas to 1022 row(s).
+2026-04-08 13:43:45 [INFO] Client directory sheet synced with 23 entries.
+2026-04-08 13:43:48 [WARNING] Could not apply sheet validation: 'Spreadsheet' object has no attribute 'spreadsheet'
+2026-04-08 13:43:51 [INFO] Client directory sheet synced with 23 entries.
+2026-04-08 13:43:53 [INFO] Applied phone autofill formulas to 1022 row(s).
+2026-04-08 13:44:06 [INFO] Client directory sheet synced with 24 entries.
+2026-04-08 13:44:09 [WARNING] Could not apply sheet validation: 'Spreadsheet' object has no attribute 'spreadsheet'
+2026-04-08 13:44:12 [INFO] Client directory sheet synced with 24 entries.
+2026-04-08 13:44:14 [INFO] Applied phone autofill formulas to 1022 row(s).
+2026-04-10 06:13:15 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-10 06:13:18 [INFO] RECORD_ID rollout pull phase: main_updated=5 stock_updated=0 main_err= stock_err=
+2026-04-10 06:13:19 [INFO] RECORD_ID rollout pull phase: main_updated=5 stock_updated=0 main_err= stock_err=
+2026-04-10 06:13:31 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-10 06:13:34 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-10 06:13:35 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=

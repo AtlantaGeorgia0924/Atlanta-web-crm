@@ -1,0 +1,3874 @@
+import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 'react';
+
+import { getApiLabel } from './api/http';
+import { addServiceRecord, checkoutSaleCart, fetchStockDashboard, returnStockItem, updatePendingDealPayment, updateStockRow } from './api/stock';
+import {
+  addStockRecord,
+  applyAllNameFixes,
+  applyNameFix,
+  applyPayment,
+  deleteClient,
+  fetchDashboardLogo,
+  fetchClients,
+  fetchGoogleContacts,
+  fetchLiveBill,
+  fetchLiveDebtors,
+  fetchLiveSalesSnapshot,
+  fetchNameFixes,
+  fetchOutstandingItems,
+  fetchPaymentPlan,
+  fetchStockForm,
+  fetchSyncStatus,
+  fetchUnpaidToday,
+  fetchUnpaidTodayBills,
+  fetchWhatsappHistory,
+  importSheetPhones,
+  markWhatsappSent,
+  pullNow,
+  redoPayment,
+  refreshWorkspace,
+  syncGoogleContacts,
+  undoPayment,
+  upsertClient,
+} from './api/workspace';
+
+const PRODUCT_FILTERS = [
+  { value: 'all', label: 'All Products' },
+  { value: 'available', label: 'Available' },
+  { value: 'needs_review', label: 'Needs Status Review' },
+  { value: 'pending', label: 'Pending Deal' },
+  { value: 'needs_details', label: 'Needs Details' },
+  { value: 'sold', label: 'Sold' },
+];
+
+const CART_FILTERS = [
+  { value: 'all', label: 'All Products' },
+  { value: 'pending', label: 'Pending Deal (Client Yet To Pay)' },
+  { value: 'sold', label: 'Sold Items' },
+];
+
+const CART_PAYMENT_STATUS_OPTIONS = ['PAID', 'UNPAID', 'PART PAYMENT'];
+
+const PRODUCT_SUMMARY_COLUMNS = [
+  { key: 'description', label: 'Description', aliases: ['DESCRIPTION', 'MODEL', 'DEVICE'] },
+  { key: 'colour', label: 'Colour', aliases: ['COLOUR', 'COLOR'] },
+  { key: 'storage', label: 'Storage', aliases: ['STORAGE'] },
+  { key: 'imei', label: 'IMEI', aliases: ['IMEI'] },
+  { key: 'cost_price', label: 'Cost Price', aliases: ['COST PRICE'] },
+  { key: 'seller', label: 'Seller', aliases: ['NAME OF SELLER'] },
+  { key: 'buyer', label: 'Buyer', aliases: ['NAME OF BUYER'] },
+  { key: 'availability', label: 'Sold / Availability', aliases: ['AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE'] },
+];
+
+const ACTION_ITEMS = [
+  {
+    key: 'refresh',
+    type: 'action',
+    title: 'Refresh Workspace',
+    description: 'Pull the latest sheet changes and rebuild the local cache.',
+  },
+  {
+    key: 'home',
+    type: 'view',
+    title: 'Home Page',
+    description: 'See live summary cards, statistics, and graphs in one place.',
+  },
+  {
+    key: 'products',
+    type: 'view',
+    title: 'Products',
+    description: 'Browse stock, filter products, and add new items to the sheet.',
+  },
+  {
+    key: 'cart',
+    type: 'view',
+    title: 'Cart',
+    description: 'Select stock items, add buyer details, and sell phones into inventory.',
+  },
+  {
+    key: 'cashflow',
+    type: 'view',
+    title: 'Cash Flow',
+    description: 'Track simple inflow, outstanding balances, and short-term projections.',
+  },
+  {
+    key: 'undo',
+    type: 'action',
+    title: 'Undo',
+    description: 'Undo the most recent payment action performed from the website.',
+  },
+  {
+    key: 'redo',
+    type: 'action',
+    title: 'Redo',
+    description: 'Reapply the most recently undone payment action.',
+  },
+  {
+    key: 'clients',
+    type: 'view',
+    title: 'Clients',
+    description: 'Manage client phone numbers and work with Google Contacts.',
+  },
+  {
+    key: 'debtors',
+    type: 'view',
+    title: 'Debtors',
+    description: 'Review balances, preview bills, and apply payments.',
+  },
+  {
+    key: 'fix',
+    type: 'view',
+    title: 'Fix',
+    description: 'Scan mismatched names and apply sheet-safe corrections.',
+  },
+  {
+    key: 'settings',
+    type: 'view',
+    title: 'Settings',
+    description: 'Inspect sync status, cache counts, and runtime health.',
+  },
+  {
+    key: 'exit',
+    type: 'action',
+    title: 'Exit',
+    description: 'Close the browser tab for this workspace.',
+  },
+];
+
+const VIEW_META = {
+  home: {
+    title: 'Home Page',
+    description: 'Live summary, business statistics, and the graphs you need at a glance.',
+  },
+  products: {
+    title: 'Products',
+    description: 'Manage stock records, browse inventory, and add new products to the Google Sheet.',
+  },
+  cart: {
+    title: 'Cart',
+    description: 'Sell phones from stock, set buyer details, and append clean inventory rows without overwriting anything.',
+  },
+  cashflow: {
+    title: 'Cash Flow',
+    description: 'Simple cash movement view based on live sales and outstanding balances.',
+  },
+  clients: {
+    title: 'Clients',
+    description: 'Maintain client phone details, sync Google Contacts, and update customer records.',
+  },
+  debtors: {
+    title: 'Debtors',
+    description: 'Preview bills, copy or send them, and apply payments with live data.',
+  },
+  fix: {
+    title: 'Fix',
+    description: 'Review likely misspellings and queue safe name corrections back to the sheet.',
+  },
+  settings: {
+    title: 'Settings',
+    description: 'Watch the sync runtime, queue state, and cache health.',
+  },
+};
+
+const STATUS_CLASS_MAP = {
+  AVAILABLE: 'available',
+  'PENDING DEAL': 'pending',
+  'NEEDS DETAILS': 'needs-details',
+  SOLD: 'sold',
+  'NEEDS STATUS REVIEW': 'needs-details',
+};
+
+const numberFormatter = new Intl.NumberFormat('en-US');
+
+function formatCount(value) {
+  return numberFormatter.format(Number(value || 0));
+}
+
+function formatCurrency(value) {
+  return `NGN ${formatCount(value)}`;
+}
+
+function formatShortStamp(dateValue) {
+  if (!dateValue) {
+    return 'Waiting';
+  }
+
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(dateValue);
+}
+
+function formatRuntimeSnapshot(value, fallback = 'None') {
+  if (!value) {
+    return fallback;
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'object') {
+    const parts = [value.status, value.details, value.finished_at].filter(Boolean);
+    return parts.length ? parts.join(' | ') : fallback;
+  }
+
+  return String(value);
+}
+
+function getCacheRowCount(value) {
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (value && typeof value === 'object' && 'row_count' in value) {
+    return value.row_count;
+  }
+
+  return 0;
+}
+
+function normalizeSearchValue(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function normalizeDigits(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function normalizeWhatsappPhone(value) {
+  let digits = normalizeDigits(value);
+  if (!digits) {
+    return '';
+  }
+
+  if (digits.startsWith('00')) {
+    digits = digits.slice(2);
+  }
+
+  if (digits.startsWith('2340')) {
+    digits = `234${digits.slice(4)}`;
+  }
+
+  if (digits.startsWith('234') && digits.length > 13 && digits[3] === '0') {
+    digits = `234${digits.slice(4)}`;
+  }
+
+  if (digits.startsWith('0') && digits.length === 11) {
+    return `234${digits.slice(1)}`;
+  }
+
+  if (digits.length === 10) {
+    return `234${digits}`;
+  }
+
+  return digits;
+}
+
+function extractPhoneFromSuggestionText(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  const pieces = raw.split(' - ');
+  const candidate = pieces.length > 1 ? pieces[pieces.length - 1] : raw;
+  const normalized = normalizeWhatsappPhone(candidate);
+  return normalized || raw;
+}
+
+function buildPageItems(page, totalPages) {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const pageNumbers = new Set([1, totalPages, page - 1, page, page + 1]);
+
+  if (page <= 3) {
+    pageNumbers.add(2);
+    pageNumbers.add(3);
+    pageNumbers.add(4);
+  }
+
+  if (page >= totalPages - 2) {
+    pageNumbers.add(totalPages - 1);
+    pageNumbers.add(totalPages - 2);
+    pageNumbers.add(totalPages - 3);
+  }
+
+  const sortedPages = Array.from(pageNumbers)
+    .filter((pageNumber) => pageNumber >= 1 && pageNumber <= totalPages)
+    .sort((left, right) => left - right);
+
+  const items = [];
+  sortedPages.forEach((pageNumber, index) => {
+    const previous = sortedPages[index - 1];
+    if (previous && pageNumber - previous > 1) {
+      items.push(`ellipsis-${previous}-${pageNumber}`);
+    }
+    items.push(pageNumber);
+  });
+
+  return items;
+}
+
+function getStatusClass(label) {
+  return STATUS_CLASS_MAP[label] || 'available';
+}
+
+function buildOutstandingLabel(item) {
+  const description = item?.description || 'Unnamed service';
+  const dateText = item?.date ? `, ${item.date}` : '';
+  return `${description}${dateText} - ${formatCurrency(item?.balance)}`;
+}
+
+function buildPaymentPreviewText(selectedDebtor, paymentAmount, paymentPlan, paymentPlanError) {
+  if (!selectedDebtor) {
+    return 'Select a debtor to preview payment allocation.';
+  }
+
+  if (!paymentAmount) {
+    return 'Enter a payment amount to see how the system will allocate it.';
+  }
+
+  if (paymentPlanError) {
+    return paymentPlanError;
+  }
+
+  if (!paymentPlan) {
+    return 'Preparing payment preview...';
+  }
+
+  const lines = [
+    `Customer: ${paymentPlan.name_input}`,
+    `Total outstanding: ${formatCurrency(paymentPlan.total_outstanding)}`,
+    `Applied amount: ${formatCurrency(paymentPlan.total_applied)}`,
+    '',
+    paymentPlan.status_text,
+    '',
+    'Updates:',
+  ];
+
+  paymentPlan.updates.forEach((update) => {
+    const service = (paymentPlan.outstanding_items || []).find((item) => item.row_idx === update.row_idx);
+    const description = service?.description || `Row ${update.row_idx}`;
+    lines.push(`- ${description}: ${formatCurrency(update.new_paid)} -> ${update.new_status}`);
+  });
+
+  return lines.join('\n');
+}
+
+function getRollingWeekLabels() {
+  const labels = [];
+  const today = new Date();
+  for (let offset = 6; offset >= 0; offset -= 1) {
+    const date = new Date(today);
+    date.setDate(today.getDate() - offset);
+    labels.push(date.toLocaleDateString('en-GB', { weekday: 'short' }));
+  }
+  return labels;
+}
+
+async function copyText(text) {
+  if (!text) {
+    return;
+  }
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // Fall through to the legacy copy approach.
+  }
+
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.setAttribute('readonly', 'readonly');
+  textArea.style.position = 'absolute';
+  textArea.style.left = '-9999px';
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  textArea.setSelectionRange(0, textArea.value.length);
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textArea);
+
+  if (!copied) {
+    throw new Error('Could not copy the bill text.');
+  }
+}
+
+function buildWhatsappUrl(phone, text) {
+  return `https://api.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(text)}`;
+}
+
+function buildProductFormValues(formConfig) {
+  const defaults = formConfig?.defaults || {};
+  const values = {};
+  for (const header of formConfig?.visible_headers || []) {
+    values[header] = defaults[header.toUpperCase()] || '';
+  }
+  return values;
+}
+
+function buildClientsDataFromRegistry(registry) {
+  const normalizedRegistry = { ...(registry || {}) };
+  const entries = Object.entries(normalizedRegistry)
+    .sort((left, right) => String(left[0]).localeCompare(String(right[0]), undefined, { sensitivity: 'base' }))
+    .map(([name, phone]) => ({
+      name,
+      phone: String(phone || ''),
+      has_phone: Boolean(String(phone || '').trim()),
+    }));
+
+  return {
+    registry: normalizedRegistry,
+    entries,
+    stats: {
+      total_count: entries.length,
+      with_phone_count: entries.filter((entry) => entry.has_phone).length,
+      without_phone_count: entries.filter((entry) => !entry.has_phone).length,
+    },
+  };
+}
+
+function findHeaderIndex(headers, aliases) {
+  const normalizedHeaders = (headers || []).map((header) => String(header || '').trim().toUpperCase());
+  for (const alias of aliases || []) {
+    const index = normalizedHeaders.indexOf(String(alias || '').trim().toUpperCase());
+    if (index >= 0) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function getProductCellValue(row, headers, aliases) {
+  const index = findHeaderIndex(headers, aliases);
+  if (index < 0) {
+    return '';
+  }
+  return String(row?.padded?.[index] || '').trim();
+}
+
+function buildCartItemFromProductRow(row, headers) {
+  return {
+    stock_row_num: row.row_num,
+    description: getProductCellValue(row, headers, ['DESCRIPTION', 'MODEL', 'DEVICE']),
+    imei: getProductCellValue(row, headers, ['IMEI']),
+    colour: getProductCellValue(row, headers, ['COLOUR', 'COLOR']),
+    storage: getProductCellValue(row, headers, ['STORAGE']),
+    cost_price: getProductCellValue(row, headers, ['COST PRICE']),
+    buyer_name: getProductCellValue(row, headers, ['NAME OF BUYER']),
+    buyer_phone: getProductCellValue(row, headers, ['PHONE NUMBER OF BUYER']),
+    sale_price: '',
+    payment_status: row.label === 'PENDING DEAL' ? 'UNPAID' : 'PAID',
+    availability_choice: 'AUTO',
+    availability_custom: '',
+  };
+}
+
+function PageNavigator({ page, totalPages, onChange }) {
+  if (totalPages <= 1) {
+    return null;
+  }
+
+  const pageItems = buildPageItems(page, totalPages);
+
+  return (
+    <div className="page-nav">
+      <span className="page-nav__summary">Page {page} of {totalPages}</span>
+      <button type="button" className="page-nav__button" onClick={() => onChange(page - 1)} disabled={page <= 1}>
+        Prev
+      </button>
+      <div className="page-nav__numbers">
+        {pageItems.map((item) => {
+          if (typeof item !== 'number') {
+            return (
+              <span key={item} className="page-nav__ellipsis" aria-hidden="true">
+                ...
+              </span>
+            );
+          }
+
+          return (
+            <button
+              key={item}
+              type="button"
+              className={item === page ? 'page-nav__number active' : 'page-nav__number'}
+              onClick={() => onChange(item)}
+            >
+              {item}
+            </button>
+          );
+        })}
+      </div>
+      <button type="button" className="page-nav__button" onClick={() => onChange(page + 1)} disabled={page >= totalPages}>
+        Next
+      </button>
+    </div>
+  );
+}
+
+function MaskedMetricCard({ label, value, note, revealKey, revealedMetric, setRevealedMetric }) {
+  const visible = revealedMetric === revealKey;
+
+  return (
+    <article className="metric-card metric-card--home">
+      <div className="metric-card__top">
+        <span className="metric-label">{label}</span>
+        <button
+          type="button"
+          className="hold-button"
+          onPointerDown={() => setRevealedMetric(revealKey)}
+          onPointerUp={() => setRevealedMetric('')}
+          onPointerLeave={() => setRevealedMetric('')}
+          onPointerCancel={() => setRevealedMetric('')}
+        >
+          Hold to unhide
+        </button>
+      </div>
+      <strong className="metric-value">{visible ? value : '***'}</strong>
+      <span className="metric-note">{note}</span>
+    </article>
+  );
+}
+
+function SimpleBarGraph({ title, description, items, valueFormatter = formatCount, emptyText = 'No data yet.' }) {
+  const maxValue = Math.max(1, ...items.map((item) => Number(item.value || 0)));
+
+  return (
+    <section className="graph-panel">
+      <div className="panel-header graph-header">
+        <h3>{title}</h3>
+        <p>{description}</p>
+      </div>
+
+      {items.length ? (
+        <div className="bar-chart">
+          {items.map((item) => (
+            <div key={item.label} className="bar-column">
+              <div className="bar-value">{valueFormatter(item.value)}</div>
+              <div
+                className="bar-fill"
+                style={{ height: `${Math.max(14, (Number(item.value || 0) / maxValue) * 132)}px` }}
+              />
+              <div className="bar-label">{item.label}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="notice compact">{emptyText}</div>
+      )}
+    </section>
+  );
+}
+
+function ActionSidebar({ activeView, undoEnabled, redoEnabled, onTrigger }) {
+  return (
+    <aside className="sidebar-frame sidebar-frame--list">
+      <h2>General Actions</h2>
+      <p>Reordered for the web workspace and expanded with clear descriptions.</p>
+
+      <div className="action-list">
+        {ACTION_ITEMS.map((item) => {
+          const isView = item.type === 'view';
+          const isActive = isView && item.key === activeView;
+          const disabled = (item.key === 'undo' && !undoEnabled) || (item.key === 'redo' && !redoEnabled);
+          return (
+            <button
+              key={item.key}
+              type="button"
+              className={isActive ? 'action-list-item active' : 'action-list-item'}
+              onClick={() => onTrigger(item)}
+              disabled={disabled}
+            >
+              <span className="action-list-item__title">{item.title}</span>
+              <span className="action-list-item__description">{item.description}</span>
+            </button>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}
+
+function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStatus, lastLoadedAt, revealedMetric, setRevealedMetric }) {
+  const stockCounts = stockView?.counts || {};
+  const homeSummaryCards = [
+    {
+      type: 'masked',
+      label: 'Total Outstanding',
+      value: formatCurrency(debtorsData.total_debtors_amount),
+      note: 'Hold to reveal total amount owed by debtors.',
+      revealKey: 'total-outstanding',
+    },
+    {
+      type: 'masked',
+      label: 'Sales Today',
+      value: formatCurrency(salesSnapshot.sales_today),
+      note: 'Hold to reveal today\'s sales total.',
+      revealKey: 'sales-today',
+    },
+    {
+      type: 'plain',
+      label: 'Customers Owing',
+      value: formatCount((debtorsData.sorted_debtors || []).length),
+      note: 'Live debtor count.',
+    },
+    {
+      type: 'masked',
+      label: 'Sales This Month',
+      value: formatCurrency(salesSnapshot.sales_month),
+      note: 'Hold to reveal month-to-date turnover.',
+      revealKey: 'sales-month',
+    },
+  ];
+
+  const statisticsCards = [
+    { label: 'Customers Today', value: formatCount(salesSnapshot.customers_today), note: 'Unique buyers today.' },
+    { label: 'Services Today', value: formatCount(salesSnapshot.services_today), note: 'Completed transactions today.' },
+    { label: 'Products Available', value: formatCount(stockCounts.available), note: 'Items ready to sell.' },
+    { label: 'Pending Deals', value: formatCount(stockCounts.pending), note: 'Deals waiting to close.' },
+    { label: 'Needs Details', value: formatCount(stockCounts.needs_details), note: 'Products that need cleanup.' },
+    { label: 'Name Fixes', value: formatCount(nameFixData.count), note: 'Rows waiting for correction.' },
+    { label: 'Queue Pending', value: formatCount(syncStatus?.queue_pending), note: 'Background writes still pending.' },
+    { label: 'Last Loaded', value: formatShortStamp(lastLoadedAt), note: syncStatus?.sync_state?.last_status || 'Live runtime' },
+  ];
+
+  const dailyLabels = getRollingWeekLabels();
+  const dailySalesItems = dailyLabels.map((label, index) => ({
+    label,
+    value: salesSnapshot.daily_totals?.[index] || 0,
+  }));
+  const weeklySalesItems = (salesSnapshot.week_totals || []).map((value, index) => ({
+    label: `Week ${index + 1}`,
+    value,
+  }));
+  const stockDistributionItems = (stockView?.available_breakdown || [])
+    .slice()
+    .sort((left, right) => right.count - left.count)
+    .slice(0, 7)
+    .map((item) => ({
+      label: item.series,
+      value: item.count,
+    }));
+
+  return (
+    <div className="workspace-stack">
+      <section className="summary-frame">
+        <h2>Live Summary</h2>
+        <div className="summary-grid summary-grid--home">
+          {homeSummaryCards.map((card) =>
+            card.type === 'masked' ? (
+              <MaskedMetricCard
+                key={card.label}
+                label={card.label}
+                value={card.value}
+                note={card.note}
+                revealKey={card.revealKey}
+                revealedMetric={revealedMetric}
+                setRevealedMetric={setRevealedMetric}
+              />
+            ) : (
+              <article key={card.label} className="metric-card metric-card--home">
+                <span className="metric-label">{card.label}</span>
+                <strong className="metric-value">{card.value}</strong>
+                <span className="metric-note">{card.note}</span>
+              </article>
+            )
+          )}
+        </div>
+      </section>
+
+      <section className="content-panel content-panel--main">
+        <div className="panel-header">
+          <h3>Statistics</h3>
+          <p>Quick operational numbers pulled from debtors, sales, stock, sync, and fix queues.</p>
+        </div>
+        <div className="stats-grid">
+          {statisticsCards.map((card) => (
+            <article key={card.label} className="stat-card">
+              <span className="metric-label">{card.label}</span>
+              <strong className="stat-card__value">{card.value}</strong>
+              <span className="metric-note">{card.note}</span>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="home-graphs">
+        <SimpleBarGraph
+          title="Daily Sales"
+          description="Last seven days of sales totals."
+          items={dailySalesItems}
+          valueFormatter={formatCurrency}
+        />
+        <SimpleBarGraph
+          title="Weekly Sales"
+          description="This month split into week buckets."
+          items={weeklySalesItems}
+          valueFormatter={formatCurrency}
+        />
+        <SimpleBarGraph
+          title="Available Product Distribution"
+          description="Top available product groups by series."
+          items={stockDistributionItems}
+          valueFormatter={formatCount}
+          emptyText="No available stock groups returned yet."
+        />
+      </section>
+    </div>
+  );
+}
+
+function CashFlowView({ salesSnapshot, debtorsData }) {
+  const salesToday = Number(salesSnapshot?.sales_today || 0);
+  const salesMonth = Number(salesSnapshot?.sales_month || 0);
+  const outstanding = Number(debtorsData?.total_debtors_amount || 0);
+  const projectedCollectable = salesToday + outstanding;
+
+  const weekLabels = getRollingWeekLabels();
+  const weekItems = weekLabels.map((label, index) => ({
+    label,
+    value: Number(salesSnapshot?.daily_totals?.[index] || 0),
+  }));
+
+  return (
+    <div className="workspace-stack">
+      <section className="summary-frame">
+        <h2>Simple Cash Flow</h2>
+        <div className="summary-grid summary-grid--home">
+          <article className="metric-card metric-card--home">
+            <span className="metric-label">Cash In Today</span>
+            <strong className="metric-value">{formatCurrency(salesToday)}</strong>
+            <span className="metric-note">Captured from today's completed sales.</span>
+          </article>
+          <article className="metric-card metric-card--home">
+            <span className="metric-label">Cash In This Month</span>
+            <strong className="metric-value">{formatCurrency(salesMonth)}</strong>
+            <span className="metric-note">Month-to-date recorded inflow.</span>
+          </article>
+          <article className="metric-card metric-card--home">
+            <span className="metric-label">Outstanding Balance</span>
+            <strong className="metric-value">{formatCurrency(outstanding)}</strong>
+            <span className="metric-note">Open receivables from debtors.</span>
+          </article>
+          <article className="metric-card metric-card--home">
+            <span className="metric-label">Today + Collectables</span>
+            <strong className="metric-value">{formatCurrency(projectedCollectable)}</strong>
+            <span className="metric-note">Quick projection if all open balances settle.</span>
+          </article>
+        </div>
+      </section>
+
+      <SimpleBarGraph
+        title="Daily Cash In"
+        description="Last seven days of captured sales values."
+        items={weekItems}
+        valueFormatter={formatCurrency}
+      />
+    </div>
+  );
+}
+
+function ProductComposerModal({
+  stockForm,
+  productFormValues,
+  isAddingProduct,
+  sellerPhoneOptions,
+  currentTimeLabel,
+  onClose,
+  onSubmitProduct,
+  onResetProductForm,
+}) {
+  const visibleHeaders = stockForm?.visible_headers || [];
+  const [draftValues, setDraftValues] = useState({});
+
+  useEffect(() => {
+    setDraftValues(productFormValues || {});
+  }, [productFormValues]);
+
+  function renderProductField(header) {
+    const key = String(header || '').toUpperCase();
+    const value = draftValues[header] || '';
+
+    if (key === 'TIME') {
+      return (
+        <input
+          type="text"
+          value={value || currentTimeLabel}
+          onChange={(event) => setDraftValues((current) => ({
+            ...current,
+            [header]: event.target.value,
+          }))}
+          placeholder="Auto time"
+        />
+      );
+    }
+
+    if (key === 'PHONE NUMBER OF SELLER') {
+      return (
+        <>
+          <input
+            type="text"
+            list="seller-phone-options"
+            value={value}
+            onChange={(event) => setDraftValues((current) => ({
+              ...current,
+              [header]: extractPhoneFromSuggestionText(event.target.value),
+            }))}
+            placeholder="Search Google/saved contact numbers"
+          />
+          <datalist id="seller-phone-options">
+            {(sellerPhoneOptions || []).map((option) => (
+              <option key={option} value={option} />
+            ))}
+          </datalist>
+        </>
+      );
+    }
+
+    if (key === 'PRODUCT STATUS' || key === 'STOCK STATUS' || key === 'ITEM STATUS') {
+      return (
+        <select
+          value={value || 'AVAILABLE'}
+          onChange={(event) => setDraftValues((current) => ({
+            ...current,
+            [header]: event.target.value,
+          }))}
+        >
+          <option value="AVAILABLE">AVAILABLE</option>
+          <option value="SOLD">SOLD</option>
+        </select>
+      );
+    }
+
+    if (key === 'AVAILABILITY/DATE SOLD' || key === 'DATE SOLD' || key === 'SOLD DATE') {
+      return (
+        <select
+          value={value || 'AVAILABLE'}
+          onChange={(event) => setDraftValues((current) => ({
+            ...current,
+            [header]: event.target.value,
+          }))}
+        >
+          <option value="AVAILABLE">AVAILABLE</option>
+          <option value="SOLD">SOLD</option>
+        </select>
+      );
+    }
+
+    return (
+      <input
+        type="text"
+        value={value}
+        onChange={(event) => setDraftValues((current) => ({
+          ...current,
+          [header]: event.target.value,
+        }))}
+      />
+    );
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <section
+        className="modal-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="product-composer-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-sheet__header">
+          <div className="panel-header">
+            <h3 id="product-composer-title">Add Product</h3>
+            <p>Fill in product and seller details. New items are queued back into the same Google Sheet format used by the desktop workflow.</p>
+          </div>
+
+          <button type="button" className="secondary-button" onClick={onClose} disabled={isAddingProduct}>
+            Close
+          </button>
+        </div>
+
+        {visibleHeaders.length ? (
+          <form className="form-stack" onSubmit={(event) => onSubmitProduct(event, draftValues)}>
+            <div className="form-grid form-grid--modal">
+              {visibleHeaders.map((header) => (
+                <label key={header} className="field-block">
+                  <span className="field-label">{header}</span>
+                  {renderProductField(header)}
+                </label>
+              ))}
+            </div>
+
+            <div className="button-row button-row--end">
+              <button type="button" className="secondary-button" onClick={onResetProductForm} disabled={isAddingProduct}>
+                Reset Form
+              </button>
+              <button type="submit" className="primary-button" disabled={isAddingProduct}>
+                {isAddingProduct ? 'Adding Product...' : 'Add Product'}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div className="notice">Loading the product form fields...</div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ProductDetailModal({ row, headers, onClose, onSave, saving }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [valuesByHeader, setValuesByHeader] = useState({});
+
+  useEffect(() => {
+    if (!row) {
+      setValuesByHeader({});
+      setIsEditing(false);
+      return;
+    }
+
+    const next = {};
+    headers.forEach((header, index) => {
+      next[header] = row.padded?.[index] || '';
+    });
+    setValuesByHeader(next);
+    setIsEditing(false);
+  }, [row, headers]);
+
+  if (!row) {
+    return null;
+  }
+
+  async function handleSave() {
+    await onSave(row.row_num, valuesByHeader);
+    setIsEditing(false);
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <section
+        className="modal-sheet modal-sheet--detail"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="product-detail-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-sheet__header">
+          <div className="panel-header">
+            <h3 id="product-detail-title">Product Details</h3>
+            <p>Full row details for stock row #{row.row_num}.</p>
+          </div>
+
+          <button type="button" className="secondary-button" onClick={onClose} disabled={saving}>
+            Close
+          </button>
+        </div>
+
+        {isEditing ? (
+          <div className="form-stack">
+            <div className="form-grid form-grid--modal">
+              {headers.map((header) => (
+                <label key={`${row.row_num}-${header}`} className="field-block">
+                  <span className="field-label">{header}</span>
+                  <input
+                    type="text"
+                    value={valuesByHeader[header] || ''}
+                    onChange={(event) => setValuesByHeader((current) => ({
+                      ...current,
+                      [header]: event.target.value,
+                    }))}
+                  />
+                </label>
+              ))}
+            </div>
+
+            <div className="button-row button-row--end">
+              <button type="button" className="secondary-button" onClick={() => setIsEditing(false)} disabled={saving}>
+                Cancel
+              </button>
+              <button type="button" className="primary-button" onClick={handleSave} disabled={saving}>
+                {saving ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="detail-grid">
+              <article className="detail-pair">
+                <span className="detail-label">Row</span>
+                <strong>#{row.row_num}</strong>
+              </article>
+              <article className="detail-pair">
+                <span className="detail-label">Status</span>
+                <strong>{row.label}</strong>
+              </article>
+              {headers.map((header, index) => (
+                <article key={`${row.row_num}-${header}`} className="detail-pair">
+                  <span className="detail-label">{header}</span>
+                  <strong>{row.padded?.[index] || '—'}</strong>
+                </article>
+              ))}
+            </div>
+
+            <div className="button-row button-row--end" style={{ marginTop: '12px' }}>
+              <button type="button" className="primary-button" onClick={() => setIsEditing(true)}>
+                Edit Details
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function ProductSummaryTable({
+  headers,
+  rows,
+  emptyText,
+  onOpenDetails,
+  onAddToCart,
+  cartRowNumbers = [],
+}) {
+  const cartRowSet = new Set(cartRowNumbers);
+
+  return (
+    <div className="table-wrap">
+      <table className="data-table data-table--products">
+        <thead>
+          <tr>
+            <th>See More</th>
+            <th>Row</th>
+            <th>Status</th>
+            {PRODUCT_SUMMARY_COLUMNS.map((column) => (
+              <th key={column.key}>{column.label}</th>
+            ))}
+            {onAddToCart ? <th>Cart</th> : null}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length ? (
+            rows.map((row) => (
+              <tr key={row.row_num}>
+                <td>
+                  <button type="button" className="table-action-button" onClick={() => onOpenDetails(row)}>
+                    See More
+                  </button>
+                </td>
+                <td className="row-number">#{row.row_num}</td>
+                <td>
+                  <span className={`status-pill status-pill--${getStatusClass(row.label)}`}>{row.label}</span>
+                </td>
+                {PRODUCT_SUMMARY_COLUMNS.map((column) => (
+                  <td key={`${row.row_num}-${column.key}`}>{getProductCellValue(row, headers, column.aliases)}</td>
+                ))}
+                {onAddToCart ? (
+                  <td>
+                    <button
+                      type="button"
+                      className="table-action-button"
+                      onClick={() => onAddToCart(row)}
+                      disabled={cartRowSet.has(row.row_num) || row.label === 'SOLD'}
+                    >
+                      {cartRowSet.has(row.row_num) ? 'Added' : 'Add To Cart'}
+                    </button>
+                  </td>
+                ) : null}
+              </tr>
+            ))
+          ) : (
+            <tr>
+              <td colSpan={PRODUCT_SUMMARY_COLUMNS.length + (onAddToCart ? 4 : 3)} className="empty-state">
+                {emptyText}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CartView({
+  stockView,
+  productSearchText,
+  setProductSearchText,
+  filterMode,
+  setFilterMode,
+  cartPage,
+  setCartPage,
+  isLoading,
+  isRefreshing,
+  errorText,
+  onRefresh,
+  selectedProductDetail,
+  onOpenDetails,
+  onCloseProductDetails,
+  onSaveProductDetails,
+  savingProductDetails,
+  onAddToCart,
+  cartItems,
+  onUpdateCartItem,
+  onRemoveCartItem,
+  onReturnCartItem,
+  onCheckoutCart,
+  serviceDraft,
+  setServiceDraft,
+  onSubmitService,
+  serviceBusy,
+  pendingDealRows,
+  onReturnPendingDeal,
+  onUpdatePendingDealPayment,
+  returningPendingRow,
+  updatingPendingRow,
+  clientNameOptions,
+  sellerPhoneOptions,
+  currentTimeLabel,
+  cartBusy,
+}) {
+  const headers = stockView?.headers || [];
+  const rows = stockView?.all_rows_cache || [];
+  const rowsPerPage = 12;
+  const totalPages = Math.max(1, Math.ceil(rows.length / rowsPerPage));
+  const currentPage = Math.min(cartPage, totalPages);
+  const pagedRows = rows.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage);
+  const [cartModalOpen, setCartModalOpen] = useState(false);
+  const [serviceModalOpen, setServiceModalOpen] = useState(false);
+  const [pendingModalOpen, setPendingModalOpen] = useState(false);
+  const [pendingPaymentDrafts, setPendingPaymentDrafts] = useState({});
+
+  function derivePendingDraftFromRow(row) {
+    const rawStatus = String(row?.inventory_status || '').trim().toUpperCase();
+    const status = rawStatus === 'PAID' || rawStatus === 'PART PAYMENT' || rawStatus === 'UNPAID'
+      ? rawStatus
+      : 'UNPAID';
+    return {
+      status,
+      amount_paid: String(row?.inventory_amount_paid || '').trim(),
+    };
+  }
+
+  function getPendingDraft(row) {
+    const key = String(row?.row_num || '');
+    if (!key) {
+      return { status: 'UNPAID', amount_paid: '' };
+    }
+    return pendingPaymentDrafts[key] || derivePendingDraftFromRow(row);
+  }
+
+  function updatePendingDraft(rowNum, field, value) {
+    const key = String(rowNum);
+    setPendingPaymentDrafts((current) => ({
+      ...current,
+      [key]: {
+        status: current[key]?.status || 'UNPAID',
+        amount_paid: current[key]?.amount_paid || '',
+        [field]: value,
+      },
+    }));
+  }
+
+  return (
+    <div className="workspace-stack">
+      <section className="content-panel content-panel--main content-panel--full">
+        <div className="panel-header">
+          <h3>Sell From Stock</h3>
+          <p>Pick phones from stock, set buyer details, and queue each sale cleanly into both stock and inventory sheets. Time is auto-captured from your device clock ({currentTimeLabel}).</p>
+        </div>
+
+        <div className="panel-toolbar">
+          <div className="search-group">
+            <label htmlFor="cart-search">Search stock for cart:</label>
+            <input
+              id="cart-search"
+              type="search"
+              placeholder="IMEI, model, seller, buyer..."
+              value={productSearchText}
+              onChange={(event) => setProductSearchText(event.target.value)}
+            />
+          </div>
+
+          <div className="toolbar-controls">
+            <div className="filter-tabs" role="tablist" aria-label="Cart stock filters">
+              {CART_FILTERS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={option.value === filterMode ? 'filter-tab active' : 'filter-tab'}
+                  onClick={() => setFilterMode(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            <button type="button" className="primary-button" onClick={onRefresh}>
+              {isRefreshing ? 'Refreshing...' : 'Refresh'}
+            </button>
+          </div>
+        </div>
+
+        {errorText ? <div className="notice notice-error">{errorText}</div> : null}
+        {isLoading ? <div className="notice">Loading stock for the cart...</div> : null}
+
+        <ProductSummaryTable
+          headers={headers}
+          rows={pagedRows}
+          emptyText="No stock items are ready for the current cart filter."
+          onOpenDetails={onOpenDetails}
+          onAddToCart={onAddToCart}
+          cartRowNumbers={cartItems.map((item) => item.stock_row_num)}
+        />
+
+        <div className="page-nav-wrap">
+          <PageNavigator page={currentPage} totalPages={totalPages} onChange={setCartPage} />
+        </div>
+      </section>
+
+      {selectedProductDetail ? (
+        <ProductDetailModal
+          row={selectedProductDetail}
+          headers={headers}
+          onClose={onCloseProductDetails}
+          onSave={onSaveProductDetails}
+          saving={savingProductDetails}
+        />
+      ) : null}
+
+      <datalist id="buyer-name-options">
+        {(clientNameOptions || []).map((name) => (
+          <option key={name} value={name} />
+        ))}
+      </datalist>
+      <datalist id="buyer-phone-options">
+        {(sellerPhoneOptions || []).map((phoneLabel) => (
+          <option key={phoneLabel} value={phoneLabel} />
+        ))}
+      </datalist>
+
+      <div className="floating-action-stack">
+        <button
+          type="button"
+          className="floating-action-button"
+          onClick={() => setCartModalOpen(true)}
+          aria-label="Open sales cart"
+          title="Sales cart"
+        >
+          🧾
+          <span className="floating-action-badge">{formatCount(cartItems.length)}</span>
+        </button>
+        <button
+          type="button"
+          className="floating-action-button"
+          onClick={() => setPendingModalOpen(true)}
+          aria-label="Open pending deals"
+          title="Pending deals"
+        >
+          ⏳
+          <span className="floating-action-badge">{formatCount((pendingDealRows || []).length)}</span>
+        </button>
+        <button
+          type="button"
+          className="floating-action-button floating-action-button--service"
+          onClick={() => setServiceModalOpen(true)}
+          aria-label="Open add service"
+          title="Add service"
+        >
+          🛠
+        </button>
+      </div>
+
+      {cartModalOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setCartModalOpen(false)}>
+          <section className="modal-sheet modal-sheet--detail" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-sheet__header">
+              <div className="panel-header">
+                <h3>Sales Cart</h3>
+                <p>Each cart line writes buyer details to stock and appends a new inventory row without overwriting existing text.</p>
+              </div>
+              <button type="button" className="secondary-button" onClick={() => setCartModalOpen(false)}>Close</button>
+            </div>
+
+            <div className="cart-items">
+              {cartItems.length ? (
+                cartItems.map((item) => (
+                  <article key={item.stock_row_num} className="cart-item">
+                    <div className="cart-item__header">
+                      <div>
+                        <strong>#{item.stock_row_num} {item.description || 'Selected phone'}</strong>
+                        <span className="cart-item__meta">IMEI: {item.imei || '—'} | Cost Price: {item.cost_price || '—'}</span>
+                      </div>
+
+                      <button type="button" className="secondary-button" onClick={() => onRemoveCartItem(item.stock_row_num)} disabled={cartBusy}>
+                        Remove
+                      </button>
+                      <button type="button" className="secondary-button" onClick={() => onReturnCartItem(item.stock_row_num)} disabled={cartBusy}>
+                        Return
+                      </button>
+                    </div>
+
+                    <div className="cart-item__grid">
+                      <label className="field-block">
+                        <span className="field-label">Buyer Name</span>
+                        <input
+                          type="text"
+                          list="buyer-name-options"
+                          value={item.buyer_name}
+                          onChange={(event) => onUpdateCartItem(item.stock_row_num, 'buyer_name', event.target.value)}
+                          placeholder="Buyer name"
+                        />
+                      </label>
+
+                      <label className="field-block">
+                        <span className="field-label">Buyer Phone</span>
+                        <input
+                          type="text"
+                          inputMode="tel"
+                          list="buyer-phone-options"
+                          value={item.buyer_phone}
+                          onChange={(event) => onUpdateCartItem(item.stock_row_num, 'buyer_phone', extractPhoneFromSuggestionText(event.target.value))}
+                          placeholder="090..., 23490..., or +23490..."
+                        />
+                      </label>
+
+                      <label className="field-block">
+                        <span className="field-label">Amount Sold</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={item.sale_price}
+                          onChange={(event) => onUpdateCartItem(item.stock_row_num, 'sale_price', normalizeDigits(event.target.value))}
+                          placeholder="Selling price"
+                        />
+                      </label>
+
+                      <label className="field-block field-block--wide">
+                        <span className="field-label">Status State</span>
+                        <select value={item.payment_status} onChange={(event) => onUpdateCartItem(item.stock_row_num, 'payment_status', event.target.value)}>
+                          {CART_PAYMENT_STATUS_OPTIONS.map((option) => (
+                            <option key={option} value={option}>{option}</option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="field-block">
+                        <span className="field-label">Availability</span>
+                        <select value={item.availability_choice || 'AUTO'} onChange={(event) => onUpdateCartItem(item.stock_row_num, 'availability_choice', event.target.value)}>
+                          <option value="AUTO">Auto</option>
+                          <option value="TODAY">Today</option>
+                          <option value="PENDING">Pending Deal</option>
+                          <option value="CLEAR">Clear</option>
+                          <option value="CUSTOM">Custom</option>
+                        </select>
+                      </label>
+
+                      {item.availability_choice === 'CUSTOM' ? (
+                        <label className="field-block field-block--wide">
+                          <span className="field-label">Custom Availability Text</span>
+                          <input
+                            type="text"
+                            value={item.availability_custom || ''}
+                            onChange={(event) => onUpdateCartItem(item.stock_row_num, 'availability_custom', event.target.value)}
+                            placeholder="e.g. 03/08/2026 or RESERVED"
+                          />
+                        </label>
+                      ) : null}
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <div className="notice">Add phones from the stock list to start the cart.</div>
+              )}
+            </div>
+
+            <div className="button-row button-row--end">
+              <button type="button" className="primary-button" onClick={onCheckoutCart} disabled={cartBusy || !cartItems.length}>
+                {cartBusy ? 'Selling Phones...' : 'Sell Out Cart'}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {serviceModalOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setServiceModalOpen(false)}>
+          <section className="modal-sheet" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-sheet__header">
+              <div className="panel-header">
+                <h3>Add Service</h3>
+                <p>Create a non-stock service row directly in inventory.</p>
+              </div>
+              <button type="button" className="secondary-button" onClick={() => setServiceModalOpen(false)}>Close</button>
+            </div>
+
+            <div className="form-grid form-grid--modal">
+              <label className="field-block">
+                <span className="field-label">Customer Name</span>
+                <input
+                  type="text"
+                  list="buyer-name-options"
+                  value={serviceDraft.name}
+                  onChange={(event) => setServiceDraft((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="Customer name"
+                />
+              </label>
+
+              <label className="field-block">
+                <span className="field-label">Phone Number</span>
+                <input
+                  type="text"
+                  inputMode="tel"
+                  list="buyer-phone-options"
+                  value={serviceDraft.phone}
+                  onChange={(event) => setServiceDraft((current) => ({ ...current, phone: extractPhoneFromSuggestionText(event.target.value) }))}
+                  placeholder="080..., 234..., +234..."
+                />
+              </label>
+
+              <label className="field-block field-block--wide">
+                <span className="field-label">Description</span>
+                <input
+                  type="text"
+                  value={serviceDraft.description}
+                  onChange={(event) => setServiceDraft((current) => ({ ...current, description: event.target.value }))}
+                  placeholder="Service description"
+                />
+              </label>
+
+              <label className="field-block">
+                <span className="field-label">Price</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={serviceDraft.price}
+                  onChange={(event) => setServiceDraft((current) => ({ ...current, price: normalizeDigits(event.target.value) }))}
+                  placeholder="Amount charged"
+                />
+              </label>
+
+              <label className="field-block">
+                <span className="field-label">Amount Paid</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={serviceDraft.amount_paid}
+                  onChange={(event) => setServiceDraft((current) => ({ ...current, amount_paid: normalizeDigits(event.target.value) }))}
+                  placeholder="Amount received"
+                />
+              </label>
+
+              <label className="field-block">
+                <span className="field-label">Status</span>
+                <select value={serviceDraft.status} onChange={(event) => setServiceDraft((current) => ({ ...current, status: event.target.value }))}>
+                  <option value="UNPAID">UNPAID</option>
+                  <option value="PAID">PAID</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="button-row button-row--end">
+              <button type="button" className="primary-button" onClick={onSubmitService} disabled={serviceBusy}>
+                {serviceBusy ? 'Adding Service...' : 'Add Service'}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {pendingModalOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setPendingModalOpen(false)}>
+          <section className="modal-sheet" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-sheet__header">
+              <div className="panel-header">
+                <h3>Pending Deals</h3>
+                <p>Update payment fulfillment directly here. Changes sync to both stock and inventory.</p>
+              </div>
+              <button type="button" className="secondary-button" onClick={() => setPendingModalOpen(false)}>Close</button>
+            </div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Row</th>
+                    <th>Description</th>
+                    <th>Buyer</th>
+                    <th>Payment Fulfillment</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(pendingDealRows || []).length ? (pendingDealRows || []).map((row) => {
+                    const draft = getPendingDraft(row);
+                    const rowBusy = returningPendingRow === row.row_num || updatingPendingRow === row.row_num;
+                    return (
+                      <tr key={`cart-pending-${row.row_num}`}>
+                        <td>#{row.row_num}</td>
+                        <td>{getProductCellValue(row, headers, ['DESCRIPTION', 'MODEL', 'DEVICE']) || '—'}</td>
+                        <td>{getProductCellValue(row, headers, ['NAME OF BUYER']) || '—'}</td>
+                        <td>
+                          <div className="inline-action-row">
+                            <select
+                              value={draft.status}
+                              onChange={(event) => updatePendingDraft(row.row_num, 'status', event.target.value)}
+                              disabled={rowBusy}
+                            >
+                              <option value="PAID">PAID</option>
+                              <option value="PART PAYMENT">PART PAYMENT</option>
+                              <option value="UNPAID">UNPAID</option>
+                            </select>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={draft.amount_paid}
+                              onChange={(event) => updatePendingDraft(row.row_num, 'amount_paid', normalizeDigits(event.target.value))}
+                              placeholder="Amount paid (optional)"
+                              disabled={rowBusy}
+                            />
+                          </div>
+                        </td>
+                        <td>
+                          <div className="inline-action-row">
+                            <button
+                              type="button"
+                              className="primary-button"
+                              onClick={() => onUpdatePendingDealPayment(row.row_num, draft.status, draft.amount_paid)}
+                              disabled={rowBusy}
+                            >
+                              {updatingPendingRow === row.row_num ? 'Updating...' : 'Apply'}
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => onReturnPendingDeal(row.row_num)}
+                              disabled={rowBusy}
+                            >
+                              {returningPendingRow === row.row_num ? 'Returning...' : 'Return'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  }) : (
+                    <tr>
+                      <td colSpan={5} className="empty-state">No pending deals found.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProductsView({
+  stockView,
+  stockForm,
+  productFormValues,
+  setProductFormValues,
+  productSearchText,
+  setProductSearchText,
+  filterMode,
+  setFilterMode,
+  stockPage,
+  setStockPage,
+  isLoading,
+  isRefreshing,
+  isAddingProduct,
+  isProductComposerOpen,
+  errorText,
+  onRefresh,
+  selectedProductDetail,
+  onOpenProductDetails,
+  onCloseProductDetails,
+  onSaveProductDetails,
+  savingProductDetails,
+  onOpenProductComposer,
+  onCloseProductComposer,
+  onSubmitProduct,
+  onResetProductForm,
+  sellerPhoneOptions,
+  sellerNameOptions,
+  sellerPhoneByName,
+  currentTimeLabel,
+}) {
+  const headers = stockView?.headers || [];
+  const rows = stockView?.all_rows_cache || [];
+  const counts = stockView?.counts || {};
+  const rowsPerPage = 20;
+  const totalPages = Math.max(1, Math.ceil(rows.length / rowsPerPage));
+  const currentPage = Math.min(stockPage, totalPages);
+  const pagedRows = rows.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage);
+
+  return (
+    <div className="workspace-stack">
+      <section className="summary-frame">
+        <h2>Product Statistics</h2>
+        <div className="summary-grid">
+          <article className="metric-card">
+            <span className="metric-label">Available</span>
+            <strong className="metric-value">{formatCount(counts.available)}</strong>
+            <span className="metric-note">Ready to sell.</span>
+          </article>
+          <article className="metric-card">
+            <span className="metric-label">Pending Deal</span>
+            <strong className="metric-value">{formatCount(counts.pending)}</strong>
+            <span className="metric-note">Still open.</span>
+          </article>
+          <article className="metric-card">
+            <span className="metric-label">Needs Details</span>
+            <strong className="metric-value">{formatCount(counts.needs_details)}</strong>
+            <span className="metric-note">Requires cleanup.</span>
+          </article>
+          <article className="metric-card">
+            <span className="metric-label">Sold</span>
+            <strong className="metric-value">{formatCount(counts.sold)}</strong>
+            <span className="metric-note">Closed stock.</span>
+          </article>
+        </div>
+      </section>
+
+      <section className="content-panel content-panel--main content-panel--full">
+        <div className="panel-header">
+          <h3>Product List</h3>
+          <p>Search the stock sheet, switch filters, and browse products twenty items at a time across the full workspace width.</p>
+        </div>
+
+        <div className="panel-toolbar">
+          <div className="search-group">
+            <label htmlFor="product-search">Search products:</label>
+            <input
+              id="product-search"
+              type="search"
+              placeholder="IMEI, model, seller, buyer..."
+              value={productSearchText}
+              onChange={(event) => setProductSearchText(event.target.value)}
+            />
+          </div>
+
+          <div className="toolbar-controls">
+            <div className="filter-tabs" role="tablist" aria-label="Product filters">
+              {PRODUCT_FILTERS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={option.value === filterMode ? 'filter-tab active' : 'filter-tab'}
+                  onClick={() => setFilterMode(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            <button type="button" className="primary-button" onClick={onRefresh}>
+              {isRefreshing ? 'Refreshing...' : 'Refresh'}
+            </button>
+          </div>
+        </div>
+
+        {errorText ? <div className="notice notice-error">{errorText}</div> : null}
+        {isLoading ? <div className="notice">Loading products...</div> : null}
+
+        <ProductSummaryTable
+          headers={headers}
+          rows={pagedRows}
+          emptyText="No products matched the current filters."
+          onOpenDetails={onOpenProductDetails}
+        />
+
+        <div className="page-nav-wrap">
+          <PageNavigator page={currentPage} totalPages={totalPages} onChange={setStockPage} />
+        </div>
+      </section>
+
+      <button
+        type="button"
+        className="floating-action-button floating-action-button--add"
+        onClick={onOpenProductComposer}
+        aria-label="Open add product form"
+        title="Add product"
+      >
+        +
+      </button>
+
+      {isProductComposerOpen ? (
+        <ProductComposerModal
+          stockForm={stockForm}
+          productFormValues={productFormValues}
+          isAddingProduct={isAddingProduct}
+          onClose={onCloseProductComposer}
+          onSubmitProduct={onSubmitProduct}
+          onResetProductForm={onResetProductForm}
+          sellerPhoneOptions={sellerPhoneOptions}
+          sellerNameOptions={sellerNameOptions}
+          sellerPhoneByName={sellerPhoneByName}
+          currentTimeLabel={currentTimeLabel}
+        />
+      ) : null}
+
+      {selectedProductDetail ? (
+        <ProductDetailModal
+          row={selectedProductDetail}
+          headers={headers}
+          onClose={onCloseProductDetails}
+          onSave={onSaveProductDetails}
+          saving={savingProductDetails}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function DebtorsView({
+  debtors,
+  debtorPage,
+  setDebtorPage,
+  debtorSearch,
+  setDebtorSearch,
+  selectedDebtor,
+  onSelectDebtor,
+  billText,
+  outstandingItems,
+  paymentAmount,
+  setPaymentAmount,
+  selectedServiceRow,
+  setSelectedServiceRow,
+  paymentPlan,
+  paymentPlanError,
+  detailLoading,
+  applyingPayment,
+  onCopyBill,
+  onQuickCopyBill,
+  onSendWhatsapp,
+  onRefreshTodayUnpaid,
+  onSendTodayUnpaidCustomer,
+  sendingTodayBills,
+  unpaidTodaySummary,
+  whatsappHistoryByName,
+  onApplyPayment,
+}) {
+  const rowsPerPage = 10;
+  const totalPages = Math.max(1, Math.ceil(debtors.length / rowsPerPage));
+  const currentPage = Math.min(debtorPage, totalPages);
+  const pagedDebtors = debtors.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage);
+
+  const selectedSendStats = selectedDebtor ? whatsappHistoryByName?.[selectedDebtor] : null;
+
+  return (
+    <section className="workspace-row">
+      <section className="content-panel content-panel--main">
+        <div className="panel-header">
+          <h3>Debtors List</h3>
+          <p>Search your debtors, copy or send the current bill, and move through the list one page at a time.</p>
+        </div>
+
+        <div className="panel-toolbar">
+          <div className="search-group">
+            <label htmlFor="debtor-search">Search debtors:</label>
+            <input
+              id="debtor-search"
+              type="search"
+              placeholder="Customer name..."
+              value={debtorSearch}
+              onChange={(event) => setDebtorSearch(event.target.value)}
+            />
+          </div>
+
+          <div className="toolbar-actions">
+            <button type="button" className="secondary-button" onClick={onCopyBill} disabled={!selectedDebtor || detailLoading}>
+              Copy Bill To Clipboard
+            </button>
+            <button type="button" className="primary-button" onClick={onSendWhatsapp} disabled={!selectedDebtor || detailLoading}>
+              Send To WhatsApp
+            </button>
+            <button type="button" className="secondary-button" onClick={onRefreshTodayUnpaid} disabled={sendingTodayBills}>
+              {sendingTodayBills ? 'Loading Today List...' : 'Refresh Today Unpaid List'}
+            </button>
+          </div>
+        </div>
+
+        <div className="notice compact">
+          Today unpaid customers: {formatCount(unpaidTodaySummary?.count || 0)} | With phone: {formatCount(unpaidTodaySummary?.with_phone_count || 0)}
+        </div>
+
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Outstanding Amount</th>
+                <th>WhatsApp Sends</th>
+                <th>Last Sent</th>
+                <th>Quick Copy</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pagedDebtors.length ? (
+                pagedDebtors.map(([name, amount]) => (
+                  (() => {
+                    const sendStats = whatsappHistoryByName?.[name] || {};
+                    return (
+                  <tr
+                    key={name}
+                    className={name === selectedDebtor ? 'table-row-selected' : ''}
+                    onClick={() => onSelectDebtor(name)}
+                  >
+                    <td>{name}</td>
+                    <td className="amount-cell">{formatCurrency(amount)}</td>
+                    <td>{formatCount(sendStats.send_count || 0)}</td>
+                    <td>{sendStats.last_sent_at ? sendStats.last_sent_at.replace('T', ' ').slice(0, 16) : 'Never'}</td>
+                    <td className="row-actions-cell">
+                      <button
+                        type="button"
+                        className="table-action-button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onQuickCopyBill(name);
+                        }}
+                      >
+                        Copy
+                      </button>
+                    </td>
+                  </tr>
+                    );
+                  })()
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={5} className="empty-state">No debtors matched the current filter.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="page-nav-wrap">
+          <PageNavigator page={currentPage} totalPages={totalPages} onChange={setDebtorPage} />
+        </div>
+
+        <div className="panel-header" style={{ marginTop: '16px' }}>
+          <h3>Today Unpaid Customers</h3>
+          <p>Customers serviced today who have not fully paid. Send each bill one by one at end of day.</p>
+        </div>
+
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Services Today</th>
+                <th>Outstanding Today</th>
+                <th>Sends</th>
+                <th>Last Sent</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(unpaidTodaySummary?.customers || []).length ? (
+                (unpaidTodaySummary?.customers || []).map((entry) => {
+                  const tracked = whatsappHistoryByName?.[entry.name] || entry.send_stats || {};
+                  return (
+                    <tr key={`today-${entry.name}`}>
+                      <td>{entry.name}</td>
+                      <td>{formatCount(entry.services_today || 0)}</td>
+                      <td className="amount-cell">{formatCurrency(entry.outstanding_today || 0)}</td>
+                      <td>{formatCount(tracked.send_count || 0)}</td>
+                      <td>{tracked.last_sent_at ? tracked.last_sent_at.replace('T', ' ').slice(0, 16) : 'Never'}</td>
+                      <td className="row-actions-cell">
+                        <button
+                          type="button"
+                          className="table-action-button"
+                          onClick={() => onSendTodayUnpaidCustomer(entry)}
+                          disabled={!entry.has_phone || sendingTodayBills}
+                          title={entry.has_phone ? 'Open WhatsApp bill for this customer' : 'No phone saved for this customer'}
+                        >
+                          {entry.has_phone ? 'Send Bill' : 'No Phone'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan={6} className="empty-state">No unpaid customers found for today.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside className="content-panel content-panel--side content-panel--stacked">
+        <div className="subpanel">
+          <div className="panel-header">
+            <h3>Payment Update</h3>
+            <p>Choose the debtor, enter the amount received, and target a specific service if needed.</p>
+          </div>
+
+          <div className="form-stack">
+            <label className="field-block">
+              <span className="field-label">Selected Customer</span>
+              <input type="text" readOnly value={selectedDebtor} placeholder="Select a debtor from the list" />
+            </label>
+
+            <label className="field-block">
+              <span className="field-label">Payment Amount</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={paymentAmount}
+                onChange={(event) => setPaymentAmount(normalizeDigits(event.target.value))}
+                placeholder="Amount received"
+              />
+            </label>
+
+            <label className="field-block">
+              <span className="field-label">Service Target</span>
+              <select value={selectedServiceRow} onChange={(event) => setSelectedServiceRow(event.target.value)}>
+                <option value="automatic">Automatic sequence</option>
+                {outstandingItems.map((item) => (
+                  <option key={item.row_idx} value={String(item.row_idx)}>
+                    {buildOutstandingLabel(item)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button type="button" className="primary-button button-wide" onClick={onApplyPayment} disabled={applyingPayment || !selectedDebtor}>
+              {applyingPayment ? 'Applying Payment...' : 'Apply Payment'}
+            </button>
+          </div>
+
+          <div className="preview-card">
+            <h4>Payment Preview</h4>
+            <pre>{buildPaymentPreviewText(selectedDebtor, paymentAmount, paymentPlan, paymentPlanError)}</pre>
+          </div>
+        </div>
+
+        <div className="subpanel subpanel--muted">
+          <div className="panel-header">
+            <h3>Bill Preview</h3>
+            <p>Live bill text for the selected debtor.</p>
+          </div>
+
+          <div className="preview-card preview-card--bill">
+            <pre>{detailLoading ? 'Loading bill preview...' : billText || 'Select a debtor to preview the bill.'}</pre>
+          </div>
+
+          <div className="meta-stack">
+            <div className="meta-row">
+              <span>WhatsApp sends for selected</span>
+              <strong>{formatCount(selectedSendStats?.send_count || 0)}</strong>
+            </div>
+            <div className="meta-row">
+              <span>Last sent</span>
+              <strong>{selectedSendStats?.last_sent_at ? selectedSendStats.last_sent_at.replace('T', ' ').slice(0, 16) : 'Never'}</strong>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </section>
+  );
+}
+
+function ClientsView({
+  clients,
+  clientPage,
+  setClientPage,
+  clientSearch,
+  setClientSearch,
+  clientForm,
+  setClientForm,
+  clientsBusy,
+  onSelectClient,
+  onSaveClient,
+  onDeleteClient,
+  onImportPhones,
+  googleContacts,
+  googleSearch,
+  setGoogleSearch,
+  googleContactPage,
+  setGoogleContactPage,
+  selectedGoogleContact,
+  onSelectGoogleContact,
+  onSyncGoogleContacts,
+  onApplyGoogleContact,
+  googleContactsBusy,
+  googleContactsError,
+  stats,
+}) {
+  const rowsPerPage = 10;
+  const totalPages = Math.max(1, Math.ceil(clients.length / rowsPerPage));
+  const currentPage = Math.min(clientPage, totalPages);
+  const pagedClients = clients.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage);
+
+  const contactsPerPage = 10;
+  const totalContactPages = Math.max(1, Math.ceil((googleContacts.contacts || []).length / contactsPerPage));
+  const currentContactPage = Math.min(googleContactPage, totalContactPages);
+  const pagedContacts = (googleContacts.contacts || []).slice((currentContactPage - 1) * contactsPerPage, currentContactPage * contactsPerPage);
+
+  return (
+    <section className="workspace-row">
+      <section className="content-panel content-panel--main">
+        <div className="panel-header">
+          <h3>Client List</h3>
+          <p>Ten client records per page, with search and page navigation underneath.</p>
+        </div>
+
+        <div className="panel-toolbar">
+          <div className="search-group">
+            <label htmlFor="client-search">Search clients:</label>
+            <input
+              id="client-search"
+              type="search"
+              placeholder="Client name or phone number..."
+              value={clientSearch}
+              onChange={(event) => setClientSearch(event.target.value)}
+            />
+          </div>
+
+          <div className="toolbar-actions">
+            <button type="button" className="secondary-button" onClick={onImportPhones} disabled={clientsBusy}>
+              Import Sheet Phones
+            </button>
+          </div>
+        </div>
+
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>WhatsApp Number</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pagedClients.length ? (
+                pagedClients.map((entry) => (
+                  <tr key={entry.name} onClick={() => onSelectClient(entry)}>
+                    <td>{entry.name}</td>
+                    <td>{entry.phone || '—'}</td>
+                    <td>{entry.has_phone ? 'Saved' : 'Missing Number'}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={3} className="empty-state">No clients matched the current filter.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="page-nav-wrap">
+          <PageNavigator page={currentPage} totalPages={totalPages} onChange={setClientPage} />
+        </div>
+      </section>
+
+      <aside className="content-panel content-panel--side content-panel--stacked">
+        <div className="subpanel">
+          <div className="panel-header">
+            <h3>Client Editor</h3>
+            <p>Save a number in either local or international format and it will be normalized automatically.</p>
+          </div>
+
+          <div className="form-stack">
+            <label className="field-block">
+              <span className="field-label">Client Name</span>
+              <input
+                type="text"
+                value={clientForm.name}
+                onChange={(event) => setClientForm((current) => ({ ...current, name: event.target.value }))}
+                placeholder="Client name"
+              />
+            </label>
+
+            <label className="field-block">
+              <span className="field-label">WhatsApp Number</span>
+              <input
+                type="text"
+                inputMode="tel"
+                value={clientForm.phone}
+                onChange={(event) => setClientForm((current) => ({ ...current, phone: event.target.value }))}
+                placeholder="090..., 23490..., or +23490..."
+              />
+            </label>
+
+            <div className="button-row">
+              <button type="button" className="primary-button" onClick={onSaveClient} disabled={clientsBusy}>
+                {clientsBusy ? 'Saving...' : 'Save Client'}
+              </button>
+              <button type="button" className="secondary-button" onClick={onDeleteClient} disabled={clientsBusy || !clientForm.name}>
+                Delete Client
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="subpanel subpanel--muted">
+          <div className="panel-header">
+            <h3>Client Statistics</h3>
+            <p>Phone coverage now lives here instead of the main dashboard.</p>
+          </div>
+
+          <div className="meta-stack">
+            <div className="meta-row">
+              <span>Total clients</span>
+              <strong>{formatCount(stats.total_count)}</strong>
+            </div>
+            <div className="meta-row">
+              <span>Clients with phone</span>
+              <strong>{formatCount(stats.with_phone_count)}</strong>
+            </div>
+            <div className="meta-row">
+              <span>Clients missing phone</span>
+              <strong>{formatCount(stats.without_phone_count)}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div className="subpanel">
+          <div className="panel-header">
+            <h3>Google Contacts</h3>
+            <p>Load your cached Google contacts, search them, and click a contact row to fill the current client phone number.</p>
+          </div>
+
+          <div className="form-stack">
+            <div className="button-row">
+              <button type="button" className="primary-button" onClick={onSyncGoogleContacts} disabled={googleContactsBusy}>
+                {googleContactsBusy ? 'Syncing Contacts...' : 'Sync Google Contacts'}
+              </button>
+              <button type="button" className="secondary-button" onClick={onApplyGoogleContact} disabled={!selectedGoogleContact || clientsBusy}>
+                Use Selected Contact
+              </button>
+            </div>
+
+            <label className="field-block">
+              <span className="field-label">Search Synced Contacts</span>
+              <input
+                type="search"
+                value={googleSearch}
+                onChange={(event) => setGoogleSearch(event.target.value)}
+                placeholder="Contact name or number..."
+              />
+            </label>
+          </div>
+
+          {googleContactsError ? <div className="notice notice-error">{googleContactsError}</div> : null}
+
+          <div className="contacts-meta">
+            <span>Loaded: {formatCount(googleContacts.total_cached)}</span>
+            <span>Last sync: {googleContacts.synced_at || 'Not synced yet'}</span>
+          </div>
+
+          <div className="table-wrap table-wrap--narrow">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Phone</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedContacts.length ? (
+                  pagedContacts.map((contact) => {
+                    const key = `${contact.name}-${contact.phone}`;
+                    return (
+                      <tr
+                        key={key}
+                        className={selectedGoogleContact?.phone === contact.phone && selectedGoogleContact?.name === contact.name ? 'table-row-selected' : ''}
+                        onClick={() => onSelectGoogleContact(contact)}
+                      >
+                        <td>{contact.name}</td>
+                        <td>{contact.phone}</td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={2} className="empty-state">Sync Google Contacts to search and use contact numbers.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="page-nav-wrap page-nav-wrap--tight">
+            <PageNavigator page={currentContactPage} totalPages={totalContactPages} onChange={setGoogleContactPage} />
+          </div>
+        </div>
+      </aside>
+    </section>
+  );
+}
+
+function FixView({ mismatches, selectedMismatch, correctName, setCorrectName, onSelectMismatch, onApplyFix, onApplyAll, onRescan, loading, applying }) {
+  return (
+    <section className="workspace-row">
+      <section className="content-panel content-panel--main">
+        <div className="panel-header">
+          <h3>Fix Queue</h3>
+          <p>Rescan live records, inspect the best suggestions, and apply one or all fixes.</p>
+        </div>
+
+        <div className="panel-toolbar">
+          <div className="toolbar-actions toolbar-actions--full">
+            <button type="button" className="secondary-button" onClick={onRescan} disabled={loading || applying}>
+              {loading ? 'Scanning...' : 'Rescan Sheet'}
+            </button>
+            <button type="button" className="primary-button" onClick={onApplyAll} disabled={!mismatches.length || loading || applying}>
+              {applying ? 'Working...' : 'Fix All'}
+            </button>
+          </div>
+        </div>
+
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Sheet Name</th>
+                <th>Rows</th>
+                <th>Top Suggestion</th>
+              </tr>
+            </thead>
+            <tbody>
+              {mismatches.length ? (
+                mismatches.map((entry) => (
+                  <tr
+                    key={entry.raw}
+                    className={selectedMismatch?.raw === entry.raw ? 'table-row-selected' : ''}
+                    onClick={() => onSelectMismatch(entry)}
+                  >
+                    <td>{entry.raw}</td>
+                    <td>{formatCount(entry.rows?.length)}</td>
+                    <td>{entry.candidates?.[0] || 'No suggestion'}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={3} className="empty-state">{loading ? 'Scanning live rows...' : 'No live name mismatches found.'}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside className="content-panel content-panel--side content-panel--stacked">
+        <div className="subpanel">
+          <div className="panel-header">
+            <h3>Selected Fix</h3>
+            <p>Pick the right replacement and apply it back to the source sheet.</p>
+          </div>
+
+          <div className="form-stack">
+            <label className="field-block">
+              <span className="field-label">Selected Sheet Name</span>
+              <input type="text" readOnly value={selectedMismatch?.raw || ''} placeholder="Choose a mismatch" />
+            </label>
+
+            <label className="field-block">
+              <span className="field-label">Replace With</span>
+              <input type="text" value={correctName} onChange={(event) => setCorrectName(event.target.value.toUpperCase())} placeholder="Correct customer name" />
+            </label>
+
+            <div className="token-row">
+              {(selectedMismatch?.candidates || []).map((candidate) => (
+                <button key={candidate} type="button" className="token-button" onClick={() => setCorrectName(candidate)}>
+                  {candidate}
+                </button>
+              ))}
+            </div>
+
+            <button type="button" className="primary-button button-wide" onClick={onApplyFix} disabled={!selectedMismatch || !correctName || applying}>
+              {applying ? 'Applying Fix...' : 'Apply Fix'}
+            </button>
+          </div>
+        </div>
+      </aside>
+    </section>
+  );
+}
+
+function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onReloadStatus }) {
+  const syncState = syncStatus?.sync_state || {};
+  const postgresSnapshot = syncStatus?.postgres_snapshot || {};
+  const cacheCounts = postgresSnapshot?.cache_counts || {};
+  const latestErrorText = formatRuntimeSnapshot(postgresSnapshot.latest_error || syncState.last_error, 'None');
+  const quotaWarning = /quota exceeded/i.test(latestErrorText) && /read requests/i.test(latestErrorText);
+
+  return (
+    <section className="workspace-row">
+      <section className="content-panel content-panel--main">
+        <div className="panel-header">
+          <h3>Runtime Status</h3>
+          <p>Inspect sync state, queue depth, and cached sheet row counts.</p>
+        </div>
+
+        <div className="settings-grid">
+          <article className="metric-card metric-card--soft">
+            <span className="metric-label">Postgres Ready</span>
+            <strong className="metric-value">{postgresSnapshot.ready ? 'Yes' : 'No'}</strong>
+            <span className="metric-note">DB-first reads and queue writes.</span>
+          </article>
+          <article className="metric-card metric-card--soft">
+            <span className="metric-label">Sheets Connected</span>
+            <strong className="metric-value">{syncStatus?.sheets_connected ? 'Yes' : 'No'}</strong>
+            <span className="metric-note">Google Sheets API availability.</span>
+          </article>
+          <article className="metric-card metric-card--soft">
+            <span className="metric-label">Queue Pending</span>
+            <strong className="metric-value">{formatCount(syncStatus?.queue_pending)}</strong>
+            <span className="metric-note">Operations still waiting to replay.</span>
+          </article>
+          <article className="metric-card metric-card--soft">
+            <span className="metric-label">Pull Interval</span>
+            <strong className="metric-value">{formatCount(postgresSnapshot.pull_interval_sec)}</strong>
+            <span className="metric-note">Seconds between background pulls.</span>
+          </article>
+        </div>
+
+        <div className="table-wrap table-wrap--compact">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Cache</th>
+                <th>Rows</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.keys(cacheCounts).length ? (
+                Object.entries(cacheCounts).map(([key, value]) => (
+                  <tr key={key}>
+                    <td>{key}</td>
+                    <td>{formatCount(getCacheRowCount(value))}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={2} className="empty-state">No cache counts reported yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside className="content-panel content-panel--side content-panel--stacked">
+        <div className="subpanel">
+          <div className="panel-header">
+            <h3>Sync Controls</h3>
+            <p>Run a full refresh or trigger a manual pull from the sheet.</p>
+          </div>
+
+          <div className="button-column">
+            <button type="button" className="primary-button" onClick={onRefreshWorkspace} disabled={syncBusy}>
+              {syncBusy ? 'Refreshing...' : 'Refresh Whole Workspace'}
+            </button>
+            <button type="button" className="secondary-button" onClick={onPullNow} disabled={syncBusy}>
+              Pull Sheets Now
+            </button>
+            <button type="button" className="secondary-button" onClick={onReloadStatus} disabled={syncBusy}>
+              Reload Status
+            </button>
+          </div>
+        </div>
+
+        <div className="subpanel subpanel--muted">
+          <div className="panel-header">
+            <h3>Backend Snapshot</h3>
+            <p>Formatted directly from the runtime metadata returned by the API.</p>
+          </div>
+
+          <div className="meta-stack">
+            <div className="meta-row">
+              <span>Runtime status</span>
+              <strong>{syncState.last_status || 'Unknown'}</strong>
+            </div>
+            <div className="meta-row">
+              <span>Latest pull</span>
+              <strong>{formatRuntimeSnapshot(postgresSnapshot.latest_pull, 'Not yet recorded')}</strong>
+            </div>
+            <div className="meta-row">
+              <span>Latest error</span>
+              <strong>{latestErrorText}</strong>
+            </div>
+          </div>
+
+          {quotaWarning ? (
+            <div className="notice compact">
+              Google Sheets read quota was hit. The workspace now avoids loading Fix data during unrelated refreshes, so wait briefly and then try Reload Status or Pull Sheets Now again.
+            </div>
+          ) : null}
+        </div>
+      </aside>
+    </section>
+  );
+}
+
+function WorkspaceApp() {
+  const [activeView, setActiveView] = useState('home');
+  const [statusText, setStatusText] = useState('Loading workspace...');
+  const [workspaceError, setWorkspaceError] = useState('');
+  const [lastLoadedAt, setLastLoadedAt] = useState(null);
+  const [revealedMetric, setRevealedMetric] = useState('');
+
+  const [debtorsData, setDebtorsData] = useState({ sorted_debtors: [], total_debtors_amount: 0 });
+  const [salesSnapshot, setSalesSnapshot] = useState({ daily_totals: [], week_totals: [] });
+  const [selectedDebtor, setSelectedDebtor] = useState('');
+  const [debtorSearch, setDebtorSearch] = useState('');
+  const deferredDebtorSearch = useDeferredValue(debtorSearch);
+  const [debtorPage, setDebtorPage] = useState(1);
+  const [billText, setBillText] = useState('Select a debtor from the list to preview the bill.');
+  const [outstandingItems, setOutstandingItems] = useState([]);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [selectedServiceRow, setSelectedServiceRow] = useState('automatic');
+  const [paymentPlan, setPaymentPlan] = useState(null);
+  const [paymentPlanError, setPaymentPlanError] = useState('');
+  const [isDebtorDetailLoading, setIsDebtorDetailLoading] = useState(false);
+  const [isApplyingPayment, setIsApplyingPayment] = useState(false);
+  const [undoEnabled, setUndoEnabled] = useState(false);
+  const [redoEnabled, setRedoEnabled] = useState(false);
+  const [whatsappHistoryByName, setWhatsappHistoryByName] = useState({});
+  const [unpaidTodaySummary, setUnpaidTodaySummary] = useState({ count: 0, with_phone_count: 0, customers: [] });
+  const [sendingTodayBills, setSendingTodayBills] = useState(false);
+
+  const [stockSearchText, setStockSearchText] = useState('');
+  const deferredStockSearchText = useDeferredValue(stockSearchText);
+  const [productFilterMode, setProductFilterMode] = useState('available');
+  const [cartFilterMode, setCartFilterMode] = useState('all');
+  const [stockView, setStockView] = useState(null);
+  const [stockForm, setStockForm] = useState({ visible_headers: [], defaults: {} });
+  const [productFormValues, setProductFormValues] = useState({});
+  const [stockPage, setStockPage] = useState(1);
+  const [cartPage, setCartPage] = useState(1);
+  const [isStockLoading, setIsStockLoading] = useState(false);
+  const [isStockRefreshing, setIsStockRefreshing] = useState(false);
+  const [isAddingProduct, setIsAddingProduct] = useState(false);
+  const [isProductComposerOpen, setIsProductComposerOpen] = useState(false);
+  const [stockErrorText, setStockErrorText] = useState('');
+  const [selectedProductDetail, setSelectedProductDetail] = useState(null);
+  const [isSavingProductDetail, setIsSavingProductDetail] = useState(false);
+  const [saleCartItems, setSaleCartItems] = useState([]);
+  const [cartBusy, setCartBusy] = useState(false);
+  const [serviceDraft, setServiceDraft] = useState({
+    name: '',
+    phone: '',
+    description: '',
+    price: '',
+    amount_paid: '',
+    status: 'UNPAID',
+  });
+  const [serviceBusy, setServiceBusy] = useState(false);
+  const [returningPendingRow, setReturningPendingRow] = useState(0);
+  const [updatingPendingRow, setUpdatingPendingRow] = useState(0);
+  const [currentTimeLabel, setCurrentTimeLabel] = useState(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
+
+  const [clientsData, setClientsData] = useState({ entries: [], registry: {}, stats: {} });
+  const [clientSearch, setClientSearch] = useState('');
+  const deferredClientSearch = useDeferredValue(clientSearch);
+  const [clientPage, setClientPage] = useState(1);
+  const [clientForm, setClientForm] = useState({ name: '', phone: '' });
+  const [clientsBusy, setClientsBusy] = useState(false);
+
+  const [googleContactsData, setGoogleContactsData] = useState({ contacts: [], total_cached: 0, synced_at: '' });
+  const [googleSearch, setGoogleSearch] = useState('');
+  const deferredGoogleSearch = useDeferredValue(googleSearch);
+  const [googleContactPage, setGoogleContactPage] = useState(1);
+  const [selectedGoogleContact, setSelectedGoogleContact] = useState(null);
+  const [googleContactsBusy, setGoogleContactsBusy] = useState(false);
+  const [googleContactsError, setGoogleContactsError] = useState('');
+  const [googleContactsLoadAttempted, setGoogleContactsLoadAttempted] = useState(false);
+
+  const [nameFixData, setNameFixData] = useState({ mismatches: [], count: 0 });
+  const [selectedMismatchRaw, setSelectedMismatchRaw] = useState('');
+  const [correctName, setCorrectName] = useState('');
+  const [isNameFixLoading, setIsNameFixLoading] = useState(false);
+  const [isNameFixApplying, setIsNameFixApplying] = useState(false);
+  const [nameFixLoadAttempted, setNameFixLoadAttempted] = useState(false);
+
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [coreLoading, setCoreLoading] = useState(true);
+  const [logoData, setLogoData] = useState({ data_url: '', file_name: '' });
+
+  const filteredDebtors = (debtorsData.sorted_debtors || []).filter(([name]) => {
+    const query = normalizeSearchValue(deferredDebtorSearch);
+    if (!query) {
+      return true;
+    }
+    return normalizeSearchValue(name).includes(query);
+  });
+
+  const filteredClients = (clientsData.entries || []).filter((entry) => {
+    const query = normalizeSearchValue(deferredClientSearch);
+    if (!query) {
+      return true;
+    }
+    return normalizeSearchValue(entry.name).includes(query) || normalizeSearchValue(entry.phone).includes(query);
+  });
+
+  const filteredGoogleContacts = (googleContactsData.contacts || []).filter((contact) => {
+    const query = normalizeSearchValue(deferredGoogleSearch);
+    if (!query) {
+      return true;
+    }
+    return normalizeSearchValue(contact.name).includes(query) || normalizeSearchValue(contact.phone).includes(query);
+  });
+
+  const googleContactsView = {
+    ...googleContactsData,
+    contacts: filteredGoogleContacts,
+  };
+
+  const selectedMismatch = (nameFixData.mismatches || []).find(
+    (entry) => normalizeSearchValue(entry.raw) === normalizeSearchValue(selectedMismatchRaw)
+  );
+
+  const activeMeta = VIEW_META[activeView] || VIEW_META.home;
+  const clientNameOptions = useMemo(() => (
+    Array.from(new Set([
+      ...Object.keys(clientsData.registry || {}),
+      ...(googleContactsData.contacts || []).map((entry) => String(entry.name || '').trim()).filter(Boolean),
+    ]))
+      .filter((name) => String(name || '').trim())
+      .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
+      .slice(0, 500)
+  ), [clientsData.registry, googleContactsData.contacts]);
+  const sellerPhoneOptions = useMemo(() => (
+    Array.from(new Set([
+      ...(clientsData.entries || []).map((entry) => {
+        const name = String(entry.name || '').trim();
+        const phone = normalizeWhatsappPhone(entry.phone || '');
+        return name && phone ? `${name} - ${phone}` : '';
+      }).filter(Boolean),
+      ...(googleContactsData.contacts || []).map((entry) => {
+        const name = String(entry.name || '').trim();
+        const phone = normalizeWhatsappPhone(entry.phone || '');
+        return name && phone ? `${name} - ${phone}` : '';
+      }).filter(Boolean),
+    ])).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' })).slice(0, 600)
+  ), [clientsData.entries, googleContactsData.contacts]);
+  const sellerPhoneByName = useMemo(() => {
+    const mapping = {};
+    (googleContactsData.contacts || []).forEach((entry) => {
+      const name = String(entry.name || '').trim().toUpperCase();
+      const phone = normalizeWhatsappPhone(entry.phone || '');
+      if (name && phone && !mapping[name]) {
+        mapping[name] = phone;
+      }
+    });
+    (clientsData.entries || []).forEach((entry) => {
+      const name = String(entry.name || '').trim().toUpperCase();
+      const phone = normalizeWhatsappPhone(entry.phone || '');
+      if (name && phone) {
+        mapping[name] = phone;
+      }
+    });
+    return mapping;
+  }, [clientsData.entries, googleContactsData.contacts]);
+  const sellerNameOptions = useMemo(
+    () => Object.keys(sellerPhoneByName).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' })),
+    [sellerPhoneByName]
+  );
+  const pendingDealRows = useMemo(
+    () => (stockView?.all_rows_cache || []).filter((row) => String(row.label || '').toUpperCase() === 'PENDING DEAL'),
+    [stockView?.all_rows_cache]
+  );
+
+  function applyClientRegistryToState(registry) {
+    const nextData = buildClientsDataFromRegistry(registry);
+    setClientsData(nextData);
+    return nextData;
+  }
+
+  async function loadCoreWorkspace(forceRefresh = false) {
+    setCoreLoading(true);
+    setWorkspaceError('');
+
+    const [debtorsResult, salesResult, clientsResult, syncResult, whatsappHistoryResult, unpaidTodayResult] = await Promise.allSettled([
+      fetchLiveDebtors({ forceRefresh }),
+      fetchLiveSalesSnapshot({ forceRefresh }),
+      fetchClients({ forceReload: true }),
+      fetchSyncStatus(),
+      fetchWhatsappHistory({ forceRefresh }),
+      fetchUnpaidToday({ forceRefresh }),
+    ]);
+
+    const failures = [];
+
+    if (debtorsResult.status === 'fulfilled') {
+      const nextDebtors = debtorsResult.value;
+      setDebtorsData(nextDebtors);
+      const availableNames = (nextDebtors.sorted_debtors || []).map(([name]) => name);
+      const nextSelected = availableNames.includes(selectedDebtor) ? selectedDebtor : availableNames[0] || '';
+      startTransition(() => setSelectedDebtor(nextSelected));
+    } else {
+      failures.push(debtorsResult.reason?.message || 'Could not load debtors.');
+    }
+
+    if (salesResult.status === 'fulfilled') {
+      setSalesSnapshot(salesResult.value);
+    } else {
+      failures.push(salesResult.reason?.message || 'Could not load sales snapshot.');
+    }
+
+    if (clientsResult.status === 'fulfilled') {
+      setClientsData(clientsResult.value);
+    } else {
+      failures.push(clientsResult.reason?.message || 'Could not load clients.');
+    }
+
+    if (syncResult.status === 'fulfilled') {
+      setSyncStatus(syncResult.value);
+    } else {
+      failures.push(syncResult.reason?.message || 'Could not load sync status.');
+    }
+
+    if (whatsappHistoryResult.status === 'fulfilled') {
+      setWhatsappHistoryByName(whatsappHistoryResult.value?.by_name || {});
+    }
+
+    if (unpaidTodayResult.status === 'fulfilled') {
+      setUnpaidTodaySummary(unpaidTodayResult.value || { count: 0, with_phone_count: 0, customers: [] });
+    }
+
+    setLastLoadedAt(new Date());
+    setWorkspaceError(failures.join(' | '));
+    setStatusText(failures.length ? failures[0] : forceRefresh ? 'Workspace refreshed.' : 'Ready');
+    setCoreLoading(false);
+  }
+
+  async function loadNameFixes({ forceRefresh = false, silent = false } = {}) {
+    setIsNameFixLoading(true);
+    setNameFixLoadAttempted(true);
+
+    try {
+      const result = await fetchNameFixes({ forceRefresh });
+      setNameFixData(result);
+
+      const nextSelectedRaw = result.mismatches?.some(
+        (entry) => normalizeSearchValue(entry.raw) === normalizeSearchValue(selectedMismatchRaw)
+      )
+        ? selectedMismatchRaw
+        : result.mismatches?.[0]?.raw || '';
+      const selectedEntry = result.mismatches?.find(
+        (entry) => normalizeSearchValue(entry.raw) === normalizeSearchValue(nextSelectedRaw)
+      );
+
+      setSelectedMismatchRaw(nextSelectedRaw);
+      setCorrectName(selectedEntry?.candidates?.[0] || '');
+      return result;
+    } catch (error) {
+      if (!silent) {
+        setStatusText(error.message || 'Could not load name-fix data.');
+      }
+      return null;
+    } finally {
+      setIsNameFixLoading(false);
+    }
+  }
+
+  async function loadGoogleContacts({ forceRefresh = false, silent = false } = {}) {
+    setGoogleContactsBusy(true);
+    setGoogleContactsError('');
+    setGoogleContactsLoadAttempted(true);
+
+    try {
+      const result = forceRefresh
+        ? await syncGoogleContacts()
+        : await fetchGoogleContacts();
+
+      setGoogleContactsData(result);
+      setSelectedGoogleContact((current) => {
+        if (!current) {
+          return null;
+        }
+
+        return (result.contacts || []).some(
+          (contact) => contact.name === current.name && contact.phone === current.phone
+        )
+          ? current
+          : null;
+      });
+
+      return result;
+    } catch (error) {
+      const message = error.message || (forceRefresh ? 'Could not sync Google Contacts.' : 'Could not load Google Contacts.');
+      setGoogleContactsError(message);
+      if (!silent) {
+        setStatusText(message);
+      }
+      return null;
+    } finally {
+      setGoogleContactsBusy(false);
+    }
+  }
+
+  async function loadStock(forceRefresh = false) {
+    setStockErrorText('');
+    if (stockView) {
+      setIsStockRefreshing(true);
+    } else {
+      setIsStockLoading(true);
+    }
+
+    try {
+      const activeFilterMode = activeView === 'cart' ? cartFilterMode : productFilterMode;
+      const result = await fetchStockDashboard({
+        filterText: deferredStockSearchText,
+        filterMode: activeFilterMode,
+        forceRefresh,
+      });
+      setStockView(result);
+      setLastLoadedAt(new Date());
+      setStatusText(forceRefresh ? 'Products refreshed.' : 'Ready');
+    } catch (error) {
+      setStockErrorText(error.message || 'Could not load products.');
+      setStatusText(error.message || 'Could not load products.');
+    } finally {
+      setIsStockLoading(false);
+      setIsStockRefreshing(false);
+    }
+  }
+
+  async function loadStockForm(forceRefresh = false, resetForm = false) {
+    try {
+      const result = await fetchStockForm({ forceRefresh });
+      setStockForm(result);
+      setProductFormValues((current) => {
+        if (!resetForm && Object.keys(current).length) {
+          return current;
+        }
+        return buildProductFormValues(result);
+      });
+      if (result.cost_price_inserted || ((stockView?.headers_upper || []).indexOf('COST PRICE') === -1 && (result.headers_upper || []).includes('COST PRICE'))) {
+        await loadStock(true);
+      }
+    } catch (error) {
+      setStatusText(error.message || 'Could not load the product form.');
+    }
+  }
+
+  async function loadSelectedDebtorDetails(name, forceRefresh = false) {
+    if (!name) {
+      setBillText('Select a debtor from the list to preview the bill.');
+      setOutstandingItems([]);
+      return;
+    }
+
+    setIsDebtorDetailLoading(true);
+    try {
+      const [billResult, itemsResult] = await Promise.all([
+        fetchLiveBill(name, { forceRefresh }),
+        fetchOutstandingItems(name, { forceRefresh }),
+      ]);
+      setBillText(billResult.bill_text || 'No outstanding bill for this customer.');
+      setOutstandingItems(itemsResult.outstanding_items || []);
+      setSelectedServiceRow((current) => {
+        if (current === 'automatic') {
+          return current;
+        }
+        return (itemsResult.outstanding_items || []).some((item) => String(item.row_idx) === String(current)) ? current : 'automatic';
+      });
+    } catch (error) {
+      setBillText(error.message || 'Could not load the bill preview.');
+      setOutstandingItems([]);
+    } finally {
+      setIsDebtorDetailLoading(false);
+    }
+  }
+
+  async function handleFullRefresh() {
+    setSyncBusy(true);
+    try {
+      await refreshWorkspace({ forceRefresh: true });
+      await loadCoreWorkspace(true);
+      await loadStock(true);
+      await loadStockForm(true, true);
+      await loadSelectedDebtorDetails(selectedDebtor, true);
+      const nameFixResult = activeView === 'home' || activeView === 'fix'
+        ? await loadNameFixes({ forceRefresh: true, silent: true })
+        : true;
+      setStatusText(
+        nameFixResult === null
+          ? 'Workspace refreshed, but the Fix scan is unavailable right now.'
+          : 'Workspace refreshed from sheet and cache.'
+      );
+    } catch (error) {
+      setStatusText(error.message || 'Could not refresh the workspace.');
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    loadCoreWorkspace(false);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    fetchDashboardLogo()
+      .then((result) => {
+        if (active) {
+          setLogoData(result || { data_url: '', file_name: '' });
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setLogoData({ data_url: '', file_name: '' });
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeView !== 'home' && activeView !== 'fix') {
+      return;
+    }
+    if (nameFixLoadAttempted) {
+      return;
+    }
+
+    loadNameFixes({ forceRefresh: false, silent: true });
+  }, [activeView, nameFixLoadAttempted]);
+
+  useEffect(() => {
+    if (activeView !== 'home' && activeView !== 'products' && activeView !== 'cart') {
+      return undefined;
+    }
+
+    const delay = window.setTimeout(() => {
+      loadStock(false);
+    }, 180);
+
+    return () => {
+      window.clearTimeout(delay);
+    };
+  }, [activeView, deferredStockSearchText, productFilterMode, cartFilterMode]);
+
+  useEffect(() => {
+    if (activeView !== 'debtors') {
+      return;
+    }
+
+    handleRefreshTodayUnpaidList(false);
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== 'products') {
+      return;
+    }
+
+    loadStockForm(false, false);
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== 'clients') {
+      return;
+    }
+    if (googleContactsLoadAttempted) {
+      return;
+    }
+
+    loadGoogleContacts({ forceRefresh: false, silent: true });
+  }, [activeView, googleContactsLoadAttempted]);
+
+  useEffect(() => {
+    if (activeView === 'products') {
+      return;
+    }
+
+    setIsProductComposerOpen(false);
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView === 'products' || activeView === 'cart') {
+      return;
+    }
+
+    setSelectedProductDetail(null);
+  }, [activeView]);
+
+  useEffect(() => {
+    const update = () => setCurrentTimeLabel(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
+    update();
+    const timerId = window.setInterval(update, 30_000);
+    return () => window.clearInterval(timerId);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedDebtor) {
+      return undefined;
+    }
+
+    const delay = window.setTimeout(() => {
+      loadSelectedDebtorDetails(selectedDebtor, false);
+    }, 140);
+
+    return () => {
+      window.clearTimeout(delay);
+    };
+  }, [selectedDebtor]);
+
+  useEffect(() => {
+    const parsedAmount = Number(normalizeDigits(paymentAmount));
+    const manualServiceRowIdx = selectedServiceRow === 'automatic' ? null : Number(selectedServiceRow);
+
+    if (!selectedDebtor || !paymentAmount.trim()) {
+      setPaymentPlan(null);
+      setPaymentPlanError('');
+      return undefined;
+    }
+
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setPaymentPlan(null);
+      setPaymentPlanError('Enter a valid payment amount.');
+      return undefined;
+    }
+
+    const abortController = new AbortController();
+    const delay = window.setTimeout(async () => {
+      try {
+        const result = await fetchPaymentPlan({
+          nameInput: selectedDebtor,
+          paymentAmount: parsedAmount,
+          manualServiceRowIdx,
+          signal: abortController.signal,
+        });
+        setPaymentPlan(result);
+        setPaymentPlanError('');
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          setPaymentPlan(null);
+          setPaymentPlanError(error.message || 'Could not prepare the payment preview.');
+        }
+      }
+    }, 220);
+
+    return () => {
+      abortController.abort();
+      window.clearTimeout(delay);
+    };
+  }, [selectedDebtor, paymentAmount, selectedServiceRow]);
+
+  useEffect(() => {
+    setClientPage(1);
+  }, [deferredClientSearch]);
+
+  useEffect(() => {
+    setDebtorPage(1);
+  }, [deferredDebtorSearch]);
+
+  useEffect(() => {
+    setStockPage(1);
+  }, [deferredStockSearchText, productFilterMode]);
+
+  useEffect(() => {
+    setCartPage(1);
+  }, [deferredStockSearchText, cartFilterMode]);
+
+  useEffect(() => {
+    setGoogleContactPage(1);
+  }, [deferredGoogleSearch]);
+
+  function handleSelectDebtor(name) {
+    startTransition(() => setSelectedDebtor(name));
+    setPaymentAmount('');
+    setPaymentPlan(null);
+    setPaymentPlanError('');
+    setSelectedServiceRow('automatic');
+  }
+
+  async function handleCopyBill() {
+    if (!selectedDebtor) {
+      setStatusText('Select a debtor first.');
+      return;
+    }
+
+    await handleCopyBillForDebtor(selectedDebtor);
+  }
+
+  async function handleCopyBillForDebtor(name) {
+    const debtorName = String(name || '').trim();
+    if (!debtorName) {
+      setStatusText('Select a debtor first.');
+      return;
+    }
+
+    try {
+      let nextBillText = billText;
+      if (debtorName !== selectedDebtor || !billText || billText.startsWith('Select a debtor')) {
+        const result = await fetchLiveBill(debtorName, { forceRefresh: false });
+        nextBillText = result.bill_text || 'No outstanding bill for this customer.';
+        startTransition(() => setSelectedDebtor(debtorName));
+        setBillText(nextBillText);
+      }
+
+      if (!nextBillText || nextBillText.includes('No outstanding bill')) {
+        setStatusText(`No outstanding bill found for ${debtorName}.`);
+        return;
+      }
+
+      await copyText(nextBillText);
+      setStatusText(`Bill copied for ${debtorName}.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not copy the bill.');
+    }
+  }
+
+  async function handleSendWhatsapp() {
+    const phone = normalizeWhatsappPhone(clientsData.registry?.[selectedDebtor] || '');
+    if (!selectedDebtor) {
+      setStatusText('Select a debtor first.');
+      return;
+    }
+    if (!phone) {
+      startTransition(() => setActiveView('clients'));
+      setClientForm({ name: selectedDebtor, phone: '' });
+      setGoogleSearch(selectedDebtor);
+      setSelectedGoogleContact(null);
+      setStatusText(`No client phone is saved for ${selectedDebtor}. Add or sync it from Clients.`);
+      return;
+    }
+
+    window.open(buildWhatsappUrl(phone, billText), '_blank', 'noopener,noreferrer');
+    try {
+      const result = await markWhatsappSent({ nameInput: selectedDebtor, source: 'single' });
+      setWhatsappHistoryByName((current) => ({
+        ...current,
+        [selectedDebtor]: result.entry || current[selectedDebtor] || {},
+      }));
+      setStatusText(`Opened WhatsApp for ${selectedDebtor}. Total sends: ${formatCount(result.entry?.send_count || 0)}.`);
+    } catch {
+      setStatusText(`Opened WhatsApp for ${selectedDebtor}.`);
+    }
+  }
+
+  async function handleRefreshTodayUnpaidList(forceRefresh = true) {
+    setSendingTodayBills(true);
+    try {
+      const result = await fetchUnpaidTodayBills({ forceRefresh });
+      setUnpaidTodaySummary(result || { count: 0, with_phone_count: 0, customers: [] });
+      setStatusText(`Loaded ${formatCount(result?.count || 0)} unpaid customer(s) for today.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not load today unpaid list.');
+    } finally {
+      setSendingTodayBills(false);
+    }
+  }
+
+  async function handleSendTodayUnpaidCustomer(entry) {
+    const name = String(entry?.name || '').trim().toUpperCase();
+    if (!name) {
+      setStatusText('Invalid customer record selected.');
+      return;
+    }
+
+    const phone = normalizeWhatsappPhone(entry?.phone || clientsData.registry?.[name] || '');
+    if (!phone) {
+      setStatusText(`No client phone is saved for ${name}.`);
+      return;
+    }
+
+    let nextBillText = String(entry?.bill_text || '');
+    if (!nextBillText || nextBillText.includes('No outstanding bill for this customer.')) {
+      try {
+        const billResult = await fetchLiveBill(name, { forceRefresh: true });
+        nextBillText = billResult.bill_text || '';
+      } catch {
+        nextBillText = '';
+      }
+    }
+
+    if (!nextBillText || nextBillText.includes('No outstanding bill for this customer.')) {
+      setStatusText(`No outstanding bill found for ${name}.`);
+      return;
+    }
+
+    window.open(buildWhatsappUrl(phone, nextBillText), '_blank', 'noopener,noreferrer');
+
+    try {
+      const result = await markWhatsappSent({ nameInput: name, source: 'today_list' });
+      setWhatsappHistoryByName((current) => ({
+        ...current,
+        [name]: result.entry || current[name] || {},
+      }));
+      setUnpaidTodaySummary((current) => ({
+        ...(current || {}),
+        customers: (current?.customers || []).map((item) => (
+          String(item.name || '').trim().toUpperCase() === name
+            ? { ...item, send_stats: result.entry || item.send_stats || {} }
+            : item
+        )),
+      }));
+      setStatusText(`Opened WhatsApp bill for ${name}. Total sends: ${formatCount(result.entry?.send_count || 0)}.`);
+    } catch {
+      setStatusText(`Opened WhatsApp bill for ${name}.`);
+    }
+  }
+
+  async function handleApplyPayment() {
+    const parsedAmount = Number(normalizeDigits(paymentAmount));
+    if (!selectedDebtor) {
+      setStatusText('Select a debtor first.');
+      return;
+    }
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      setStatusText('Enter a valid payment amount.');
+      return;
+    }
+
+    setIsApplyingPayment(true);
+    try {
+      const result = await applyPayment({
+        nameInput: selectedDebtor,
+        paymentAmount: parsedAmount,
+        manualServiceRowIdx: selectedServiceRow === 'automatic' ? null : Number(selectedServiceRow),
+      });
+      setUndoEnabled(Boolean(result.undo_available));
+      setRedoEnabled(Boolean(result.redo_available));
+      setPaymentAmount('');
+      setPaymentPlan(null);
+      await loadCoreWorkspace(false);
+      await loadSelectedDebtorDetails(selectedDebtor, false);
+      setStatusText(result.status_text || 'Payment applied.');
+    } catch (error) {
+      setStatusText(error.message || 'Could not apply the payment.');
+    } finally {
+      setIsApplyingPayment(false);
+    }
+  }
+
+  async function handleUndo() {
+    try {
+      const result = await undoPayment();
+      setUndoEnabled(Boolean(result.undo_available));
+      setRedoEnabled(Boolean(result.redo_available));
+      await loadCoreWorkspace(false);
+      await loadSelectedDebtorDetails(selectedDebtor, false);
+      setStatusText(result.status_text || 'Last payment action undone.');
+    } catch (error) {
+      setStatusText(error.message || 'Could not undo the last payment.');
+    }
+  }
+
+  async function handleRedo() {
+    try {
+      const result = await redoPayment();
+      setUndoEnabled(Boolean(result.undo_available));
+      setRedoEnabled(Boolean(result.redo_available));
+      await loadCoreWorkspace(false);
+      await loadSelectedDebtorDetails(selectedDebtor, false);
+      setStatusText(result.status_text || 'Last undone payment reapplied.');
+    } catch (error) {
+      setStatusText(error.message || 'Could not redo the last payment.');
+    }
+  }
+
+  async function handleSaveClient() {
+    setClientsBusy(true);
+    try {
+      const result = await upsertClient({
+        name: clientForm.name,
+        phone: clientForm.phone,
+        syncSheet: true,
+        forceRefresh: false,
+      });
+      applyClientRegistryToState(result.registry || {});
+      const nextName = result.key || clientForm.name.trim().toUpperCase();
+      setClientForm({ name: nextName, phone: result.registry?.[nextName] || '' });
+      setStatusText(
+        `${result.added ? 'Client added' : 'Client updated'} and normalized.${result.sync_result?.mode === 'queued' ? ' Sheet sync queued in background.' : ''}`
+      );
+    } catch (error) {
+      setStatusText(error.message || 'Could not save the client.');
+    } finally {
+      setClientsBusy(false);
+    }
+  }
+
+  async function handleDeleteClient() {
+    if (!clientForm.name || !window.confirm(`Delete ${clientForm.name} from the client list?`)) {
+      return;
+    }
+
+    setClientsBusy(true);
+    try {
+      const result = await deleteClient({ name: clientForm.name, syncSheet: true });
+      applyClientRegistryToState(result.registry || {});
+      setClientForm({ name: '', phone: '' });
+      setStatusText(`Client deleted.${result.sync_result?.mode === 'queued' ? ' Sheet sync queued in background.' : ''}`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not delete the client.');
+    } finally {
+      setClientsBusy(false);
+    }
+  }
+
+  async function handleImportSheetPhones() {
+    setClientsBusy(true);
+    try {
+      const result = await importSheetPhones({ forceRefresh: true });
+      applyClientRegistryToState(result.registry || {});
+      setStatusText(`Imported sheet phone numbers: ${result.added} added, ${result.updated} updated.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not import phone numbers from the sheet.');
+    } finally {
+      setClientsBusy(false);
+    }
+  }
+
+  async function handleSyncGoogleContacts() {
+    try {
+      const result = await loadGoogleContacts({ forceRefresh: true });
+      if (!result) {
+        return;
+      }
+      setStatusText(`Synced ${result.total_cached || result.count || 0} Google contact number(s).`);
+    } catch {
+      // Errors are handled in loadGoogleContacts.
+    }
+  }
+
+  async function handleApplyGoogleContact() {
+    if (!clientForm.name) {
+      setStatusText('Select or enter a client before applying a Google contact.');
+      return;
+    }
+    if (!selectedGoogleContact) {
+      setStatusText('Select a Google contact first.');
+      return;
+    }
+
+    setClientsBusy(true);
+    try {
+      const result = await upsertClient({
+        name: clientForm.name,
+        phone: selectedGoogleContact.phone,
+        syncSheet: true,
+        forceRefresh: false,
+      });
+      applyClientRegistryToState(result.registry || {});
+      setClientForm((current) => ({ ...current, phone: selectedGoogleContact.phone }));
+      setStatusText(`Updated ${clientForm.name} with ${selectedGoogleContact.phone}.${result.sync_result?.mode === 'queued' ? ' Sheet sync queued in background.' : ''}`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not update the client from Google Contacts.');
+    } finally {
+      setClientsBusy(false);
+    }
+  }
+
+  async function handleApplyFix() {
+    if (!selectedMismatch || !correctName) {
+      setStatusText('Select a mismatch and choose the replacement name.');
+      return;
+    }
+
+    setIsNameFixApplying(true);
+    try {
+      const result = await applyNameFix({ mismatchEntry: selectedMismatch, correctName });
+      await loadCoreWorkspace(false);
+      await loadNameFixes({ forceRefresh: false, silent: true });
+      setStatusText(`Queued ${result.updated_count} row(s) for name correction.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not apply the selected fix.');
+    } finally {
+      setIsNameFixApplying(false);
+    }
+  }
+
+  async function handleApplyAllFixes() {
+    if (!nameFixData.mismatches?.length) {
+      setStatusText('No name fixes are currently loaded.');
+      return;
+    }
+
+    setIsNameFixApplying(true);
+    try {
+      const result = await applyAllNameFixes({ mismatchEntries: nameFixData.mismatches });
+      await loadCoreWorkspace(false);
+      await loadNameFixes({ forceRefresh: false, silent: true });
+      setStatusText(`Queued ${result.updated_count} row(s) for automatic fixes.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not apply all fixes.');
+    } finally {
+      setIsNameFixApplying(false);
+    }
+  }
+
+  async function handleRescanFixes() {
+    try {
+      const result = await loadNameFixes({ forceRefresh: true });
+      if (!result) {
+        return;
+      }
+      setStatusText('Name-fix scan completed.');
+    } catch {
+      // Errors are handled in loadNameFixes.
+    }
+  }
+
+  async function handlePullNow() {
+    setSyncBusy(true);
+    try {
+      await pullNow();
+      await loadCoreWorkspace(true);
+      await loadStock(true);
+      const nameFixResult = activeView === 'home' || activeView === 'fix'
+        ? await loadNameFixes({ forceRefresh: true, silent: true })
+        : true;
+      setStatusText(
+        nameFixResult === null
+          ? 'Manual pull completed, but the Fix scan is unavailable right now.'
+          : 'Manual sheet pull completed.'
+      );
+    } catch (error) {
+      setStatusText(error.message || 'Could not run the manual pull.');
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  async function handleSubmitProduct(event, submittedValues = null) {
+    event.preventDefault();
+    setIsAddingProduct(true);
+    try {
+      const now = new Date();
+      const sourceValues = submittedValues || productFormValues || {};
+      const nextValues = {
+        ...sourceValues,
+        TIME: sourceValues.TIME || now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+        DATE: sourceValues.DATE || now.toLocaleDateString('en-US'),
+      };
+      if (!nextValues['PRODUCT STATUS']) {
+        nextValues['PRODUCT STATUS'] = 'AVAILABLE';
+      }
+      if (!nextValues['AVAILABILITY/DATE SOLD']) {
+        nextValues['AVAILABILITY/DATE SOLD'] = 'AVAILABLE';
+      }
+      await addStockRecord({ valuesByHeader: nextValues, forceRefresh: false });
+      await loadStock(true);
+      await loadStockForm(true, true);
+      setIsProductComposerOpen(false);
+      setStatusText('Product queued into the stock sheet successfully.');
+    } catch (error) {
+      setStatusText(error.message || 'Could not add the product.');
+    } finally {
+      setIsAddingProduct(false);
+    }
+  }
+
+  function handleResetProductForm() {
+    setProductFormValues(buildProductFormValues(stockForm));
+    setStatusText('Product form reset to defaults.');
+  }
+
+  function handleAddToCart(row) {
+    setSaleCartItems((current) => {
+      if (current.some((item) => item.stock_row_num === row.row_num)) {
+        return current;
+      }
+      return [...current, buildCartItemFromProductRow(row, stockView?.headers || [])];
+    });
+    setStatusText(`Added stock row #${row.row_num} to the cart.`);
+  }
+
+  function handleUpdateCartItem(stockRowNum, field, value) {
+    setSaleCartItems((current) => current.map((item) => {
+      if (item.stock_row_num !== stockRowNum) {
+        return item;
+      }
+
+      if (field === 'buyer_name') {
+        const normalized = String(value || '').trim().toUpperCase();
+        const knownPhone = clientsData.registry?.[normalized] || '';
+        return {
+          ...item,
+          buyer_name: value,
+          buyer_phone: item.buyer_phone || knownPhone,
+        };
+      }
+
+      return { ...item, [field]: value };
+    }));
+  }
+
+  function handleRemoveCartItem(stockRowNum) {
+    setSaleCartItems((current) => current.filter((item) => item.stock_row_num !== stockRowNum));
+    setStatusText(`Removed stock row #${stockRowNum} from the cart.`);
+  }
+
+  async function handleReturnPendingDeal(stockRowNum) {
+    setReturningPendingRow(stockRowNum);
+    try {
+      await returnStockItem({ rowNum: stockRowNum, forceRefresh: false });
+      await Promise.all([loadStock(true), loadCoreWorkspace(false)]);
+      setStatusText(`Pending deal row #${stockRowNum} returned and marked available.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not return this pending deal.');
+    } finally {
+      setReturningPendingRow(0);
+    }
+  }
+
+  async function handleUpdatePendingDealPayment(stockRowNum, paymentStatus, amountPaid) {
+    setUpdatingPendingRow(stockRowNum);
+    try {
+      const normalizedStatus = String(paymentStatus || '').trim().toUpperCase();
+      const normalizedAmount = String(amountPaid || '').trim();
+      await updatePendingDealPayment({
+        rowNum: stockRowNum,
+        paymentStatus: normalizedStatus,
+        amountPaid: normalizedAmount || null,
+        forceRefresh: false,
+      });
+      await Promise.all([loadStock(true), loadCoreWorkspace(false)]);
+      setStatusText(`Pending deal row #${stockRowNum} updated to ${normalizedStatus}.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not update this pending deal payment status.');
+    } finally {
+      setUpdatingPendingRow(0);
+    }
+  }
+
+  async function handleOpenProductComposer() {
+    setIsProductComposerOpen(true);
+    if (!googleContactsLoadAttempted) {
+      await loadGoogleContacts({ forceRefresh: false, silent: true });
+    }
+  }
+
+  async function handleReturnCartItem(stockRowNum) {
+    if (!window.confirm(`Return stock row #${stockRowNum} and clear buyer/sold status?`)) {
+      return;
+    }
+
+    setCartBusy(true);
+    try {
+      await returnStockItem({ rowNum: stockRowNum, forceRefresh: false });
+      setSaleCartItems((current) => current.filter((item) => item.stock_row_num !== stockRowNum));
+      await Promise.all([loadStock(true), loadCoreWorkspace(false)]);
+      setStatusText(`Stock row #${stockRowNum} returned and marked available.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not return the selected stock item.');
+    } finally {
+      setCartBusy(false);
+    }
+  }
+
+  async function handleCheckoutCart() {
+    if (!saleCartItems.length) {
+      setStatusText('Add at least one phone to the cart first.');
+      return;
+    }
+
+    setCartBusy(true);
+    try {
+      const result = await checkoutSaleCart({
+        items: saleCartItems.map((item) => ({
+          availability_value: (
+            item.availability_choice === 'TODAY'
+              ? new Date().toLocaleDateString('en-US')
+              : item.availability_choice === 'PENDING'
+                ? 'PENDING DEAL'
+                : item.availability_choice === 'CLEAR'
+                  ? '__CLEAR__'
+                  : item.availability_choice === 'CUSTOM'
+                    ? (item.availability_custom || '').trim()
+                    : ''
+          ),
+          stock_row_num: item.stock_row_num,
+          buyer_name: item.buyer_name,
+          buyer_phone: item.buyer_phone,
+          sale_price: item.sale_price,
+          stock_status: item.payment_status === 'PAID' ? 'Sold' : 'Pending Deal',
+          inventory_status: item.payment_status,
+        })),
+        forceRefresh: false,
+      });
+      setSaleCartItems([]);
+      setSelectedProductDetail(null);
+      await Promise.all([loadStock(false), loadCoreWorkspace(false)]);
+      setStatusText(`${result.processed_count || 0} phone sale(s) queued into stock and inventory.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not sell the current cart.');
+    } finally {
+      setCartBusy(false);
+    }
+  }
+
+  async function handleSubmitService() {
+    const name = String(serviceDraft.name || '').trim().toUpperCase();
+    const phone = normalizeWhatsappPhone(serviceDraft.phone || '');
+    const description = String(serviceDraft.description || '').trim();
+    const price = normalizeDigits(serviceDraft.price || '');
+    let amountPaid = normalizeDigits(serviceDraft.amount_paid || '');
+    let status = String(serviceDraft.status || 'UNPAID').trim().toUpperCase();
+
+    if (!name) {
+      setStatusText('Enter a customer name for the service.');
+      return;
+    }
+    if (!description) {
+      setStatusText('Enter a description for the service.');
+      return;
+    }
+    if (!price) {
+      setStatusText('Enter a valid service price.');
+      return;
+    }
+    if (!amountPaid) {
+      amountPaid = '0';
+    }
+    if (status !== 'PAID' && status !== 'UNPAID') {
+      status = 'UNPAID';
+    }
+
+    setServiceBusy(true);
+    try {
+      await addServiceRecord({
+        valuesByHeader: {
+          NAME: name,
+          'PHONE NUMBER': phone,
+          DESCRIPTION: description,
+          PRICE: price,
+          'AMOUNT PAID': amountPaid,
+          STATUS: status,
+        },
+        forceRefresh: true,
+      });
+      setServiceDraft({ name: '', phone: '', description: '', price: '', amount_paid: '', status: 'UNPAID' });
+      await loadCoreWorkspace(false);
+      setStatusText('Service row queued into inventory successfully.');
+    } catch (error) {
+      setStatusText(error.message || 'Could not add the service row.');
+    } finally {
+      setServiceBusy(false);
+    }
+  }
+
+  async function handleSaveProductDetails(rowNum, valuesByHeader) {
+    setIsSavingProductDetail(true);
+    try {
+      const result = await updateStockRow({
+        rowNum,
+        valuesByHeader,
+        forceRefresh: false,
+      });
+      await loadStock(true);
+      setSelectedProductDetail(null);
+      setStatusText(
+        result.updated_count
+          ? `Saved ${result.updated_count} product field(s) for row #${rowNum}.`
+          : `No product field changes were detected for row #${rowNum}.`
+      );
+    } catch (error) {
+      setStatusText(error.message || 'Could not save product details.');
+    } finally {
+      setIsSavingProductDetail(false);
+    }
+  }
+
+  async function handleAction(item) {
+    if (item.type === 'view') {
+      if (item.key === 'products') {
+        setProductFilterMode('available');
+      }
+      if (item.key === 'cart') {
+        setCartFilterMode('all');
+      }
+      startTransition(() => setActiveView(item.key));
+      setStatusText(VIEW_META[item.key]?.title || 'Ready');
+      return;
+    }
+
+    if (item.key === 'refresh') {
+      await handleFullRefresh();
+      return;
+    }
+
+    if (item.key === 'undo') {
+      await handleUndo();
+      return;
+    }
+
+    if (item.key === 'redo') {
+      await handleRedo();
+      return;
+    }
+
+    if (item.key === 'exit') {
+      window.close();
+      setStatusText('Close request sent to the browser window.');
+    }
+  }
+
+  function renderActiveView() {
+    if (activeView === 'products') {
+      return (
+        <ProductsView
+          stockView={stockView}
+          stockForm={stockForm}
+          productFormValues={productFormValues}
+          productSearchText={stockSearchText}
+          setProductSearchText={setStockSearchText}
+          filterMode={productFilterMode}
+          setFilterMode={setProductFilterMode}
+          stockPage={stockPage}
+          setStockPage={setStockPage}
+          isLoading={isStockLoading}
+          isRefreshing={isStockRefreshing}
+          isAddingProduct={isAddingProduct}
+          isProductComposerOpen={isProductComposerOpen}
+          errorText={stockErrorText}
+          onRefresh={() => loadStock(true)}
+          selectedProductDetail={selectedProductDetail}
+          onOpenProductDetails={setSelectedProductDetail}
+          onCloseProductDetails={() => setSelectedProductDetail(null)}
+          onSaveProductDetails={handleSaveProductDetails}
+          savingProductDetails={isSavingProductDetail}
+          onOpenProductComposer={handleOpenProductComposer}
+          onCloseProductComposer={() => setIsProductComposerOpen(false)}
+          onSubmitProduct={handleSubmitProduct}
+          onResetProductForm={handleResetProductForm}
+          sellerPhoneOptions={sellerPhoneOptions}
+          sellerNameOptions={sellerNameOptions}
+          sellerPhoneByName={sellerPhoneByName}
+          currentTimeLabel={currentTimeLabel}
+        />
+      );
+    }
+
+    if (activeView === 'cashflow') {
+      return <CashFlowView salesSnapshot={salesSnapshot} debtorsData={debtorsData} />;
+    }
+
+    if (activeView === 'cart') {
+      return (
+        <CartView
+          stockView={stockView}
+          productSearchText={stockSearchText}
+          setProductSearchText={setStockSearchText}
+          filterMode={cartFilterMode}
+          setFilterMode={setCartFilterMode}
+          cartPage={cartPage}
+          setCartPage={setCartPage}
+          isLoading={isStockLoading}
+          isRefreshing={isStockRefreshing}
+          errorText={stockErrorText}
+          onRefresh={() => loadStock(true)}
+          selectedProductDetail={selectedProductDetail}
+          onOpenDetails={setSelectedProductDetail}
+          onCloseProductDetails={() => setSelectedProductDetail(null)}
+          onSaveProductDetails={handleSaveProductDetails}
+          savingProductDetails={isSavingProductDetail}
+          onAddToCart={handleAddToCart}
+          cartItems={saleCartItems}
+          onUpdateCartItem={handleUpdateCartItem}
+          onRemoveCartItem={handleRemoveCartItem}
+          onReturnCartItem={handleReturnCartItem}
+          onCheckoutCart={handleCheckoutCart}
+          serviceDraft={serviceDraft}
+          setServiceDraft={setServiceDraft}
+          onSubmitService={handleSubmitService}
+          serviceBusy={serviceBusy}
+          pendingDealRows={pendingDealRows}
+          onReturnPendingDeal={handleReturnPendingDeal}
+          onUpdatePendingDealPayment={handleUpdatePendingDealPayment}
+          returningPendingRow={returningPendingRow}
+          updatingPendingRow={updatingPendingRow}
+          clientNameOptions={clientNameOptions}
+          sellerPhoneOptions={sellerPhoneOptions}
+          currentTimeLabel={currentTimeLabel}
+          cartBusy={cartBusy}
+        />
+      );
+    }
+
+    if (activeView === 'clients') {
+      return (
+        <ClientsView
+          clients={filteredClients}
+          clientPage={clientPage}
+          setClientPage={setClientPage}
+          clientSearch={clientSearch}
+          setClientSearch={setClientSearch}
+          clientForm={clientForm}
+          setClientForm={setClientForm}
+          clientsBusy={clientsBusy}
+          onSelectClient={(entry) => {
+            setClientForm({ name: entry.name, phone: entry.phone || '' });
+            setGoogleSearch(entry.name);
+            setSelectedGoogleContact(null);
+          }}
+          onSaveClient={handleSaveClient}
+          onDeleteClient={handleDeleteClient}
+          onImportPhones={handleImportSheetPhones}
+          googleContacts={googleContactsView}
+          googleSearch={googleSearch}
+          setGoogleSearch={setGoogleSearch}
+          googleContactPage={googleContactPage}
+          setGoogleContactPage={setGoogleContactPage}
+          selectedGoogleContact={selectedGoogleContact}
+          onSelectGoogleContact={(contact) => {
+            setSelectedGoogleContact(contact);
+            setClientForm((current) => ({
+              name: current.name || contact.name,
+              phone: contact.phone,
+            }));
+          }}
+          onSyncGoogleContacts={handleSyncGoogleContacts}
+          onApplyGoogleContact={handleApplyGoogleContact}
+          googleContactsBusy={googleContactsBusy}
+          googleContactsError={googleContactsError}
+          stats={clientsData.stats || {}}
+        />
+      );
+    }
+
+    if (activeView === 'debtors') {
+      return (
+        <DebtorsView
+          debtors={filteredDebtors}
+          debtorPage={debtorPage}
+          setDebtorPage={setDebtorPage}
+          debtorSearch={debtorSearch}
+          setDebtorSearch={setDebtorSearch}
+          selectedDebtor={selectedDebtor}
+          onSelectDebtor={handleSelectDebtor}
+          billText={billText}
+          outstandingItems={outstandingItems}
+          paymentAmount={paymentAmount}
+          setPaymentAmount={setPaymentAmount}
+          selectedServiceRow={selectedServiceRow}
+          setSelectedServiceRow={setSelectedServiceRow}
+          paymentPlan={paymentPlan}
+          paymentPlanError={paymentPlanError}
+          detailLoading={isDebtorDetailLoading}
+          applyingPayment={isApplyingPayment}
+          onCopyBill={handleCopyBill}
+          onQuickCopyBill={handleCopyBillForDebtor}
+          onSendWhatsapp={handleSendWhatsapp}
+          onRefreshTodayUnpaid={handleRefreshTodayUnpaidList}
+          onSendTodayUnpaidCustomer={handleSendTodayUnpaidCustomer}
+          sendingTodayBills={sendingTodayBills}
+          unpaidTodaySummary={unpaidTodaySummary}
+          whatsappHistoryByName={whatsappHistoryByName}
+          onApplyPayment={handleApplyPayment}
+        />
+      );
+    }
+
+    if (activeView === 'fix') {
+      return (
+        <FixView
+          mismatches={nameFixData.mismatches || []}
+          selectedMismatch={selectedMismatch}
+          correctName={correctName}
+          setCorrectName={setCorrectName}
+          onSelectMismatch={(entry) => {
+            setSelectedMismatchRaw(entry.raw);
+            setCorrectName(entry.candidates?.[0] || '');
+          }}
+          onApplyFix={handleApplyFix}
+          onApplyAll={handleApplyAllFixes}
+          onRescan={handleRescanFixes}
+          loading={isNameFixLoading}
+          applying={isNameFixApplying}
+        />
+      );
+    }
+
+    if (activeView === 'settings') {
+      return (
+        <SettingsView
+          syncStatus={syncStatus}
+          syncBusy={syncBusy}
+          onPullNow={handlePullNow}
+          onRefreshWorkspace={handleFullRefresh}
+          onReloadStatus={() => loadCoreWorkspace(false)}
+        />
+      );
+    }
+
+    return (
+      <HomeView
+        debtorsData={debtorsData}
+        salesSnapshot={salesSnapshot}
+        stockView={stockView}
+        nameFixData={nameFixData}
+        syncStatus={syncStatus}
+        lastLoadedAt={lastLoadedAt}
+        revealedMetric={revealedMetric}
+        setRevealedMetric={setRevealedMetric}
+      />
+    );
+  }
+
+  return (
+    <div className="workspace-shell">
+      <main className="workspace-page">
+        <section className="hero-frame">
+          <div className="hero-left">
+            <div className="hero-brand">
+              {logoData.data_url ? <img className="hero-logo" src={logoData.data_url} alt={logoData.file_name || 'Atlanta logo'} /> : null}
+              <div className="hero-brand__copy">
+                <h1>Atlanta Georgia_Tech</h1>
+                <p>Website workspace for sales, products, clients, debtors, fixes, sync tools, and the new sales cart.</p>
+              </div>
+            </div>
+            <div className="status-chip">
+              <span className="status-chip-label">Status</span>
+              <strong>{statusText}</strong>
+            </div>
+          </div>
+
+          <div className="hero-right">
+            <div className="hero-note">
+              <span className="hero-note-label">Current Section</span>
+              <strong>{activeMeta.title}</strong>
+            </div>
+            <div className="hero-note">
+              <span className="hero-note-label">API Source</span>
+              <strong>{getApiLabel()}</strong>
+            </div>
+          </div>
+        </section>
+
+        <section className="workspace-body">
+          <ActionSidebar activeView={activeView} undoEnabled={undoEnabled} redoEnabled={redoEnabled} onTrigger={handleAction} />
+
+          <section className="workspace-main">
+            <section className="content-panel content-panel--headline">
+              <div className="panel-header">
+                <h3>{activeMeta.title}</h3>
+                <p>{activeMeta.description}</p>
+              </div>
+              {workspaceError ? <div className="notice notice-error notice-inline">{workspaceError}</div> : null}
+              {coreLoading ? <div className="notice notice-inline">Loading workspace data...</div> : null}
+            </section>
+
+            {renderActiveView()}
+          </section>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+export default WorkspaceApp;
