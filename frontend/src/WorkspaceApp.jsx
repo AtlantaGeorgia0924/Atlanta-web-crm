@@ -1185,6 +1185,7 @@ function CartView({
       const haystack = [
         row.kind,
         row.description,
+        row.date,
         row.buyer_name,
         row.name,
         row.buyer_phone,
@@ -1531,6 +1532,7 @@ function CartView({
                     <th>Row</th>
                     <th>Description</th>
                     <th>Customer</th>
+                    <th>Date</th>
                     <th>Payment Fulfillment</th>
                     <th>Action</th>
                   </tr>
@@ -1546,6 +1548,7 @@ function CartView({
                         <td>#{row.row_num}</td>
                         <td>{row.description || getProductCellValue(row, headers, ['DESCRIPTION', 'MODEL', 'DEVICE']) || '—'}</td>
                         <td>{row.buyer_name || row.name || getProductCellValue(row, headers, ['NAME OF BUYER']) || '—'}</td>
+                        <td>{row.date || getProductCellValue(row, headers, ['DATE', 'DATE BOUGHT', 'AVAILABILITY/DATE SOLD']) || '—'}</td>
                         <td>
                           <div className="inline-action-row">
                             <select
@@ -1591,7 +1594,7 @@ function CartView({
                     );
                   }) : (
                     <tr>
-                      <td colSpan={6} className="empty-state">No pending deals matched the current filter.</td>
+                      <td colSpan={7} className="empty-state">No pending deals matched the current filter.</td>
                     </tr>
                   )}
                 </tbody>
@@ -2627,6 +2630,7 @@ function WorkspaceApp() {
       description: getProductCellValue(row, stockView?.headers || [], ['DESCRIPTION', 'MODEL', 'DEVICE']) || '',
       buyer_name: getProductCellValue(row, stockView?.headers || [], ['NAME OF BUYER']) || '',
       buyer_phone: getProductCellValue(row, stockView?.headers || [], ['PHONE NUMBER OF BUYER']) || '',
+      date: getProductCellValue(row, stockView?.headers || [], ['DATE', 'DATE BOUGHT', 'AVAILABILITY/DATE SOLD']) || '',
       imei: getProductCellValue(row, stockView?.headers || [], ['IMEI']) || '',
       inventory_status: row.inventory_status,
       inventory_amount_paid: row.inventory_amount_paid,
@@ -2703,9 +2707,11 @@ function WorkspaceApp() {
       failures.push(pendingServicesResult.reason?.message || 'Could not load pending service deals.');
     }
 
+    const uniqueFailures = Array.from(new Set(failures.filter(Boolean).map((item) => String(item).trim()).filter(Boolean)));
+
     setLastLoadedAt(new Date());
-    setWorkspaceError(failures.join(' | '));
-    setStatusText(failures.length ? failures[0] : forceRefresh ? 'Workspace refreshed.' : 'Ready');
+    setWorkspaceError(uniqueFailures.join(' | '));
+    setStatusText(uniqueFailures.length ? uniqueFailures[0] : forceRefresh ? 'Workspace refreshed.' : 'Ready');
     setCoreLoading(false);
   }
 

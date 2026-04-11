@@ -2261,7 +2261,15 @@ class BackendRuntime:
                 queued_operation_ids.append(queue_id)
 
             updated_existing_row = None
-            if inventory_status == 'PAID' and main_status_col is not None and main_paid_col is not None and main_imei_col is not None and main_name_col is not None:
+            imei_text = str(imei or '').strip()
+            if (
+                inventory_status == 'PAID'
+                and imei_text
+                and main_status_col is not None
+                and main_paid_col is not None
+                and main_imei_col is not None
+                and main_name_col is not None
+            ):
                 for index in range(len(main_values) - 1, main_header_row_idx, -1):
                     row = main_values[index] if index < len(main_values) else []
                     if main_imei_col >= len(row) or main_name_col >= len(row):
@@ -2269,7 +2277,7 @@ class BackendRuntime:
                     existing_imei = str(row[main_imei_col] or '').strip()
                     existing_name = str(row[main_name_col] or '').strip().upper()
                     existing_status = str(row[main_status_col] or '').strip().upper() if main_status_col < len(row) else ''
-                    if existing_imei == str(imei or '').strip() and existing_name == buyer_name and existing_status in {'UNPAID', 'PART PAYMENT'}:
+                    if existing_imei == imei_text and existing_name == buyer_name and existing_status in {'UNPAID', 'PART PAYMENT'}:
                         updated_existing_row = index + 1
                         break
 
