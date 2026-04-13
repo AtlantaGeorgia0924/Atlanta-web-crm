@@ -1,4 +1,5 @@
 import base64
+import glob
 import json
 import logging
 import mimetypes
@@ -91,6 +92,7 @@ class BackendRuntime:
             'sheet_id': '',
             'phone_stock_sheet_id': '',
             'credentials_file': 'credentials.json',
+            'contacts_oauth_file': '',
             'enable_postgres_cache': True,
             'legacy_sheet_fallback': True,
             'startup_mode': 'cache_then_sync',
@@ -128,7 +130,37 @@ class BackendRuntime:
         if env_credentials_file:
             config['credentials_file'] = env_credentials_file
 
+        env_contacts_oauth_file = os.getenv('GOOGLE_CONTACTS_OAUTH_FILE') or os.getenv('CONTACTS_OAUTH_FILE')
+        if env_contacts_oauth_file:
+            config['contacts_oauth_file'] = env_contacts_oauth_file
+
         return config
+
+    def _resolve_contacts_oauth_file(self):
+        configured_path = str(self.config.get('contacts_oauth_file', '')).strip()
+        if configured_path and os.path.exists(configured_path):
+            return configured_path
+
+        home_dir = os.path.expanduser('~')
+        candidate_patterns = [
+            os.path.join(self.base_dir, 'credentials1.json'),
+            os.path.join(self.base_dir, 'credentials*.json'),
+            os.path.join(self.base_dir, 'client_secret*.json'),
+            os.path.join(self.base_dir, '*oauth*.json'),
+            os.path.join(home_dir, 'Downloads', 'credentials1.json'),
+            os.path.join(home_dir, 'Downloads', 'credentials*.json'),
+            os.path.join(home_dir, 'Downloads', 'client_secret*.json'),
+            os.path.join(home_dir, 'Downloads', '*oauth*.json'),
+        ]
+
+        for pattern in candidate_patterns:
+            matches = sorted(path for path in glob.glob(pattern) if os.path.isfile(path))
+            if matches:
+                resolved = matches[0]
+                self.config['contacts_oauth_file'] = resolved
+                return resolved
+
+        return ''
 
     def _load_service_account_credentials(self, scopes):
         raw_json = (os.environ.get('GOOGLE_CREDS_JSON') or '').strip()
@@ -1134,7 +1166,13 @@ class BackendRuntime:
     def get_google_contacts_payload(self, search='', force_refresh=False):
         with self._google_contacts_lock:
             if force_refresh or not self._google_contacts_cache:
-                oauth_file = str(self.config.get('contacts_oauth_file', '')).strip()
+                oauth_file = self._resolve_contacts_oauth_file()
+                if not oauth_file:
+                    raise FileNotFoundError(
+                        'Google Contacts OAuth client JSON is not configured. '
+                        'Set contacts_oauth_file in config.json or GOOGLE_CONTACTS_OAUTH_FILE, '
+                        'or place your OAuth client JSON in ~/Downloads as credentials1.json.'
+                    )
                 token_file = os.path.join(self.base_dir, 'google_contacts_token.json')
                 contacts = fetch_google_contacts(
                     oauth_file,
