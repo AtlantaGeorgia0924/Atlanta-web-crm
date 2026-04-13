@@ -238,6 +238,14 @@ function normalizeDigits(value) {
   return String(value || '').replace(/\D/g, '');
 }
 
+function parseAmountLike(value) {
+  const digits = normalizeDigits(value);
+  if (!digits) {
+    return 0;
+  }
+  return Number(digits) || 0;
+}
+
 function normalizeWhatsappPhone(value) {
   let digits = normalizeDigits(value);
   if (!digits) {
@@ -2577,12 +2585,11 @@ function WorkspaceApp() {
   const clientNameOptions = useMemo(() => (
     Array.from(new Set([
       ...Object.keys(clientsData.registry || {}),
-      ...(googleContactsData.contacts || []).map((entry) => String(entry.name || '').trim()).filter(Boolean),
     ]))
       .filter((name) => String(name || '').trim())
       .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
       .slice(0, 500)
-  ), [clientsData.registry, googleContactsData.contacts]);
+  ), [clientsData.registry]);
   const sellerPhoneOptions = useMemo(() => (
     Array.from(new Set([
       ...(clientsData.entries || []).map((entry) => {
@@ -2590,13 +2597,8 @@ function WorkspaceApp() {
         const phone = normalizeWhatsappPhone(entry.phone || '');
         return name && phone ? `${name} - ${phone}` : '';
       }).filter(Boolean),
-      ...(googleContactsData.contacts || []).map((entry) => {
-        const name = String(entry.name || '').trim();
-        const phone = normalizeWhatsappPhone(entry.phone || '');
-        return name && phone ? `${name} - ${phone}` : '';
-      }).filter(Boolean),
     ])).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' })).slice(0, 600)
-  ), [clientsData.entries, googleContactsData.contacts]);
+  ), [clientsData.entries]);
   const sellerPhoneByName = useMemo(() => {
     const mapping = {};
     (googleContactsData.contacts || []).forEach((entry) => {
@@ -2632,6 +2634,7 @@ function WorkspaceApp() {
       buyer_phone: getProductCellValue(row, stockView?.headers || [], ['PHONE NUMBER OF BUYER']) || '',
       date: getProductCellValue(row, stockView?.headers || [], ['DATE', 'DATE BOUGHT', 'AVAILABILITY/DATE SOLD']) || '',
       imei: getProductCellValue(row, stockView?.headers || [], ['IMEI']) || '',
+      price: getProductCellValue(row, stockView?.headers || [], ['PRICE', 'AMOUNT SOLD', 'SELLING PRICE']) || '',
       inventory_status: row.inventory_status,
       inventory_amount_paid: row.inventory_amount_paid,
     }));
@@ -3505,17 +3508,24 @@ function WorkspaceApp() {
     const pendingKey = `${entry?.kind || 'stock'}-${entry?.row_num || entry}`;
     setUpdatingPendingKey(pendingKey);
     try {
-      const normalizedStatus = String(paymentStatus || '').trim().toUpperCase();
+      let normalizedStatus = String(paymentStatus || '').trim().toUpperCase();
       const normalizedAmount = String(amountPaid || '').trim();
+      const entryPrice = parseAmountLike(entry?.price);
+      const amountValue = parseAmountLike(normalizedAmount);
+      if (normalizedStatus !== 'PAID' && entryPrice > 0 && amountValue >= entryPrice) {
+        normalizedStatus = 'PAID';
+      }
+
+      let result = null;
       if (entry?.kind === 'service') {
-        await updateServiceDealPayment({
+        result = await updateServiceDealPayment({
           rowNum: entry.row_num,
           paymentStatus: normalizedStatus,
           amountPaid: normalizedAmount || null,
           forceRefresh: false,
         });
       } else {
-        await updatePendingDealPayment({
+        result = await updatePendingDealPayment({
           rowNum: entry.row_num || entry,
           paymentStatus: normalizedStatus,
           amountPaid: normalizedAmount || null,
@@ -3523,10 +3533,11 @@ function WorkspaceApp() {
         });
       }
       await Promise.all([loadStock(true), loadCoreWorkspace(false)]);
+      const savedStatus = String(result?.payment_status || normalizedStatus).toUpperCase();
       setStatusText(
         entry?.kind === 'service'
-          ? `Service deal row #${entry.row_num} updated to ${normalizedStatus}.`
-          : `Pending deal row #${entry?.row_num || entry} updated to ${normalizedStatus}.`
+          ? `Service deal row #${entry.row_num} updated to ${savedStatus}.`
+          : `Pending deal row #${entry?.row_num || entry} updated to ${savedStatus}.`
       );
     } catch (error) {
       setStatusText(error.message || 'Could not update this pending deal payment status.');

@@ -1380,6 +1380,11 @@ class BackendRuntime:
         else:
             resolved_amount = explicit_amount if explicit_amount is not None else current_paid
 
+        # Auto-promote to PAID when the entered amount covers the full price.
+        if status_text != 'PAID' and price_value > 0 and resolved_amount >= price_value:
+            status_text = 'PAID'
+            resolved_amount = price_value
+
         queued_operation_ids = []
         queue_id = self._enqueue_db_first_operation(
             'service',
@@ -1665,13 +1670,63 @@ class BackendRuntime:
         stock_row = list(stock_values[row_num - 1])
         padded_stock_row = stock_row + [''] * max(0, len(stock_headers) - len(stock_row))
         buyer_col = svc_stock_header_index(stock_headers_upper, 'NAME OF BUYER')
+        buyer_phone_col = svc_stock_header_index(stock_headers_upper, 'PHONE NUMBER OF BUYER', 'PHONE OF BUYER', 'BUYER PHONE')
         imei_col = svc_stock_header_index(stock_headers_upper, 'IMEI')
         product_status_col = svc_stock_header_index(stock_headers_upper, 'PRODUCT STATUS', 'STOCK STATUS', 'ITEM STATUS')
         availability_col = svc_stock_header_index(stock_headers_upper, 'AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE')
         description_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
 
         buyer_name = str(padded_stock_row[buyer_col] if buyer_col is not None and buyer_col < len(padded_stock_row) else '').strip().upper()
+        buyer_phone = normalize_phone_number(padded_stock_row[buyer_phone_col] if buyer_phone_col is not None and buyer_phone_col < len(padded_stock_row) else '')
         imei_value = str(padded_stock_row[imei_col] if imei_col is not None and imei_col < len(padded_stock_row) else '').strip()
+        description_value = str(padded_stock_row[description_col] if description_col is not None and description_col < len(padded_stock_row) else '').strip().upper()
+
+        # Pre-scan inventory to find the matching row and price so status can be
+        # auto-promoted to PAID when the entered amount covers the full price.
+        has_explicit_amount = amount_paid is not None and str(amount_paid).strip() != ''
+        explicit_amount = clean_amount(amount_paid) if has_explicit_amount else None
+        main_values = self.get_main_values(force_refresh=False)
+        main_header_row_idx = detect_sheet_header_row(main_values)
+        main_headers = [str(cell or '').strip() for cell in (main_values[main_header_row_idx] if main_header_row_idx < len(main_values) else [])]
+        main_headers_upper = [header.upper() for header in main_headers]
+        main_name_col = svc_stock_header_index(main_headers_upper, 'NAME')
+        main_phone_col = svc_stock_header_index(main_headers_upper, 'PHONE NUMBER', 'PHONE', 'PHONE NO')
+        main_imei_col = svc_stock_header_index(main_headers_upper, 'IMEI')
+        main_description_col = svc_stock_header_index(main_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
+        main_status_col = svc_stock_header_index(main_headers_upper, 'STATUS')
+        main_paid_col = svc_stock_header_index(main_headers_upper, 'AMOUNT PAID')
+        main_price_col = svc_stock_header_index(main_headers_upper, 'PRICE')
+
+        matched_inventory_row = None
+        matched_row_values = []
+        if main_values and main_status_col is not None:
+            for index in range(len(main_values) - 1, main_header_row_idx, -1):
+                inv_row = main_values[index] if index < len(main_values) else []
+                if not inv_row:
+                    continue
+                row_imei = str(inv_row[main_imei_col] or '').strip() if main_imei_col is not None and main_imei_col < len(inv_row) else ''
+                row_name = str(inv_row[main_name_col] or '').strip().upper() if main_name_col is not None and main_name_col < len(inv_row) else ''
+                row_phone = normalize_phone_number(inv_row[main_phone_col] if main_phone_col is not None and main_phone_col < len(inv_row) else '')
+                row_description = str(inv_row[main_description_col] or '').strip().upper() if main_description_col is not None and main_description_col < len(inv_row) else ''
+                row_status = str(inv_row[main_status_col] or '').strip().upper() if main_status_col < len(inv_row) else ''
+                if row_status == 'RETURNED':
+                    continue
+                if imei_value and row_imei != imei_value:
+                    continue
+                if buyer_phone and row_phone != buyer_phone:
+                    continue
+                if buyer_name and row_name and row_name != buyer_name:
+                    continue
+                if not imei_value and description_value and row_description and row_description != description_value:
+                    continue
+                matched_inventory_row = index + 1
+                matched_row_values = list(inv_row)
+                break
+
+        if explicit_amount and explicit_amount > 0 and matched_row_values and main_price_col is not None and status_text != 'PAID':
+            pre_price = clean_amount(matched_row_values[main_price_col]) if main_price_col < len(matched_row_values) else 0
+            if pre_price > 0 and explicit_amount >= pre_price:
+                status_text = 'PAID'
 
         stock_status_choice = 'Sold' if status_text == 'PAID' else 'Pending Deal'
         stock_status_key, fill_color = map_sale_status(stock_status_choice)
@@ -1736,36 +1791,6 @@ class BackendRuntime:
             )
             queued_operation_ids.append(queue_id)
 
-        main_values = self.get_main_values(force_refresh=False)
-        main_header_row_idx = detect_sheet_header_row(main_values)
-        main_headers = [str(cell or '').strip() for cell in (main_values[main_header_row_idx] if main_header_row_idx < len(main_values) else [])]
-        main_headers_upper = [header.upper() for header in main_headers]
-        main_name_col = svc_stock_header_index(main_headers_upper, 'NAME')
-        main_imei_col = svc_stock_header_index(main_headers_upper, 'IMEI')
-        main_status_col = svc_stock_header_index(main_headers_upper, 'STATUS')
-        main_paid_col = svc_stock_header_index(main_headers_upper, 'AMOUNT PAID')
-        main_price_col = svc_stock_header_index(main_headers_upper, 'PRICE')
-
-        matched_inventory_row = None
-        matched_row_values = []
-        if main_values and main_status_col is not None:
-            for index in range(len(main_values) - 1, main_header_row_idx, -1):
-                row = main_values[index] if index < len(main_values) else []
-                if not row:
-                    continue
-                row_imei = str(row[main_imei_col] or '').strip() if main_imei_col is not None and main_imei_col < len(row) else ''
-                row_name = str(row[main_name_col] or '').strip().upper() if main_name_col is not None and main_name_col < len(row) else ''
-                row_status = str(row[main_status_col] or '').strip().upper() if main_status_col < len(row) else ''
-                if row_status == 'RETURNED':
-                    continue
-                if imei_value and row_imei and row_imei != imei_value:
-                    continue
-                if buyer_name and row_name and row_name != buyer_name:
-                    continue
-                matched_inventory_row = index + 1
-                matched_row_values = row
-                break
-
         if matched_inventory_row is not None and main_status_col is not None:
             queue_id = self._enqueue_db_first_operation(
                 'inventory',
@@ -1781,8 +1806,6 @@ class BackendRuntime:
             queued_operation_ids.append(queue_id)
 
             if main_paid_col is not None:
-                has_explicit_amount = amount_paid is not None and str(amount_paid).strip() != ''
-                explicit_amount = clean_amount(amount_paid) if has_explicit_amount else None
                 existing_paid = clean_amount(matched_row_values[main_paid_col]) if main_paid_col < len(matched_row_values) else 0
                 existing_price = clean_amount(matched_row_values[main_price_col]) if main_price_col is not None and main_price_col < len(matched_row_values) else 0
 
