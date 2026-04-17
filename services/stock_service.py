@@ -251,7 +251,7 @@ def build_sale_status_update_values(status_key, qty_col=None, status_col=None, s
 def build_stock_view(values, headers, headers_upper, header_row_idx, color_status_map=None, filter_text='', filter_mode='all'):
     values = values or []
     qty_col = header_index(headers_upper, 'QTY', 'QUANTITY', 'STOCK', 'UNITS')
-    product_status_col = header_index(headers_upper, 'PRODUCT STATUS', 'STOCK STATUS', 'ITEM STATUS')
+    product_status_col = header_index(headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS')
     desc_col = header_index(headers_upper, 'DESCRIPTION', 'DESC', 'DETAILS')
     model_col = header_index(headers_upper, 'MODEL', 'PHONE MODEL', 'PHONE', 'NAME', 'DEVICE')
 

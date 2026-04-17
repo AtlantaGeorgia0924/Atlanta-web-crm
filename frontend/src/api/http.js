@@ -1,81 +1,90 @@
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+let authToken = '';
+let unauthorizedHandler = null;
 
-const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504, 522, 524]);
-
-function sleep(ms) {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
-
-export function buildUrl(path, query = {}) {
-  const base = API_BASE || window.location.origin;
-  const url = new URL(path, base);
-
-  Object.entries(query).forEach(([key, value]) => {
-    if (value === undefined || value === null || value === '') {
-      return;
-    }
-    url.searchParams.set(key, String(value));
-  });
-
-  return API_BASE ? url.toString() : `${url.pathname}${url.search}`;
-}
-
-export async function requestJson(path, { method = 'GET', query, body, headers, signal } = {}) {
-  const upperMethod = String(method || 'GET').toUpperCase();
-  const maxAttempts = upperMethod === 'GET' ? 3 : 1;
-  let response = null;
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      response = await fetch(buildUrl(path, query), {
-        method: upperMethod,
-        headers: {
-          Accept: 'application/json',
-          ...(body ? { 'Content-Type': 'application/json' } : {}),
-          ...(headers || {}),
-        },
-        body: body ? JSON.stringify(body) : undefined,
-        signal,
-      });
-    } catch (error) {
-      lastError = error;
-      if (attempt < maxAttempts) {
-        await sleep(250 * attempt);
-        continue;
-      }
-      throw error;
-    }
-
-    if (response.ok || !RETRYABLE_STATUS.has(response.status) || attempt >= maxAttempts) {
-      break;
-    }
-
-    await sleep(250 * attempt);
-  }
-
-  if (!response && lastError) {
-    throw lastError;
-  }
-
-  if (!response.ok) {
-    let message = `Request failed with status ${response.status}`;
-    try {
-      const errorPayload = await response.json();
-      if (typeof errorPayload?.detail === 'string') {
-        message = errorPayload.detail;
-      }
-    } catch {
-      // Preserve the fallback message when the response is not JSON.
-    }
-    throw new Error(message);
-  }
-
-  return response.json();
+function getApiBaseUrl() {
+	const base = String(import.meta.env.VITE_API_BASE_URL || '').trim();
+	return base.replace(/\/$/, '');
 }
 
 export function getApiLabel() {
-  return API_BASE || 'Vite proxy -> /api';
+	const base = getApiBaseUrl();
+	if (base) {
+		return base;
+	}
+	return 'Same-origin API proxy';
+}
+
+export function setAuthToken(token) {
+	authToken = String(token || '').trim();
+}
+
+export function setUnauthorizedHandler(handler) {
+	unauthorizedHandler = typeof handler === 'function' ? handler : null;
+}
+
+function buildUrl(path, query = null) {
+	const normalizedPath = String(path || '').startsWith('/') ? String(path || '') : `/${String(path || '')}`;
+	const base = getApiBaseUrl();
+	const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
+	const url = new URL(base ? `${base}${normalizedPath}` : normalizedPath, origin);
+
+	if (query && typeof query === 'object') {
+		Object.entries(query).forEach(([key, value]) => {
+			if (value === undefined || value === null || value === '') {
+				return;
+			}
+			url.searchParams.set(key, String(value));
+		});
+	}
+
+	if (!base && typeof window !== 'undefined') {
+		return `${url.pathname}${url.search}`;
+	}
+	return url.toString();
+}
+
+export async function requestJson(path, {
+	method = 'GET',
+	query = null,
+	body = null,
+	headers = {},
+	signal,
+	auth = true,
+} = {}) {
+	const nextHeaders = {
+		Accept: 'application/json',
+		...headers,
+	};
+
+	if (body !== null && body !== undefined) {
+		nextHeaders['Content-Type'] = 'application/json';
+	}
+
+	if (auth && authToken) {
+		nextHeaders.Authorization = `Bearer ${authToken}`;
+	}
+
+	const response = await fetch(buildUrl(path, query), {
+		method,
+		headers: nextHeaders,
+		body: body !== null && body !== undefined ? JSON.stringify(body) : undefined,
+		signal,
+	});
+
+	const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+	const isJson = contentType.includes('application/json');
+	const payload = isJson ? await response.json().catch(() => ({})) : await response.text().catch(() => '');
+
+	if (!response.ok) {
+		if (response.status === 401 && unauthorizedHandler) {
+			unauthorizedHandler();
+		}
+
+		const detail = isJson
+			? payload?.detail || payload?.message || response.statusText
+			: payload || response.statusText;
+		throw new Error(String(detail || `Request failed (${response.status})`));
+	}
+
+	return payload;
 }

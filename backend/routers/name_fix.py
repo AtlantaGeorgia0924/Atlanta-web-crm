@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.dependencies import get_runtime
+from backend.dependencies import get_runtime, require_admin
 from services.name_fix_service import (
     build_name_fix_all_updates,
     build_name_fix_summary,
@@ -12,7 +12,11 @@ from services.name_fix_service import (
     fuzzy_score,
 )
 
-router = APIRouter(prefix='/api/name-fix', tags=['name-fix'])
+router = APIRouter(
+    prefix='/api/name-fix',
+    tags=['name-fix'],
+    dependencies=[Depends(require_admin)],
+)
 
 
 class FuzzyScoreRequest(BaseModel):

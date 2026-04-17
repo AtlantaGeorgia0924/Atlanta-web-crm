@@ -2,6 +2,7 @@ import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 
 
 import { getApiLabel } from './api/http';
 import { addServiceRecord, checkoutSaleCart, fetchPendingServiceDeals, fetchStockDashboard, returnServiceDeal, returnStockItem, updatePendingDealPayment, updateServiceDealPayment, updateStockRow } from './api/stock';
+import { createUser, fetchUsers, updateUser } from './api/users';
 import {
   addStockRecord,
   applyAllNameFixes,
@@ -10,6 +11,8 @@ import {
   deleteClient,
   fetchDashboardLogo,
   fetchClients,
+  fetchFoundationCashflowSummary,
+  fetchFoundationWeeklyAllowance,
   fetchGoogleContacts,
   fetchLiveBill,
   fetchLiveDebtors,
@@ -17,6 +20,7 @@ import {
   fetchNameFixes,
   fetchOutstandingItems,
   fetchPaymentPlan,
+  fetchServicesToday,
   fetchStockForm,
   fetchSyncStatus,
   fetchUnpaidToday,
@@ -42,8 +46,8 @@ const PRODUCT_FILTERS = [
 ];
 
 const CART_FILTERS = [
-  { value: 'all', label: 'All Products' },
-  { value: 'pending', label: 'Pending Deal (Client Yet To Pay)' },
+  { value: 'available', label: 'Available Products' },
+  { value: 'pending', label: 'Phone Pending Deal (Client Yet To Pay)' },
   { value: 'sold', label: 'Sold Items' },
 ];
 
@@ -55,9 +59,9 @@ const PRODUCT_SUMMARY_COLUMNS = [
   { key: 'storage', label: 'Storage', aliases: ['STORAGE'] },
   { key: 'imei', label: 'IMEI', aliases: ['IMEI'] },
   { key: 'cost_price', label: 'Cost Price', aliases: ['COST PRICE'] },
+  { key: 'selling_price', label: 'Selling Price', aliases: ['AMOUNT SOLD', 'SELLING PRICE', 'PRICE'] },
   { key: 'seller', label: 'Seller', aliases: ['NAME OF SELLER'] },
   { key: 'buyer', label: 'Buyer', aliases: ['NAME OF BUYER'] },
-  { key: 'availability', label: 'Sold / Availability', aliases: ['AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE'] },
 ];
 
 const ACTION_ITEMS = [
@@ -104,6 +108,12 @@ const ACTION_ITEMS = [
     description: 'Reapply the most recently undone payment action.',
   },
   {
+    key: 'import_phones',
+    type: 'action',
+    title: 'Import Spreadsheet Phones',
+    description: 'Import phone numbers from the spreadsheet to speed up autofill in forms.',
+  },
+  {
     key: 'clients',
     type: 'view',
     title: 'Clients',
@@ -128,10 +138,22 @@ const ACTION_ITEMS = [
     description: 'Inspect sync status, cache counts, and runtime health.',
   },
   {
+    key: 'users',
+    type: 'view',
+    title: 'User Management',
+    description: 'Create users, assign roles, and control account status.',
+  },
+  {
     key: 'exit',
     type: 'action',
     title: 'Exit',
     description: 'Close the browser tab for this workspace.',
+  },
+  {
+    key: 'logout',
+    type: 'action',
+    title: 'Log Out',
+    description: 'Sign out of your account and return to the login page.',
   },
 ];
 
@@ -168,7 +190,19 @@ const VIEW_META = {
     title: 'Settings',
     description: 'Watch the sync runtime, queue state, and cache health.',
   },
+  services_today: {
+    title: 'Services Today',
+    description: 'All services recorded today with status, amount paid, and balances.',
+  },
+  users: {
+    title: 'User Management',
+    description: 'Admin-only user provisioning and role/status control.',
+  },
 };
+
+const STAFF_ALLOWED_VIEWS = new Set(['products', 'cart']);
+const STOCK_VIEW_CACHE_KEY = 'atlanta_stock_view_cache_v1';
+const STOCK_FORM_CACHE_KEY = 'atlanta_stock_form_cache_v1';
 
 const STATUS_CLASS_MAP = {
   AVAILABLE: 'available',
@@ -193,12 +227,24 @@ function formatShortStamp(dateValue) {
     return 'Waiting';
   }
 
+  const parsedDate = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return 'Waiting';
+  }
+
   return new Intl.DateTimeFormat('en-GB', {
     day: '2-digit',
     month: 'short',
     hour: '2-digit',
     minute: '2-digit',
-  }).format(dateValue);
+  }).format(parsedDate);
+}
+
+function formatDateForInput(dateValue = new Date()) {
+  const year = dateValue.getFullYear();
+  const month = String(dateValue.getMonth() + 1).padStart(2, '0');
+  const day = String(dateValue.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function formatRuntimeSnapshot(value, fallback = 'None') {
@@ -576,14 +622,14 @@ function SimpleBarGraph({ title, description, items, valueFormatter = formatCoun
   );
 }
 
-function ActionSidebar({ activeView, undoEnabled, redoEnabled, onTrigger }) {
+function ActionSidebar({ activeView, undoEnabled, redoEnabled, onTrigger, actionItems }) {
   return (
     <aside className="sidebar-frame sidebar-frame--list">
       <h2>General Actions</h2>
       <p>Reordered for the web workspace and expanded with clear descriptions.</p>
 
       <div className="action-list">
-        {ACTION_ITEMS.map((item) => {
+        {(actionItems || []).map((item) => {
           const isView = item.type === 'view';
           const isActive = isView && item.key === activeView;
           const disabled = (item.key === 'undo' && !undoEnabled) || (item.key === 'redo' && !redoEnabled);
@@ -605,7 +651,7 @@ function ActionSidebar({ activeView, undoEnabled, redoEnabled, onTrigger }) {
   );
 }
 
-function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStatus, lastLoadedAt, revealedMetric, setRevealedMetric }) {
+function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStatus, lastLoadedAt, revealedMetric, setRevealedMetric, onStatisticClick }) {
   const stockCounts = stockView?.counts || {};
   const homeSummaryCards = [
     {
@@ -699,13 +745,21 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
           <p>Quick operational numbers pulled from debtors, sales, stock, sync, and fix queues.</p>
         </div>
         <div className="stats-grid">
-          {statisticsCards.map((card) => (
-            <article key={card.label} className="stat-card">
-              <span className="metric-label">{card.label}</span>
-              <strong className="stat-card__value">{card.value}</strong>
-              <span className="metric-note">{card.note}</span>
-            </article>
-          ))}
+          {statisticsCards.map((card) => {
+            const isClickable = card.label !== 'Queue Pending' && card.label !== 'Last Loaded';
+            return (
+              <article
+                key={card.label}
+                className={`stat-card ${isClickable ? 'stat-card--clickable' : ''}`}
+                onClick={() => isClickable && onStatisticClick?.(card.label)}
+                style={isClickable ? { cursor: 'pointer' } : {}}
+              >
+                <span className="metric-label">{card.label}</span>
+                <strong className="stat-card__value">{card.value}</strong>
+                <span className="metric-note">{card.note}</span>
+              </article>
+            );
+          })}
         </div>
       </section>
 
@@ -734,52 +788,89 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
   );
 }
 
-function CashFlowView({ salesSnapshot, debtorsData }) {
-  const salesToday = Number(salesSnapshot?.sales_today || 0);
-  const salesMonth = Number(salesSnapshot?.sales_month || 0);
-  const outstanding = Number(debtorsData?.total_debtors_amount || 0);
-  const projectedCollectable = salesToday + outstanding;
+function CashFlowView({ cashflowSummary, weeklyAllowance, loading, errorText, lastUpdatedAt, onReload }) {
+  const summary = cashflowSummary || {};
+  const allowance = weeklyAllowance || {};
 
-  const weekLabels = getRollingWeekLabels();
-  const weekItems = weekLabels.map((label, index) => ({
-    label,
-    value: Number(salesSnapshot?.daily_totals?.[index] || 0),
-  }));
+  const cards = [
+    {
+      key: 'cash-in',
+      label: 'Total Cash In',
+      value: formatCurrency(summary.total_cash_in || 0),
+      note: 'Captured from sales ledger.',
+      className: '',
+    },
+    {
+      key: 'expenses',
+      label: 'Total Expenses',
+      value: formatCurrency(summary.total_expenses || 0),
+      note: 'Tracked operating expenses.',
+      className: '',
+    },
+    {
+      key: 'cost',
+      label: 'Total Cost',
+      value: formatCurrency(summary.total_cost || 0),
+      note: 'Cost basis from sales ledger.',
+      className: '',
+    },
+    {
+      key: 'profit',
+      label: 'Net Profit',
+      value: formatCurrency(summary.net_profit || 0),
+      note: 'Sales minus cost and expenses.',
+      className: 'metric-card--profit',
+    },
+    {
+      key: 'available-cash',
+      label: 'Available Cash',
+      value: formatCurrency(summary.available_cash || 0),
+      note: 'After reserves and receivables exclusion.',
+      className: '',
+    },
+    {
+      key: 'reserve',
+      label: 'Reserve Amount',
+      value: formatCurrency(summary.reserve_amount || 0),
+      note: 'Protected by reserve percentage.',
+      className: '',
+    },
+    {
+      key: 'allowance',
+      label: 'Weekly Allowance',
+      value: formatCurrency(allowance.suggested_allowance || 0),
+      note: `Calculated on ${allowance.calculation_date || 'N/A'}.`,
+      className: 'metric-card--allowance',
+    },
+  ];
 
   return (
     <div className="workspace-stack">
       <section className="summary-frame">
-        <h2>Simple Cash Flow</h2>
+        <h2>Cashflow Dashboard</h2>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          Last Updated: {lastUpdatedAt ? formatShortStamp(lastUpdatedAt) : 'Not loaded yet'}
+        </p>
+        <div className="button-row" style={{ marginTop: '10px' }}>
+          <button type="button" className="secondary-button" onClick={() => onReload?.()} disabled={loading}>
+            {loading ? 'Loading...' : 'Reload'}
+          </button>
+        </div>
+        {errorText ? (
+          <div className="notice notice-error" style={{ marginTop: '12px' }}>
+            {errorText}
+          </div>
+        ) : null}
         <div className="summary-grid summary-grid--home">
-          <article className="metric-card metric-card--home">
-            <span className="metric-label">Cash In Today</span>
-            <strong className="metric-value">{formatCurrency(salesToday)}</strong>
-            <span className="metric-note">Captured from today's completed sales.</span>
-          </article>
-          <article className="metric-card metric-card--home">
-            <span className="metric-label">Cash In This Month</span>
-            <strong className="metric-value">{formatCurrency(salesMonth)}</strong>
-            <span className="metric-note">Month-to-date recorded inflow.</span>
-          </article>
-          <article className="metric-card metric-card--home">
-            <span className="metric-label">Outstanding Balance</span>
-            <strong className="metric-value">{formatCurrency(outstanding)}</strong>
-            <span className="metric-note">Open receivables from debtors.</span>
-          </article>
-          <article className="metric-card metric-card--home">
-            <span className="metric-label">Today + Collectables</span>
-            <strong className="metric-value">{formatCurrency(projectedCollectable)}</strong>
-            <span className="metric-note">Quick projection if all open balances settle.</span>
-          </article>
+          {cards.map((card) => (
+            <article key={card.key} className={`metric-card metric-card--home ${card.className}`.trim()}>
+              <span className="metric-label">{card.label}</span>
+              <strong className="metric-value">{loading ? 'Loading...' : card.value}</strong>
+              <span className="metric-note">{card.note}</span>
+            </article>
+          ))}
         </div>
       </section>
-
-      <SimpleBarGraph
-        title="Daily Cash In"
-        description="Last seven days of captured sales values."
-        items={weekItems}
-        valueFormatter={formatCurrency}
-      />
     </div>
   );
 }
@@ -790,6 +881,7 @@ function ProductComposerModal({
   isAddingProduct,
   sellerPhoneOptions,
   currentTimeLabel,
+  dropdownOptions,
   onClose,
   onSubmitProduct,
   onResetProductForm,
@@ -856,17 +948,58 @@ function ProductComposerModal({
       );
     }
 
-    if (key === 'AVAILABILITY/DATE SOLD' || key === 'DATE SOLD' || key === 'SOLD DATE') {
+    if (key === 'IMEI') {
+      return (
+        <>
+          <input
+            type="text"
+            list="imei-options"
+            value={value}
+            onChange={(event) => setDraftValues((current) => ({
+              ...current,
+              [header]: event.target.value,
+            }))}
+            placeholder="Type to search IMEIs"
+          />
+          <datalist id="imei-options">
+            {(dropdownOptions?.imei || []).slice(0, 50).map((option) => (
+              <option key={option} value={option} />
+            ))}
+          </datalist>
+        </>
+      );
+    }
+
+    if (key === 'DEVICE') {
       return (
         <select
-          value={value || 'AVAILABLE'}
+          value={value}
           onChange={(event) => setDraftValues((current) => ({
             ...current,
             [header]: event.target.value,
           }))}
         >
-          <option value="AVAILABLE">AVAILABLE</option>
-          <option value="SOLD">SOLD</option>
+          <option value="">Select device</option>
+          {(dropdownOptions?.device || []).map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
+      );
+    }
+
+    if (key === 'STORAGE') {
+      return (
+        <select
+          value={value}
+          onChange={(event) => setDraftValues((current) => ({
+            ...current,
+            [header]: event.target.value,
+          }))}
+        >
+          <option value="">Select storage</option>
+          {(dropdownOptions?.storage || []).map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
         </select>
       );
     }
@@ -934,11 +1067,38 @@ function ProductComposerModal({
 function ProductDetailModal({ row, headers, onClose, onSave, saving }) {
   const [isEditing, setIsEditing] = useState(false);
   const [valuesByHeader, setValuesByHeader] = useState({});
+  const [productStatus, setProductStatus] = useState('available');
+  const localAmountPaidDraftKey = '__LOCAL_BUYER_AMOUNT_PAID__';
+  const resolveHeader = (...aliases) => {
+    const normalize = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const normalizedAliases = aliases.map(normalize).filter(Boolean);
+    if (!normalizedAliases.length) {
+      return '';
+    }
+
+    const exactMatch = headers.find((header) => normalizedAliases.includes(normalize(header)));
+    if (exactMatch) {
+      return exactMatch;
+    }
+
+    return headers.find((header) => {
+      const normalizedHeader = normalize(header);
+      return normalizedAliases.some((alias) => normalizedHeader.includes(alias) || alias.includes(normalizedHeader));
+    }) || '';
+  };
+
+  const buyerNameHeader = resolveHeader('NAME OF BUYER');
+  const buyerPhoneHeader = resolveHeader('PHONE NUMBER OF BUYER', 'PHONE OF BUYER', 'BUYER PHONE');
+  const amountSoldHeader = resolveHeader('AMOUNT SOLD', 'SELLING PRICE', 'PRICE');
+  const amountPaidHeader = resolveHeader('AMOUNT PAID', 'PAID', 'PAID AMOUNT');
+  const productStatusHeader = resolveHeader('PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS');
+  const availabilityHeader = resolveHeader('AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE');
 
   useEffect(() => {
     if (!row) {
       setValuesByHeader({});
       setIsEditing(false);
+      setProductStatus('available');
       return;
     }
 
@@ -947,6 +1107,14 @@ function ProductDetailModal({ row, headers, onClose, onSave, saving }) {
       next[header] = row.padded?.[index] || '';
     });
     setValuesByHeader(next);
+    
+    // Detect current status from row.label
+    const statusMap = {
+      'SOLD': 'sold',
+      'PENDING DEAL': 'pending',
+      'AVAILABLE': 'available',
+    };
+    setProductStatus(statusMap[String(row.label || '').toUpperCase()] || 'available');
     setIsEditing(false);
   }, [row, headers]);
 
@@ -955,7 +1123,23 @@ function ProductDetailModal({ row, headers, onClose, onSave, saving }) {
   }
 
   async function handleSave() {
-    await onSave(row.row_num, valuesByHeader);
+    const statusValue = { 'sold': 'SOLD', 'pending': 'PENDING DEAL', 'available': 'AVAILABLE' }[productStatus] || 'AVAILABLE';
+
+    const updatedValues = { ...valuesByHeader };
+    if (productStatusHeader) {
+      updatedValues[productStatusHeader] = statusValue;
+    }
+    if (availabilityHeader) {
+      if (productStatus === 'sold') {
+        updatedValues[availabilityHeader] = new Date().toLocaleDateString('en-US');
+      } else if (productStatus === 'pending') {
+        updatedValues[availabilityHeader] = 'PENDING DEAL';
+      } else {
+        updatedValues[availabilityHeader] = 'AVAILABLE';
+      }
+    }
+
+    await onSave(row.row_num, updatedValues);
     setIsEditing(false);
   }
 
@@ -982,19 +1166,88 @@ function ProductDetailModal({ row, headers, onClose, onSave, saving }) {
         {isEditing ? (
           <div className="form-stack">
             <div className="form-grid form-grid--modal">
-              {headers.map((header) => (
-                <label key={`${row.row_num}-${header}`} className="field-block">
-                  <span className="field-label">{header}</span>
-                  <input
-                    type="text"
-                    value={valuesByHeader[header] || ''}
-                    onChange={(event) => setValuesByHeader((current) => ({
-                      ...current,
-                      [header]: event.target.value,
-                    }))}
-                  />
-                </label>
-              ))}
+              <h4 style={{ gridColumn: '1 / -1', marginBottom: '8px', fontWeight: 600 }}>Buyer Information</h4>
+              <label className="field-block">
+                <span className="field-label">Buyer Name</span>
+                <input
+                  type="text"
+                  value={buyerNameHeader ? (valuesByHeader[buyerNameHeader] || '') : ''}
+                  onChange={(event) => setValuesByHeader((current) => ({
+                    ...current,
+                    ...(buyerNameHeader ? { [buyerNameHeader]: event.target.value } : {}),
+                  }))}
+                />
+              </label>
+              <label className="field-block">
+                <span className="field-label">Buyer Phone</span>
+                <input
+                  type="text"
+                  value={buyerPhoneHeader ? (valuesByHeader[buyerPhoneHeader] || '') : ''}
+                  onChange={(event) => setValuesByHeader((current) => ({
+                    ...current,
+                    ...(buyerPhoneHeader ? { [buyerPhoneHeader]: event.target.value } : {}),
+                  }))}
+                />
+              </label>
+              <label className="field-block">
+                <span className="field-label">Amount Sold</span>
+                <input
+                  type="text"
+                  value={amountSoldHeader ? (valuesByHeader[amountSoldHeader] || '') : ''}
+                  onChange={(event) => setValuesByHeader((current) => ({
+                    ...current,
+                    ...(amountSoldHeader ? { [amountSoldHeader]: event.target.value } : {}),
+                  }))}
+                />
+              </label>
+              <label className="field-block">
+                <span className="field-label">Amount Paid</span>
+                <input
+                  type="text"
+                  value={amountPaidHeader ? (valuesByHeader[amountPaidHeader] || '') : (valuesByHeader[localAmountPaidDraftKey] || '')}
+                  onChange={(event) => setValuesByHeader((current) => ({
+                    ...current,
+                    ...(amountPaidHeader ? { [amountPaidHeader]: event.target.value } : { [localAmountPaidDraftKey]: event.target.value }),
+                  }))}
+                />
+              </label>
+              <label className="field-block">
+                <span className="field-label">Product Status</span>
+                <select
+                  value={productStatus}
+                  onChange={(event) => setProductStatus(event.target.value)}
+                >
+                  <option value="available">Available</option>
+                  <option value="sold">Sold</option>
+                  <option value="pending">Pending Deal</option>
+                </select>
+              </label>
+            </div>
+
+            <div style={{ marginTop: '20px', paddingTop: '12px', borderTop: '1px solid rgba(85, 60, 30, 0.1)' }}>
+              <h4 style={{ marginBottom: '12px', fontWeight: 600 }}>Product Details</h4>
+              <div className="form-grid form-grid--modal">
+                {headers.filter((h) => ![
+                  buyerNameHeader,
+                  buyerPhoneHeader,
+                  productStatusHeader,
+                  amountSoldHeader,
+                  amountPaidHeader,
+                  availabilityHeader,
+                ].includes(h)).map((header) => (
+                  <label key={`${row.row_num}-${header}`} className="field-block">
+                    <span className="field-label">{header}</span>
+                    <input
+                      type="text"
+                      value={valuesByHeader[header] || ''}
+                      onChange={(event) => setValuesByHeader((current) => ({
+                        ...current,
+                        [header]: event.target.value,
+                      }))}
+                    />
+                  </label>
+                ))}
+              </div>
             </div>
 
             <div className="button-row button-row--end">
@@ -1041,11 +1294,31 @@ function ProductSummaryTable({
   headers,
   rows,
   emptyText,
+  summaryColumns = PRODUCT_SUMMARY_COLUMNS,
   onOpenDetails,
   onAddToCart,
+  showAmountPaidColumn = false,
   cartRowNumbers = [],
+  onFulfillPendingDeal,
+  onReturnPendingDeal,
+  updatingPendingKey = '',
+  returningPendingKey = '',
 }) {
   const cartRowSet = new Set(cartRowNumbers);
+  const [pendingDrafts, setPendingDrafts] = useState({});
+
+  function getPendingRowDraft(row) {
+    const key = `stock-${row.row_num}`;
+    return pendingDrafts[key] || { status: 'PAID', amount_paid: '' };
+  }
+
+  function setPendingRowDraft(row, field, value) {
+    const key = `stock-${row.row_num}`;
+    setPendingDrafts((prev) => ({
+      ...prev,
+      [key]: { ...(prev[key] || { status: 'PAID', amount_paid: '' }), [field]: value },
+    }));
+  }
 
   return (
     <div className="table-wrap">
@@ -1055,9 +1328,10 @@ function ProductSummaryTable({
             <th>See More</th>
             <th>Row</th>
             <th>Status</th>
-            {PRODUCT_SUMMARY_COLUMNS.map((column) => (
+            {summaryColumns.map((column) => (
               <th key={column.key}>{column.label}</th>
             ))}
+            {showAmountPaidColumn ? <th>Amount Paid</th> : null}
             {onAddToCart ? <th>Cart</th> : null}
           </tr>
         </thead>
@@ -1074,26 +1348,74 @@ function ProductSummaryTable({
                 <td>
                   <span className={`status-pill status-pill--${getStatusClass(row.label)}`}>{row.label}</span>
                 </td>
-                {PRODUCT_SUMMARY_COLUMNS.map((column) => (
+                {summaryColumns.map((column) => (
                   <td key={`${row.row_num}-${column.key}`}>{getProductCellValue(row, headers, column.aliases)}</td>
                 ))}
+                {showAmountPaidColumn ? (
+                  <td>{row.inventory_amount_paid || getProductCellValue(row, headers, ['AMOUNT PAID']) || '—'}</td>
+                ) : null}
                 {onAddToCart ? (
                   <td>
-                    <button
-                      type="button"
-                      className="table-action-button"
-                      onClick={() => onAddToCart(row)}
-                      disabled={cartRowSet.has(row.row_num) || row.label === 'SOLD'}
-                    >
-                      {cartRowSet.has(row.row_num) ? 'Added' : 'Add To Cart'}
-                    </button>
+                    {row.label === 'SOLD' ? null
+                      : row.label === 'PENDING DEAL' ? (
+                        <div className="inline-action-row">
+                          <select
+                            value={getPendingRowDraft(row).status}
+                            onChange={(e) => setPendingRowDraft(row, 'status', e.target.value)}
+                            disabled={updatingPendingKey === `stock-${row.row_num}` || returningPendingKey === `stock-${row.row_num}`}
+                          >
+                            <option value="PAID">PAID</option>
+                            <option value="PART PAYMENT">PART PAYMENT</option>
+                            <option value="UNPAID">UNPAID</option>
+                          </select>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={getPendingRowDraft(row).amount_paid}
+                            onChange={(e) => setPendingRowDraft(row, 'amount_paid', normalizeDigits(e.target.value))}
+                            placeholder="Amount paid"
+                            style={{ width: '100px' }}
+                            disabled={updatingPendingKey === `stock-${row.row_num}` || returningPendingKey === `stock-${row.row_num}`}
+                          />
+                          <button
+                            type="button"
+                            className="primary-button"
+                            onClick={() => onFulfillPendingDeal && onFulfillPendingDeal(
+                              { kind: 'stock', row_num: row.row_num },
+                              getPendingRowDraft(row).status,
+                              getPendingRowDraft(row).amount_paid
+                            )}
+                            disabled={updatingPendingKey === `stock-${row.row_num}` || returningPendingKey === `stock-${row.row_num}`}
+                          >
+                            {updatingPendingKey === `stock-${row.row_num}` ? 'Updating...' : 'Apply'}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => onReturnPendingDeal && onReturnPendingDeal({ kind: 'stock', row_num: row.row_num })}
+                            disabled={updatingPendingKey === `stock-${row.row_num}` || returningPendingKey === `stock-${row.row_num}`}
+                          >
+                            {returningPendingKey === `stock-${row.row_num}` ? 'Returning...' : 'Return'}
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="table-action-button"
+                          onClick={() => onAddToCart(row)}
+                          disabled={cartRowSet.has(row.row_num)}
+                        >
+                          {cartRowSet.has(row.row_num) ? 'Added' : 'Add To Cart'}
+                        </button>
+                      )
+                    }
                   </td>
                 ) : null}
               </tr>
             ))
           ) : (
             <tr>
-              <td colSpan={PRODUCT_SUMMARY_COLUMNS.length + (onAddToCart ? 4 : 3)} className="empty-state">
+              <td colSpan={summaryColumns.length + (showAmountPaidColumn ? 1 : 0) + (onAddToCart ? 4 : 3)} className="empty-state">
                 {emptyText}
               </td>
             </tr>
@@ -1140,6 +1462,7 @@ function CartView({
   sellerPhoneOptions,
   currentTimeLabel,
   cartBusy,
+  summaryColumns,
 }) {
   const headers = stockView?.headers || [];
   const rows = stockView?.all_rows_cache || [];
@@ -1182,6 +1505,32 @@ function CartView({
         [field]: value,
       },
     }));
+  }
+
+  function derivePendingStatusFromAmount(row, amountText, fallbackStatus = 'UNPAID') {
+    const normalizedText = String(amountText || '').trim();
+    if (!normalizedText) {
+      return fallbackStatus;
+    }
+
+    const amountValue = parseAmountLike(normalizedText);
+    if (amountValue <= 0) {
+      return 'UNPAID';
+    }
+
+    const salePriceValue = parseAmountLike(row?.price || row?.amount);
+    if (salePriceValue <= 0) {
+      return fallbackStatus;
+    }
+    if (amountValue < salePriceValue) {
+      return 'PART PAYMENT';
+    }
+    if (amountValue === salePriceValue) {
+      return 'PAID';
+    }
+
+    // Keep current status for overpayment; Apply handler will validate and prompt redirect.
+    return fallbackStatus;
   }
 
   const filteredPendingDeals = useMemo(() => {
@@ -1252,9 +1601,15 @@ function CartView({
           headers={headers}
           rows={pagedRows}
           emptyText="No stock items are ready for the current cart filter."
+          summaryColumns={summaryColumns}
           onOpenDetails={onOpenDetails}
           onAddToCart={onAddToCart}
+          showAmountPaidColumn={filterMode === 'pending'}
           cartRowNumbers={cartItems.map((item) => item.stock_row_num)}
+          onFulfillPendingDeal={onUpdatePendingDealPayment}
+          onReturnPendingDeal={onReturnPendingDeal}
+          updatingPendingKey={updatingPendingKey}
+          returningPendingKey={returningPendingKey}
         />
 
         <div className="page-nav-wrap">
@@ -1298,8 +1653,8 @@ function CartView({
           type="button"
           className="floating-action-button"
           onClick={() => setPendingModalOpen(true)}
-          aria-label="Open pending deals"
-          title="Pending deals"
+          aria-label="Open pending deals - phone and service"
+          title="Service Pending Deal"
         >
           ⏳
           <span className="floating-action-badge">{formatCount((pendingDealEntries || []).length)}</span>
@@ -1333,7 +1688,7 @@ function CartView({
                     <div className="cart-item__header">
                       <div>
                         <strong>#{item.stock_row_num} {item.description || 'Selected phone'}</strong>
-                        <span className="cart-item__meta">IMEI: {item.imei || '—'} | Cost Price: {item.cost_price || '—'}</span>
+                        <span className="cart-item__meta">IMEI: {item.imei || '—'} | Selling Price: {item.sale_price || item.cost_price || '—'} | Amount Paid: {item.amount_paid || '—'}</span>
                       </div>
 
                       <button type="button" className="secondary-button" onClick={() => onRemoveCartItem(item.stock_row_num)} disabled={cartBusy}>
@@ -1517,8 +1872,8 @@ function CartView({
           <section className="modal-sheet" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
             <div className="modal-sheet__header">
               <div className="panel-header">
-                <h3>Pending Deals</h3>
-                <p>Manage both stock and service deals here. Search, update payment fulfillment, or return/refund unsuccessful deals.</p>
+                <h3>Phone & Service Pending Deals</h3>
+                <p>Manage both phone pending deals and service pending deals here. Search, update payment fulfillment, or return/refund unsuccessful deals.</p>
               </div>
               <button type="button" className="secondary-button" onClick={() => setPendingModalOpen(false)}>Close</button>
             </div>
@@ -1541,6 +1896,8 @@ function CartView({
                     <th>Description</th>
                     <th>Customer</th>
                     <th>Date</th>
+                    <th>Sale Price</th>
+                    <th>Amount Paid</th>
                     <th>Payment Fulfillment</th>
                     <th>Action</th>
                   </tr>
@@ -1557,22 +1914,23 @@ function CartView({
                         <td>{row.description || getProductCellValue(row, headers, ['DESCRIPTION', 'MODEL', 'DEVICE']) || '—'}</td>
                         <td>{row.buyer_name || row.name || getProductCellValue(row, headers, ['NAME OF BUYER']) || '—'}</td>
                         <td>{row.date || getProductCellValue(row, headers, ['DATE', 'DATE BOUGHT', 'AVAILABILITY/DATE SOLD']) || '—'}</td>
+                        <td>{row.price || row.amount || '—'}</td>
+                        <td>{row.amount_paid || row.inventory_amount_paid || '—'}</td>
                         <td>
                           <div className="inline-action-row">
-                            <select
-                              value={draft.status}
-                              onChange={(event) => updatePendingDraft(rowKey, 'status', event.target.value)}
-                              disabled={rowBusy}
-                            >
-                              <option value="PAID">PAID</option>
-                              <option value="PART PAYMENT">PART PAYMENT</option>
-                              <option value="UNPAID">UNPAID</option>
-                            </select>
+                            <span className="metric-note" style={{ minWidth: '92px', textAlign: 'center' }}>
+                              {draft.status || 'UNPAID'}
+                            </span>
                             <input
                               type="text"
                               inputMode="numeric"
                               value={draft.amount_paid}
-                              onChange={(event) => updatePendingDraft(rowKey, 'amount_paid', normalizeDigits(event.target.value))}
+                              onChange={(event) => {
+                                const nextAmount = normalizeDigits(event.target.value);
+                                const nextStatus = derivePendingStatusFromAmount(row, nextAmount, draft.status);
+                                updatePendingDraft(rowKey, 'amount_paid', nextAmount);
+                                updatePendingDraft(rowKey, 'status', nextStatus);
+                              }}
                               placeholder="Amount paid (optional)"
                               disabled={rowBusy}
                             />
@@ -1602,7 +1960,7 @@ function CartView({
                     );
                   }) : (
                     <tr>
-                      <td colSpan={7} className="empty-state">No pending deals matched the current filter.</td>
+                      <td colSpan={9} className="empty-state">No pending deals matched the current filter.</td>
                     </tr>
                   )}
                 </tbody>
@@ -1645,6 +2003,7 @@ function ProductsView({
   sellerNameOptions,
   sellerPhoneByName,
   currentTimeLabel,
+  summaryColumns,
 }) {
   const headers = stockView?.headers || [];
   const rows = stockView?.all_rows_cache || [];
@@ -1727,6 +2086,7 @@ function ProductsView({
           headers={headers}
           rows={pagedRows}
           emptyText="No products matched the current filters."
+          summaryColumns={summaryColumns}
           onOpenDetails={onOpenProductDetails}
         />
 
@@ -1757,6 +2117,7 @@ function ProductsView({
           sellerNameOptions={sellerNameOptions}
           sellerPhoneByName={sellerPhoneByName}
           currentTimeLabel={currentTimeLabel}
+          dropdownOptions={stockForm?.dropdown_options}
         />
       ) : null}
 
@@ -2345,6 +2706,81 @@ function FixView({ mismatches, selectedMismatch, correctName, setCorrectName, on
   );
 }
 
+function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesTodayBusy, onChangeDate, onLoadDate }) {
+  const items = servicesTodayData?.services || [];
+
+  return (
+    <section className="workspace-stack">
+      <section className="content-panel content-panel--main content-panel--full">
+        <div className="panel-header">
+          <h3>Services Done Today</h3>
+          <p>View services recorded for any selected day.</p>
+        </div>
+
+        <div className="panel-toolbar">
+          <div className="search-group" style={{ maxWidth: '260px' }}>
+            <label htmlFor="services-day-picker">Select date:</label>
+            <input
+              id="services-day-picker"
+              type="date"
+              value={servicesTodayDate}
+              onChange={(event) => onChangeDate?.(event.target.value)}
+            />
+          </div>
+          <div className="toolbar-actions">
+            <button type="button" className="primary-button" onClick={() => onLoadDate?.(servicesTodayDate, true)} disabled={servicesTodayBusy}>
+              {servicesTodayBusy ? 'Loading...' : 'Load Sales'}
+            </button>
+          </div>
+        </div>
+
+        <div className="notice compact">
+          Total services for {servicesTodayDate || 'selected date'}: {formatCount(servicesTodayData?.count || 0)}
+        </div>
+
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Row</th>
+                <th>Time</th>
+                <th>Customer</th>
+                <th>Description</th>
+                <th>IMEI</th>
+                <th>Status</th>
+                <th>Price</th>
+                <th>Amount Paid</th>
+                <th>Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length ? (
+                items.map((entry) => (
+                  <tr key={`service-today-${entry.row_num}`}>
+                    <td className="row-number">#{entry.row_num}</td>
+                    <td>{entry.time || '—'}</td>
+                    <td>{entry.name || '—'}</td>
+                    <td>{entry.description || '—'}</td>
+                    <td>{entry.imei || '—'}</td>
+                    <td>{entry.status || '—'}</td>
+                    <td className="amount-cell">{formatCurrency(entry.price || 0)}</td>
+                    <td className="amount-cell">{formatCurrency(entry.amount_paid || 0)}</td>
+                    <td className="amount-cell">{formatCurrency(entry.balance || 0)}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={9} className="empty-state">No services were recorded for this date.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onReloadStatus }) {
   const syncState = syncStatus?.sync_state || {};
   const postgresSnapshot = syncStatus?.postgres_snapshot || {};
@@ -2448,6 +2884,10 @@ function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onR
               <span>Latest error</span>
               <strong>{latestErrorText}</strong>
             </div>
+            <div className="meta-row">
+              <span>API Source</span>
+              <strong>{getApiLabel()}</strong>
+            </div>
           </div>
 
           {quotaWarning ? (
@@ -2461,9 +2901,150 @@ function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onR
   );
 }
 
-function WorkspaceApp() {
-  const [activeView, setActiveView] = useState('home');
-  const [statusText, setStatusText] = useState('Loading workspace...');
+function UsersView({
+  users,
+  usersLoading,
+  usersBusy,
+  userForm,
+  setUserForm,
+  onCreateUser,
+  onRefreshUsers,
+  onUpdateUserRole,
+  onToggleUserStatus,
+}) {
+  return (
+    <section className="workspace-row">
+      <section className="content-panel content-panel--main">
+        <div className="panel-header">
+          <h3>User Management</h3>
+          <p>Create user accounts and manage role/access state. This section is admin-only.</p>
+        </div>
+
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.length ? (
+                users.map((entry) => (
+                  <tr key={entry.id}>
+                    <td>{entry.id}</td>
+                    <td>{entry.username}</td>
+                    <td>
+                      <select
+                        value={entry.role}
+                        onChange={(event) => onUpdateUserRole(entry.id, event.target.value)}
+                        disabled={usersBusy}
+                      >
+                        <option value="admin">admin</option>
+                        <option value="staff">staff</option>
+                      </select>
+                    </td>
+                    <td>
+                      <span className={entry.is_active ? 'status-pill status-pill--available' : 'status-pill status-pill--needs-details'}>
+                        {entry.is_active ? 'ACTIVE' : 'DISABLED'}
+                      </span>
+                    </td>
+                    <td>{formatShortStamp(entry.created_at)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => onToggleUserStatus(entry.id, !entry.is_active)}
+                        disabled={usersBusy}
+                      >
+                        {entry.is_active ? 'Disable' : 'Enable'}
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={6} className="empty-state">{usersLoading ? 'Loading users...' : 'No users found.'}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside className="content-panel content-panel--side content-panel--stacked">
+        <div className="subpanel">
+          <div className="panel-header">
+            <h3>Create User</h3>
+            <p>Add a new account and assign role immediately.</p>
+          </div>
+
+          <form className="form-stack" onSubmit={onCreateUser}>
+            <label className="field-block">
+              <span className="field-label">Username</span>
+              <input
+                type="text"
+                value={userForm.username}
+                onChange={(event) => setUserForm((current) => ({ ...current, username: event.target.value }))}
+                required
+              />
+            </label>
+
+            <label className="field-block">
+              <span className="field-label">Password</span>
+              <input
+                type="password"
+                value={userForm.password}
+                onChange={(event) => setUserForm((current) => ({ ...current, password: event.target.value }))}
+                required
+              />
+            </label>
+
+            <label className="field-block">
+              <span className="field-label">Role</span>
+              <select
+                value={userForm.role}
+                onChange={(event) => setUserForm((current) => ({ ...current, role: event.target.value }))}
+              >
+                <option value="staff">staff</option>
+                <option value="admin">admin</option>
+              </select>
+            </label>
+
+            <label className="field-block">
+              <span className="field-label">Active</span>
+              <select
+                value={userForm.is_active ? 'true' : 'false'}
+                onChange={(event) => setUserForm((current) => ({ ...current, is_active: event.target.value === 'true' }))}
+              >
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </label>
+
+            <div className="button-row button-row--end">
+              <button type="submit" className="primary-button" disabled={usersBusy}>
+                {usersBusy ? 'Saving...' : 'Create User'}
+              </button>
+              <button type="button" className="secondary-button" onClick={onRefreshUsers} disabled={usersBusy}>
+                Refresh
+              </button>
+            </div>
+          </form>
+        </div>
+      </aside>
+    </section>
+  );
+}
+
+function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
+  const isAdmin = String(currentUser?.role || '').toLowerCase() === 'admin';
+  const [activeView, setActiveView] = useState('products');
+  const [statusText, setStatusText] = useState('Ready');
   const [workspaceError, setWorkspaceError] = useState('');
   const [lastLoadedAt, setLastLoadedAt] = useState(null);
   const [revealedMetric, setRevealedMetric] = useState('');
@@ -2486,12 +3067,15 @@ function WorkspaceApp() {
   const [redoEnabled, setRedoEnabled] = useState(false);
   const [whatsappHistoryByName, setWhatsappHistoryByName] = useState({});
   const [unpaidTodaySummary, setUnpaidTodaySummary] = useState({ count: 0, with_phone_count: 0, customers: [] });
+  const [servicesTodayData, setServicesTodayData] = useState({ services: [], count: 0 });
+  const [servicesTodayDate, setServicesTodayDate] = useState(formatDateForInput());
+  const [servicesTodayBusy, setServicesTodayBusy] = useState(false);
   const [sendingTodayBills, setSendingTodayBills] = useState(false);
 
   const [stockSearchText, setStockSearchText] = useState('');
   const deferredStockSearchText = useDeferredValue(stockSearchText);
   const [productFilterMode, setProductFilterMode] = useState('available');
-  const [cartFilterMode, setCartFilterMode] = useState('all');
+  const [cartFilterMode, setCartFilterMode] = useState('available');
   const [stockView, setStockView] = useState(null);
   const [stockForm, setStockForm] = useState({ visible_headers: [], defaults: {} });
   const [productFormValues, setProductFormValues] = useState({});
@@ -2545,8 +3129,79 @@ function WorkspaceApp() {
 
   const [syncStatus, setSyncStatus] = useState(null);
   const [syncBusy, setSyncBusy] = useState(false);
-  const [coreLoading, setCoreLoading] = useState(true);
+  const [cashflowSummary, setCashflowSummary] = useState(null);
+  const [weeklyAllowance, setWeeklyAllowance] = useState(null);
+  const [cashflowLoading, setCashflowLoading] = useState(false);
+  const [cashflowError, setCashflowError] = useState('');
+  const [cashflowUpdatedAt, setCashflowUpdatedAt] = useState(null);
+  const [coreLoading, setCoreLoading] = useState(false);
   const [logoData, setLogoData] = useState({ data_url: '', file_name: '' });
+  const [usersData, setUsersData] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [usersBusy, setUsersBusy] = useState(false);
+  const [userForm, setUserForm] = useState({
+    username: '',
+    password: '',
+    role: 'staff',
+    is_active: true,
+  });
+
+  const allowedViews = useMemo(() => {
+    if (isAdmin) {
+      return new Set(Object.keys(VIEW_META));
+    }
+    return new Set(STAFF_ALLOWED_VIEWS);
+  }, [isAdmin]);
+
+  const visibleActionItems = useMemo(() => (
+    ACTION_ITEMS.filter((item) => {
+      if (item.key === 'exit') {
+        return true;
+      }
+      if (item.type === 'action') {
+        return isAdmin || item.key === 'import_phones' || item.key === 'logout' || item.key === 'refresh';
+      }
+      if (item.type === 'view') {
+        return isAdmin || STAFF_ALLOWED_VIEWS.has(item.key);
+      }
+      return false;
+    })
+  ), [isAdmin]);
+
+  const productSummaryColumns = useMemo(() => {
+    const baseKeys = ['description', 'colour', 'storage', 'imei', 'seller'];
+    const optionalKeys = [];
+
+    if (productFilterMode === 'pending') {
+      optionalKeys.push('selling_price', 'buyer');
+    }
+
+    if (isAdmin) {
+      optionalKeys.splice(0, 0, 'cost_price');
+    }
+
+    const visibleKeys = new Set([...baseKeys, ...optionalKeys]);
+    return PRODUCT_SUMMARY_COLUMNS.filter((column) => visibleKeys.has(column.key));
+  }, [isAdmin, productFilterMode]);
+
+  const cartSummaryColumns = useMemo(() => {
+    const baseKeys = ['description', 'colour', 'storage', 'imei', 'seller'];
+    const optionalKeys = [];
+
+    if (cartFilterMode === 'pending') {
+      optionalKeys.push('selling_price', 'buyer');
+    }
+
+    if (isAdmin) {
+      optionalKeys.splice(0, 0, 'cost_price');
+    }
+
+    const visibleKeys = new Set([...baseKeys, ...optionalKeys]);
+    return PRODUCT_SUMMARY_COLUMNS.filter((column) => visibleKeys.has(column.key));
+  }, [isAdmin, cartFilterMode]);
+
+  const coreViews = useMemo(() => new Set(['home', 'cashflow', 'debtors', 'clients', 'fix', 'settings']), []);
+  const [hasCoreLoaded, setHasCoreLoaded] = useState(false);
 
   const filteredDebtors = (debtorsData.sorted_debtors || []).filter(([name]) => {
     const query = normalizeSearchValue(deferredDebtorSearch);
@@ -2581,7 +3236,7 @@ function WorkspaceApp() {
     (entry) => normalizeSearchValue(entry.raw) === normalizeSearchValue(selectedMismatchRaw)
   );
 
-  const activeMeta = VIEW_META[activeView] || VIEW_META.home;
+  const activeMeta = VIEW_META[activeView] || (isAdmin ? VIEW_META.home : VIEW_META.products);
   const clientNameOptions = useMemo(() => (
     Array.from(new Set([
       ...Object.keys(clientsData.registry || {}),
@@ -2621,12 +3276,25 @@ function WorkspaceApp() {
     () => Object.keys(sellerPhoneByName).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' })),
     [sellerPhoneByName]
   );
-  const pendingDealRows = useMemo(
-    () => (stockView?.all_rows_cache || []).filter((row) => String(row.label || '').toUpperCase() === 'PENDING DEAL'),
-    [stockView?.all_rows_cache]
-  );
+  const soldUnpaidStockRows = useMemo(() => {
+    // Find SOLD items with unpaid or partial payments
+    return (stockView?.all_rows_cache || []).filter((row) => {
+      const label = String(row.label || '').toUpperCase();
+      if (label !== 'SOLD') return false;
+      const invStatus = String(row.inventory_status || '').toUpperCase();
+      return invStatus === 'UNPAID' || invStatus === 'PART PAYMENT';
+    });
+  }, [stockView?.all_rows_cache]);
+
   const pendingDealEntries = useMemo(() => {
-    const stockEntries = (pendingDealRows || []).map((row) => ({
+    // Only include service entries in floating pending deals
+    const serviceEntries = (servicePendingDeals.items || []).map((row) => ({
+      ...row,
+      inventory_status: row.status,
+      inventory_amount_paid: row.amount_paid,
+    }));
+    // Add SOLD items with unpaid/partial payments to pending deals
+    const unaidSoldStockEntries = (soldUnpaidStockRows || []).map((row) => ({
       kind: 'stock',
       row_num: row.row_num,
       description: getProductCellValue(row, stockView?.headers || [], ['DESCRIPTION', 'MODEL', 'DEVICE']) || '',
@@ -2635,16 +3303,12 @@ function WorkspaceApp() {
       date: getProductCellValue(row, stockView?.headers || [], ['DATE', 'DATE BOUGHT', 'AVAILABILITY/DATE SOLD']) || '',
       imei: getProductCellValue(row, stockView?.headers || [], ['IMEI']) || '',
       price: getProductCellValue(row, stockView?.headers || [], ['PRICE', 'AMOUNT SOLD', 'SELLING PRICE']) || '',
+      amount_paid: getProductCellValue(row, stockView?.headers || [], ['AMOUNT PAID']) || '',
       inventory_status: row.inventory_status,
       inventory_amount_paid: row.inventory_amount_paid,
     }));
-    const serviceEntries = (servicePendingDeals.items || []).map((row) => ({
-      ...row,
-      inventory_status: row.status,
-      inventory_amount_paid: row.amount_paid,
-    }));
-    return [...serviceEntries, ...stockEntries].sort((left, right) => Number(right.row_num || 0) - Number(left.row_num || 0));
-  }, [pendingDealRows, servicePendingDeals.items, stockView?.headers]);
+    return [...serviceEntries, ...unaidSoldStockEntries].sort((left, right) => Number(right.row_num || 0) - Number(left.row_num || 0));
+  }, [soldUnpaidStockRows, servicePendingDeals.items, stockView?.headers]);
 
   function applyClientRegistryToState(registry) {
     const nextData = buildClientsDataFromRegistry(registry);
@@ -2656,14 +3320,34 @@ function WorkspaceApp() {
     setCoreLoading(true);
     setWorkspaceError('');
 
-    const [debtorsResult, salesResult, clientsResult, syncResult, whatsappHistoryResult, unpaidTodayResult, pendingServicesResult] = await Promise.allSettled([
+    if (!isAdmin) {
+      const pendingServicesResult = await Promise.allSettled([
+        fetchPendingServiceDeals({ forceRefresh }),
+      ]);
+
+      const failures = [];
+      const pendingResult = pendingServicesResult[0];
+      if (pendingResult.status === 'fulfilled') {
+        setServicePendingDeals(pendingResult.value || { items: [], count: 0 });
+      } else {
+        failures.push(pendingResult.reason?.message || 'Could not load pending service deals.');
+      }
+
+      const uniqueFailures = Array.from(new Set(failures.filter(Boolean).map((item) => String(item).trim()).filter(Boolean)));
+      setWorkspaceError(uniqueFailures.join(' | '));
+      setStatusText(uniqueFailures.length ? uniqueFailures[0] : forceRefresh ? 'Workspace refreshed.' : 'Ready');
+      setLastLoadedAt(new Date());
+      setHasCoreLoaded(true);
+      setCoreLoading(false);
+      return;
+    }
+
+    const [debtorsResult, salesResult, syncResult, pendingServicesResult, servicesTodayResult] = await Promise.allSettled([
       fetchLiveDebtors({ forceRefresh }),
       fetchLiveSalesSnapshot({ forceRefresh }),
-      fetchClients({ forceReload: true }),
       fetchSyncStatus(),
-      fetchWhatsappHistory({ forceRefresh }),
-      fetchUnpaidToday({ forceRefresh }),
       fetchPendingServiceDeals({ forceRefresh }),
+      fetchServicesToday({ forceRefresh, targetDate: servicesTodayDate }),
     ]);
 
     const failures = [];
@@ -2684,24 +3368,10 @@ function WorkspaceApp() {
       failures.push(salesResult.reason?.message || 'Could not load sales snapshot.');
     }
 
-    if (clientsResult.status === 'fulfilled') {
-      setClientsData(clientsResult.value);
-    } else {
-      failures.push(clientsResult.reason?.message || 'Could not load clients.');
-    }
-
     if (syncResult.status === 'fulfilled') {
       setSyncStatus(syncResult.value);
     } else {
       failures.push(syncResult.reason?.message || 'Could not load sync status.');
-    }
-
-    if (whatsappHistoryResult.status === 'fulfilled') {
-      setWhatsappHistoryByName(whatsappHistoryResult.value?.by_name || {});
-    }
-
-    if (unpaidTodayResult.status === 'fulfilled') {
-      setUnpaidTodaySummary(unpaidTodayResult.value || { count: 0, with_phone_count: 0, customers: [] });
     }
 
     if (pendingServicesResult.status === 'fulfilled') {
@@ -2710,12 +3380,36 @@ function WorkspaceApp() {
       failures.push(pendingServicesResult.reason?.message || 'Could not load pending service deals.');
     }
 
+    if (servicesTodayResult.status === 'fulfilled') {
+      setServicesTodayData(servicesTodayResult.value || { services: [], count: 0 });
+    } else {
+      failures.push(servicesTodayResult.reason?.message || 'Could not load services done today.');
+    }
+
     const uniqueFailures = Array.from(new Set(failures.filter(Boolean).map((item) => String(item).trim()).filter(Boolean)));
 
     setLastLoadedAt(new Date());
     setWorkspaceError(uniqueFailures.join(' | '));
     setStatusText(uniqueFailures.length ? uniqueFailures[0] : forceRefresh ? 'Workspace refreshed.' : 'Ready');
+    setHasCoreLoaded(true);
     setCoreLoading(false);
+
+    // Keep first paint fast: hydrate clients/whatsapp/unpaid in the background.
+    Promise.allSettled([
+      fetchClients({ forceReload: true }),
+      fetchWhatsappHistory({ forceRefresh }),
+      fetchUnpaidToday({ forceRefresh }),
+    ]).then(([clientsResult, whatsappHistoryResult, unpaidTodayResult]) => {
+      if (clientsResult.status === 'fulfilled') {
+        setClientsData(clientsResult.value);
+      }
+      if (whatsappHistoryResult.status === 'fulfilled') {
+        setWhatsappHistoryByName(whatsappHistoryResult.value?.by_name || {});
+      }
+      if (unpaidTodayResult.status === 'fulfilled') {
+        setUnpaidTodaySummary(unpaidTodayResult.value || { count: 0, with_phone_count: 0, customers: [] });
+      }
+    });
   }
 
   async function loadNameFixes({ forceRefresh = false, silent = false } = {}) {
@@ -2745,6 +3439,46 @@ function WorkspaceApp() {
       return null;
     } finally {
       setIsNameFixLoading(false);
+    }
+  }
+
+  async function loadCashflowDashboard() {
+    if (!isAdmin) {
+      return;
+    }
+
+    setCashflowLoading(true);
+    setCashflowError('');
+    try {
+      const [cashflowResult, allowanceResult] = await Promise.all([
+        fetchFoundationCashflowSummary(),
+        fetchFoundationWeeklyAllowance(),
+      ]);
+
+      setCashflowSummary(cashflowResult?.summary || null);
+      setWeeklyAllowance(allowanceResult || null);
+      setCashflowUpdatedAt(new Date());
+    } catch (error) {
+      const message = error?.message || 'Could not load cashflow dashboard.';
+      setCashflowError(message);
+      setStatusText(message);
+    } finally {
+      setCashflowLoading(false);
+    }
+  }
+
+  async function loadServicesTodayForDate(dateText, forceRefresh = false) {
+    const nextDate = String(dateText || '').trim() || formatDateForInput();
+    setServicesTodayBusy(true);
+    try {
+      const result = await fetchServicesToday({ forceRefresh, targetDate: nextDate });
+      setServicesTodayData(result || { services: [], count: 0 });
+      setServicesTodayDate(nextDate);
+      setStatusText(`Loaded ${formatCount(result?.count || 0)} service(s) for ${nextDate}.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not load services for the selected date.');
+    } finally {
+      setServicesTodayBusy(false);
     }
   }
 
@@ -2784,12 +3518,14 @@ function WorkspaceApp() {
     }
   }
 
-  async function loadStock(forceRefresh = false) {
+  async function loadStock(forceRefresh = false, showLoader = true) {
     setStockErrorText('');
-    if (stockView) {
-      setIsStockRefreshing(true);
-    } else {
-      setIsStockLoading(true);
+    if (showLoader) {
+      if (stockView) {
+        setIsStockRefreshing(true);
+      } else {
+        setIsStockLoading(true);
+      }
     }
 
     try {
@@ -2800,11 +3536,23 @@ function WorkspaceApp() {
         forceRefresh,
       });
       setStockView(result);
+      try {
+        sessionStorage.setItem(STOCK_VIEW_CACHE_KEY, JSON.stringify(result));
+      } catch {
+        // Ignore cache storage failures.
+      }
       setLastLoadedAt(new Date());
       setStatusText(forceRefresh ? 'Products refreshed.' : 'Ready');
     } catch (error) {
-      setStockErrorText(error.message || 'Could not load products.');
-      setStatusText(error.message || 'Could not load products.');
+      const message = error.message || 'Could not load products.';
+      if (stockView?.all_rows_cache?.length) {
+        // Keep last loaded data visible during transient API/quota failures.
+        setStockErrorText('');
+        setStatusText(`${message} Showing last loaded stock data.`);
+      } else {
+        setStockErrorText(message);
+        setStatusText(message);
+      }
     } finally {
       setIsStockLoading(false);
       setIsStockRefreshing(false);
@@ -2815,6 +3563,11 @@ function WorkspaceApp() {
     try {
       const result = await fetchStockForm({ forceRefresh });
       setStockForm(result);
+      try {
+        sessionStorage.setItem(STOCK_FORM_CACHE_KEY, JSON.stringify(result));
+      } catch {
+        // Ignore cache storage failures.
+      }
       setProductFormValues((current) => {
         if (!resetForm && Object.keys(current).length) {
           return current;
@@ -2882,10 +3635,18 @@ function WorkspaceApp() {
   }
 
   useEffect(() => {
-    loadCoreWorkspace(false);
-  }, []);
+    setHasCoreLoaded(false);
+    setCoreLoading(false);
+    setWorkspaceError('');
+    setStatusText('Ready');
+  }, [isAdmin]);
 
   useEffect(() => {
+    if (!isAdmin) {
+      setLogoData({ data_url: '', file_name: '' });
+      return undefined;
+    }
+
     let active = true;
 
     fetchDashboardLogo()
@@ -2903,7 +3664,15 @@ function WorkspaceApp() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (allowedViews.has(activeView)) {
+      return;
+    }
+
+    startTransition(() => setActiveView(isAdmin ? 'home' : 'products'));
+  }, [activeView, allowedViews, isAdmin]);
 
   useEffect(() => {
     if (activeView !== 'home' && activeView !== 'fix') {
@@ -2917,18 +3686,57 @@ function WorkspaceApp() {
   }, [activeView, nameFixLoadAttempted]);
 
   useEffect(() => {
-    if (activeView !== 'home' && activeView !== 'products' && activeView !== 'cart') {
+    try {
+      const cachedStockViewText = sessionStorage.getItem(STOCK_VIEW_CACHE_KEY);
+      if (cachedStockViewText) {
+        const cachedStockView = JSON.parse(cachedStockViewText);
+        if (cachedStockView && typeof cachedStockView === 'object') {
+          setStockView(cachedStockView);
+        }
+      }
+
+      const cachedStockFormText = sessionStorage.getItem(STOCK_FORM_CACHE_KEY);
+      if (cachedStockFormText) {
+        const cachedStockForm = JSON.parse(cachedStockFormText);
+        if (cachedStockForm && typeof cachedStockForm === 'object') {
+          setStockForm(cachedStockForm);
+          setProductFormValues((current) => (
+            Object.keys(current || {}).length ? current : buildProductFormValues(cachedStockForm)
+          ));
+        }
+      }
+    } catch {
+      // Ignore malformed cache values.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeView !== 'products' && activeView !== 'cart') {
       return undefined;
     }
 
     const delay = window.setTimeout(() => {
-      loadStock(false);
-    }, 180);
+      loadStock(false, false);
+    }, 80);
 
     return () => {
       window.clearTimeout(delay);
     };
   }, [activeView, deferredStockSearchText, productFilterMode, cartFilterMode]);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      return;
+    }
+    if (!coreViews.has(activeView)) {
+      return;
+    }
+    if (hasCoreLoaded) {
+      return;
+    }
+
+    loadCoreWorkspace(false);
+  }, [activeView, isAdmin, hasCoreLoaded, coreViews]);
 
   useEffect(() => {
     if (activeView !== 'debtors') {
@@ -2956,6 +3764,22 @@ function WorkspaceApp() {
 
     loadGoogleContacts({ forceRefresh: false, silent: true });
   }, [activeView, googleContactsLoadAttempted]);
+
+  useEffect(() => {
+    if (activeView !== 'users' || !isAdmin) {
+      return;
+    }
+
+    loadUsers();
+  }, [activeView, isAdmin]);
+
+  useEffect(() => {
+    if (activeView !== 'cashflow' || !isAdmin) {
+      return;
+    }
+
+    loadCashflowDashboard();
+  }, [activeView, isAdmin]);
 
   useEffect(() => {
     if (activeView === 'products') {
@@ -3413,6 +4237,83 @@ function WorkspaceApp() {
     }
   }
 
+  async function loadUsers() {
+    if (!isAdmin) {
+      return;
+    }
+
+    setUsersLoading(true);
+    try {
+      const result = await fetchUsers();
+      setUsersData(result?.users || []);
+    } catch (error) {
+      setStatusText(error.message || 'Could not load users.');
+    } finally {
+      setUsersLoading(false);
+    }
+  }
+
+  async function handleCreateUser(event) {
+    event.preventDefault();
+    if (!isAdmin) {
+      setStatusText('Only admin users can create accounts.');
+      return;
+    }
+
+    setUsersBusy(true);
+    try {
+      await createUser({
+        username: userForm.username,
+        password: userForm.password,
+        role: userForm.role,
+        isActive: userForm.is_active,
+      });
+      setUserForm({ username: '', password: '', role: 'staff', is_active: true });
+      await loadUsers();
+      setStatusText('User account created successfully.');
+    } catch (error) {
+      setStatusText(error.message || 'Could not create user.');
+    } finally {
+      setUsersBusy(false);
+    }
+  }
+
+  async function handleUpdateUserRole(userId, role) {
+    if (!isAdmin) {
+      setStatusText('Only admin users can update account roles.');
+      return;
+    }
+
+    setUsersBusy(true);
+    try {
+      await updateUser({ userId, role });
+      await loadUsers();
+      setStatusText('User role updated.');
+    } catch (error) {
+      setStatusText(error.message || 'Could not update user role.');
+    } finally {
+      setUsersBusy(false);
+    }
+  }
+
+  async function handleToggleUserStatus(userId, isActive) {
+    if (!isAdmin) {
+      setStatusText('Only admin users can update account status.');
+      return;
+    }
+
+    setUsersBusy(true);
+    try {
+      await updateUser({ userId, isActive });
+      await loadUsers();
+      setStatusText('User status updated.');
+    } catch (error) {
+      setStatusText(error.message || 'Could not update user status.');
+    } finally {
+      setUsersBusy(false);
+    }
+  }
+
   async function handleSubmitProduct(event, submittedValues = null) {
     event.preventDefault();
     setIsAddingProduct(true);
@@ -3512,23 +4413,88 @@ function WorkspaceApp() {
       const normalizedAmount = String(amountPaid || '').trim();
       const entryPrice = parseAmountLike(entry?.price);
       const amountValue = parseAmountLike(normalizedAmount);
-      if (normalizedStatus !== 'PAID' && entryPrice > 0 && amountValue >= entryPrice) {
-        normalizedStatus = 'PAID';
+
+      if (normalizedAmount !== '') {
+        if (amountValue <= 0) {
+          normalizedStatus = 'UNPAID';
+        } else if (entryPrice > 0) {
+          if (amountValue > entryPrice) {
+            const remainder = amountValue - entryPrice;
+            const customerName = String(entry?.name || entry?.buyer_name || '').trim().toUpperCase();
+            if (!customerName) {
+              throw new Error(`Amount exceeds sale price by NGN ${formatCount(remainder)}. Customer name is missing, so remainder cannot be redirected.`);
+            }
+
+            const shouldRedirect = window.confirm(
+              `Amount exceeds sale price by NGN ${formatCount(remainder)}.\n\n` +
+              `Tap OK to mark this deal as PAID with NGN ${formatCount(entryPrice)} and redirect the NGN ${formatCount(remainder)} remainder to ${customerName}'s other unpaid service(s).\n` +
+              `Tap Cancel to edit the amount.`
+            );
+
+            if (!shouldRedirect) {
+              setStatusText('Update cancelled. Enter an amount that is not greater than sale price.');
+              return;
+            }
+
+            let settleResult = null;
+            if (entry?.kind === 'service') {
+              settleResult = await updateServiceDealPayment({
+                rowNum: entry.row_num,
+                paymentStatus: 'PAID',
+                amountPaid: String(entryPrice),
+                forceRefresh: false,
+              });
+            } else {
+              settleResult = await updatePendingDealPayment({
+                rowNum: entry.row_num || entry,
+                paymentStatus: 'PAID',
+                amountPaid: String(entryPrice),
+                forceRefresh: false,
+              });
+            }
+
+            let remainderMessage = `Remainder NGN ${formatCount(remainder)} redirected.`;
+            try {
+              await applyPayment({
+                nameInput: customerName,
+                paymentAmount: remainder,
+                manualServiceRowIdx: null,
+                forceRefresh: false,
+              });
+            } catch (remainderError) {
+              remainderMessage = remainderError?.message || 'Main deal was updated, but remainder redirect failed.';
+            }
+
+            await Promise.all([loadStock(true), loadCoreWorkspace(false)]);
+            const savedStatus = String(settleResult?.payment_status || 'PAID').toUpperCase();
+            setStatusText(
+              `${entry?.kind === 'service' ? `Service deal row #${entry.row_num}` : `Pending deal row #${entry?.row_num || entry}`} updated to ${savedStatus}. ${remainderMessage}`
+            );
+            return;
+          }
+
+          if (amountValue === entryPrice) {
+            normalizedStatus = 'PAID';
+          } else {
+            normalizedStatus = 'PART PAYMENT';
+          }
+        }
       }
 
       let result = null;
+      const amountToSend = normalizedAmount === '' ? null : String(amountValue);
       if (entry?.kind === 'service') {
         result = await updateServiceDealPayment({
           rowNum: entry.row_num,
           paymentStatus: normalizedStatus,
-          amountPaid: normalizedAmount || null,
+          amountPaid: amountToSend,
           forceRefresh: false,
         });
       } else {
         result = await updatePendingDealPayment({
           rowNum: entry.row_num || entry,
           paymentStatus: normalizedStatus,
-          amountPaid: normalizedAmount || null,
+          amountPaid: amountToSend,
           forceRefresh: false,
         });
       }
@@ -3670,7 +4636,7 @@ function WorkspaceApp() {
         valuesByHeader,
         forceRefresh: false,
       });
-      await loadStock(true);
+      loadStock(false);
       setSelectedProductDetail(null);
       setStatusText(
         result.updated_count
@@ -3686,11 +4652,15 @@ function WorkspaceApp() {
 
   async function handleAction(item) {
     if (item.type === 'view') {
+      if (!allowedViews.has(item.key)) {
+        setStatusText('You do not have permission to access this section.');
+        return;
+      }
       if (item.key === 'products') {
         setProductFilterMode('available');
       }
       if (item.key === 'cart') {
-        setCartFilterMode('all');
+        setCartFilterMode('available');
       }
       startTransition(() => setActiveView(item.key));
       setStatusText(VIEW_META[item.key]?.title || 'Ready');
@@ -3712,13 +4682,59 @@ function WorkspaceApp() {
       return;
     }
 
+    if (item.key === 'import_phones') {
+      await handleImportSheetPhones();
+      return;
+    }
+
     if (item.key === 'exit') {
       window.close();
       setStatusText('Close request sent to the browser window.');
     }
+
+    if (item.key === 'logout') {
+      onLogout();
+    }
   }
 
   function renderActiveView() {
+    if (!allowedViews.has(activeView)) {
+      return (
+        <ProductsView
+          stockView={stockView}
+          stockForm={stockForm}
+          productFormValues={productFormValues}
+          setProductFormValues={setProductFormValues}
+          productSearchText={stockSearchText}
+          setProductSearchText={setStockSearchText}
+          filterMode={productFilterMode}
+          setFilterMode={setProductFilterMode}
+          stockPage={stockPage}
+          setStockPage={setStockPage}
+          isLoading={isStockLoading}
+          isRefreshing={isStockRefreshing}
+          isAddingProduct={isAddingProduct}
+          isProductComposerOpen={isProductComposerOpen}
+          errorText={stockErrorText}
+          onRefresh={() => loadStock(true)}
+          selectedProductDetail={selectedProductDetail}
+          onOpenProductDetails={setSelectedProductDetail}
+          onCloseProductDetails={() => setSelectedProductDetail(null)}
+          onSaveProductDetails={handleSaveProductDetails}
+          savingProductDetails={isSavingProductDetail}
+          onOpenProductComposer={handleOpenProductComposer}
+          onCloseProductComposer={() => setIsProductComposerOpen(false)}
+          onSubmitProduct={handleSubmitProduct}
+          onResetProductForm={handleResetProductForm}
+          sellerPhoneOptions={sellerPhoneOptions}
+          sellerNameOptions={sellerNameOptions}
+          sellerPhoneByName={sellerPhoneByName}
+          currentTimeLabel={currentTimeLabel}
+          summaryColumns={productSummaryColumns}
+        />
+      );
+    }
+
     if (activeView === 'products') {
       return (
         <ProductsView
@@ -3750,12 +4766,22 @@ function WorkspaceApp() {
           sellerNameOptions={sellerNameOptions}
           sellerPhoneByName={sellerPhoneByName}
           currentTimeLabel={currentTimeLabel}
+          summaryColumns={productSummaryColumns}
         />
       );
     }
 
     if (activeView === 'cashflow') {
-      return <CashFlowView salesSnapshot={salesSnapshot} debtorsData={debtorsData} />;
+      return (
+        <CashFlowView
+          cashflowSummary={cashflowSummary}
+          weeklyAllowance={weeklyAllowance}
+          loading={cashflowLoading}
+          errorText={cashflowError}
+          lastUpdatedAt={cashflowUpdatedAt}
+          onReload={loadCashflowDashboard}
+        />
+      );
     }
 
     if (activeView === 'cart') {
@@ -3796,6 +4822,7 @@ function WorkspaceApp() {
           sellerPhoneOptions={sellerPhoneOptions}
           currentTimeLabel={currentTimeLabel}
           cartBusy={cartBusy}
+          summaryColumns={cartSummaryColumns}
         />
       );
     }
@@ -3874,6 +4901,18 @@ function WorkspaceApp() {
       );
     }
 
+    if (activeView === 'services_today') {
+      return (
+        <ServicesTodayView
+          servicesTodayData={servicesTodayData}
+          servicesTodayDate={servicesTodayDate}
+          servicesTodayBusy={servicesTodayBusy}
+          onChangeDate={setServicesTodayDate}
+          onLoadDate={loadServicesTodayForDate}
+        />
+      );
+    }
+
     if (activeView === 'fix') {
       return (
         <FixView
@@ -3906,6 +4945,22 @@ function WorkspaceApp() {
       );
     }
 
+    if (activeView === 'users') {
+      return (
+        <UsersView
+          users={usersData}
+          usersLoading={usersLoading}
+          usersBusy={usersBusy}
+          userForm={userForm}
+          setUserForm={setUserForm}
+          onCreateUser={handleCreateUser}
+          onRefreshUsers={loadUsers}
+          onUpdateUserRole={handleUpdateUserRole}
+          onToggleUserStatus={handleToggleUserStatus}
+        />
+      );
+    }
+
     return (
       <HomeView
         debtorsData={debtorsData}
@@ -3916,6 +4971,39 @@ function WorkspaceApp() {
         lastLoadedAt={lastLoadedAt}
         revealedMetric={revealedMetric}
         setRevealedMetric={setRevealedMetric}
+        onStatisticClick={(label) => {
+          switch (label) {
+            case 'Customers Today':
+              startTransition(() => setActiveView('debtors'));
+              break;
+            case 'Services Today':
+              startTransition(() => setActiveView('services_today'));
+              break;
+            case 'Products Available':
+              startTransition(() => {
+                setActiveView('products');
+                setProductFilterMode('available');
+              });
+              break;
+            case 'Pending Deals':
+              startTransition(() => {
+                setActiveView('cart');
+                setCartFilterMode('pending');
+              });
+              break;
+            case 'Needs Details':
+              startTransition(() => {
+                setActiveView('products');
+                setProductFilterMode('needs_details');
+              });
+              break;
+            case 'Name Fixes':
+              startTransition(() => setActiveView('fix'));
+              break;
+            default:
+              break;
+          }
+        }}
       />
     );
   }
@@ -3936,6 +5024,16 @@ function WorkspaceApp() {
               <span className="status-chip-label">Status</span>
               <strong>{statusText}</strong>
             </div>
+            <div className="status-chip">
+              <span className="status-chip-label">Signed In</span>
+              <strong>{currentUser?.username || 'Unknown'} ({String(currentUser?.role || '').toUpperCase() || 'N/A'})</strong>
+            </div>
+            {userLoading ? (
+              <div className="status-chip">
+                <span className="status-chip-label">Account</span>
+                <strong>Refreshing user info...</strong>
+              </div>
+            ) : null}
           </div>
 
           <div className="hero-right">
@@ -3943,15 +5041,17 @@ function WorkspaceApp() {
               <span className="hero-note-label">Current Section</span>
               <strong>{activeMeta.title}</strong>
             </div>
-            <div className="hero-note">
-              <span className="hero-note-label">API Source</span>
-              <strong>{getApiLabel()}</strong>
-            </div>
           </div>
         </section>
 
         <section className="workspace-body">
-          <ActionSidebar activeView={activeView} undoEnabled={undoEnabled} redoEnabled={redoEnabled} onTrigger={handleAction} />
+          <ActionSidebar
+            activeView={activeView}
+            undoEnabled={undoEnabled}
+            redoEnabled={redoEnabled}
+            onTrigger={handleAction}
+            actionItems={visibleActionItems}
+          />
 
           <section className="workspace-main">
             <section className="content-panel content-panel--headline">

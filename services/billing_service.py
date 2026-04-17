@@ -560,6 +560,42 @@ def build_unpaid_today_customers(records, today=None):
     )
 
 
+def build_services_today_rows(records, today=None):
+    today = today or date.today()
+    rows = []
+
+    for row_idx, row in enumerate(records or [], start=1):
+        status_text = str(row.get('STATUS', '')).strip()
+        if is_returned_status(status_text):
+            continue
+
+        row_date = parse_sheet_date(row.get('DATE'))
+        if row_date != today:
+            continue
+
+        price = clean_amount(row.get('PRICE'))
+        if price <= 0:
+            continue
+
+        amount_paid = clean_amount(row.get('AMOUNT PAID') if 'AMOUNT PAID' in row else row.get('Amount paid'))
+        balance = max(0, price - amount_paid)
+        rows.append({
+            'row_num': row_idx,
+            'name': normalize_customer_name(row.get('NAME')),
+            'description': str(row.get('DESCRIPTION') or row.get('MODEL') or row.get('DEVICE') or '').strip(),
+            'imei': str(row.get('IMEI') or '').strip(),
+            'date': str(row.get('DATE') or '').strip(),
+            'time': str(row.get('TIME') or '').strip(),
+            'status': str(status_text).upper(),
+            'price': price,
+            'amount_paid': amount_paid,
+            'balance': balance,
+        })
+
+    rows.sort(key=lambda entry: int(entry.get('row_num') or 0), reverse=True)
+    return rows
+
+
 def build_debtor_send_summary(records, history_payload, today=None):
     today = today or date.today()
     customer_names = compute_debtors(records).get('client_names', [])

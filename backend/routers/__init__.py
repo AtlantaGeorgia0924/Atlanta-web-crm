@@ -1,3 +1,3 @@
-from backend.routers import billing, clients, name_fix, stock, sync
+from backend.routers import auth, billing, clients, financial_foundation, name_fix, stock, sync, users
 
-__all__ = ['billing', 'clients', 'name_fix', 'stock', 'sync']
+__all__ = ['auth', 'billing', 'clients', 'financial_foundation', 'name_fix', 'stock', 'sync', 'users']

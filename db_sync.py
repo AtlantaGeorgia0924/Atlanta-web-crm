@@ -27,6 +27,7 @@ class PostgresSyncManager:
         self.dsn = str(dsn or '').strip()
         self.pull_interval_sec = max(15, int(pull_interval_sec or 90))
         self.logger = logger or logging.getLogger(__name__)
+        self._db_lock = threading.RLock()
         self._thread = None
         self._queue_thread = None
         self._stop_event = threading.Event()
@@ -37,6 +38,60 @@ class PostgresSyncManager:
 
     def _connect(self):
         return psycopg2.connect(self.dsn, connect_timeout=5)
+
+    def execute(self, sql, params=None):
+        if not self.ready:
+            raise RuntimeError('PostgreSQL sync manager is not ready')
+        with self._db_lock:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params or ())
+                    return cur.rowcount
+
+    def fetchone(self, sql, params=None):
+        if not self.ready:
+            raise RuntimeError('PostgreSQL sync manager is not ready')
+        with self._db_lock:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params or ())
+                    return cur.fetchone()
+
+    def fetchall(self, sql, params=None):
+        if not self.ready:
+            raise RuntimeError('PostgreSQL sync manager is not ready')
+        with self._db_lock:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params or ())
+                    return cur.fetchall()
+
+    def fetchone_dict(self, sql, params=None):
+        if not self.ready:
+            raise RuntimeError('PostgreSQL sync manager is not ready')
+        with self._db_lock:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params or ())
+                    fetched = cur.fetchone()
+                    if not fetched:
+                        return None
+                    columns = [desc[0] for desc in cur.description or []]
+        return {columns[idx]: fetched[idx] for idx in range(len(columns))}
+
+    def fetchall_dict(self, sql, params=None):
+        if not self.ready:
+            raise RuntimeError('PostgreSQL sync manager is not ready')
+        with self._db_lock:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params or ())
+                    rows = cur.fetchall()
+                    columns = [desc[0] for desc in cur.description or []]
+        return [
+            {columns[idx]: row[idx] for idx in range(len(columns))}
+            for row in rows
+        ]
 
     def ensure_schema(self):
         if not self.ready:
@@ -90,6 +145,59 @@ class PostgresSyncManager:
             value_json JSONB NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+
+        CREATE TABLE IF NOT EXISTS expenses (
+            id BIGSERIAL PRIMARY KEY,
+            amount NUMERIC(14,2) NOT NULL CHECK (amount >= 0),
+            category TEXT,
+            description TEXT,
+            date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            created_by TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS sales_ledger (
+            id BIGSERIAL PRIMARY KEY,
+            stock_record_id TEXT,
+            stock_row_num INTEGER,
+            selling_price NUMERIC(14,2) NOT NULL,
+            cost_price_at_sale NUMERIC(14,2) NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+            date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            sold_by TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS returns_ledger (
+            id BIGSERIAL PRIMARY KEY,
+            sale_id BIGINT REFERENCES sales_ledger(id),
+            refund_amount NUMERIC(14,2) NOT NULL CHECK (refund_amount >= 0),
+            date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            processed_by TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id BIGSERIAL PRIMARY KEY,
+            action_type TEXT,
+            description TEXT,
+            user_id TEXT,
+            timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS app_config (
+            key TEXT PRIMARY KEY,
+            value JSONB NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
+        CREATE INDEX IF NOT EXISTS idx_expenses_created_by ON expenses(created_by);
+        CREATE INDEX IF NOT EXISTS idx_sales_ledger_date ON sales_ledger(date);
+        CREATE INDEX IF NOT EXISTS idx_sales_ledger_stock_record_id ON sales_ledger(stock_record_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_sales_ledger_stock_record_id_nonempty
+            ON sales_ledger(stock_record_id)
+            WHERE stock_record_id <> '';
+        CREATE INDEX IF NOT EXISTS idx_returns_ledger_sale_id ON returns_ledger(sale_id);
+        CREATE INDEX IF NOT EXISTS idx_returns_ledger_date ON returns_ledger(date);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_user_id ON audit_log(user_id);
         """
 
         with self._connect() as conn:

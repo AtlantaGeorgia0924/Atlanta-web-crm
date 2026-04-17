@@ -1,16 +1,21 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.dependencies import get_runtime
+from backend.dependencies import get_runtime, require_admin
+from backend.dependencies import get_runtime, require_admin, require_staff
 from services.sync_service import (
     build_client_phone_sheet_updates,
     build_phone_autofill_plan,
     detect_sheet_header_row,
 )
 
-router = APIRouter(prefix='/api/sync', tags=['sync'])
+router = APIRouter(
+    prefix='/api/sync',
+    tags=['sync'],
+    dependencies=[Depends(require_staff)],
+)
 
 
 class DetectHeaderRowRequest(BaseModel):
@@ -67,25 +72,69 @@ def sync_status_endpoint(runtime=Depends(get_runtime)):
     return runtime.get_sync_status()
 
 
-@router.post('/pull-now')
-def pull_now_endpoint(runtime=Depends(get_runtime)):
+def _run_background_sync_job(runtime, job_name, **kwargs):
     try:
-        return runtime.pull_once()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if job_name == 'pull_once':
+            runtime.pull_once()
+            return
+        if job_name == 'refresh_workspace':
+            runtime.refresh_workspace(force_refresh=bool(kwargs.get('force_refresh', False)))
+            return
+        if job_name == 'replay_queue_now':
+            runtime.replay_pending_queue_now(limit=int(kwargs.get('limit', 200) or 200))
+            return
+    except Exception as exc:
+        runtime.logger.warning('Background sync job failed (%s): %s', job_name, exc)
+
+
+@router.post('/pull-now')
+def pull_now_endpoint(background_tasks: BackgroundTasks, runtime=Depends(get_runtime)):
+    if not runtime.postgres_ready:
+        raise HTTPException(status_code=503, detail='PostgreSQL sync manager is not ready')
+
+    background_tasks.add_task(_run_background_sync_job, runtime, 'pull_once')
+    return {
+        'queued': True,
+        'job': 'pull_once',
+        'message': 'Pull job queued to run in the background.',
+    }
 
 
 @router.post('/refresh-workspace')
-def refresh_workspace_endpoint(force_refresh: bool = False, runtime=Depends(get_runtime)):
-    try:
-        return runtime.refresh_workspace(force_refresh=force_refresh)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+def refresh_workspace_endpoint(
+    background_tasks: BackgroundTasks,
+    force_refresh: bool = False,
+    runtime=Depends(get_runtime),
+):
+    background_tasks.add_task(
+        _run_background_sync_job,
+        runtime,
+        'refresh_workspace',
+        force_refresh=force_refresh,
+    )
+    return {
+        'queued': True,
+        'job': 'refresh_workspace',
+        'force_refresh': force_refresh,
+        'message': 'Workspace refresh queued to run in the background.',
+    }
 
 
 @router.post('/replay-queue-now')
-def replay_queue_now_endpoint(limit: int = 200, runtime=Depends(get_runtime)):
-    try:
-        return runtime.replay_pending_queue_now(limit=limit)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+def replay_queue_now_endpoint(
+    background_tasks: BackgroundTasks,
+    limit: int = 200,
+    runtime=Depends(get_runtime),
+):
+    background_tasks.add_task(
+        _run_background_sync_job,
+        runtime,
+        'replay_queue_now',
+        limit=limit,
+    )
+    return {
+        'queued': True,
+        'job': 'replay_queue_now',
+        'limit': limit,
+        'message': 'Queue replay job queued to run in the background.',
+    }

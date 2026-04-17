@@ -5,10 +5,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from backend.dependencies import get_runtime
+from backend.dependencies import get_runtime, require_admin
 from services.billing_service import (
     build_debtor_send_summary,
     build_payment_plan,
+    build_services_today_rows,
     build_unpaid_today_customers,
     compute_debtors,
     compute_sales_snapshot,
@@ -18,10 +19,15 @@ from services.billing_service import (
     get_customer_outstanding_items_from_values,
     load_whatsapp_send_history,
     mark_whatsapp_bill_sent,
+    parse_sheet_date,
     save_whatsapp_send_history,
 )
 
-router = APIRouter(prefix='/api/billing', tags=['billing'])
+router = APIRouter(
+    prefix='/api/billing',
+    tags=['billing'],
+    dependencies=[Depends(require_admin)],
+)
 
 
 class OutstandingItemsValuesRequest(BaseModel):
@@ -322,4 +328,19 @@ def unpaid_today_live_bills(force_refresh: bool = False, runtime=Depends(get_run
         'customers': customers,
         'count': len(customers),
         'with_phone_count': sum(1 for item in customers if item['has_phone']),
+    }
+
+@router.get('/services-today/live')
+def services_today_live(force_refresh: bool = False, target_date: str = '', runtime=Depends(get_runtime)):
+    records = runtime.get_main_records(force_refresh=force_refresh)
+    normalized_target = str(target_date or '').strip()
+    parsed_target = parse_sheet_date(normalized_target) if normalized_target else None
+    if normalized_target and parsed_target is None:
+        raise HTTPException(status_code=400, detail='Invalid target_date. Use YYYY-MM-DD or MM/DD/YYYY.')
+
+    services = build_services_today_rows(records, today=parsed_target)
+    return {
+        'services': services,
+        'count': len(services),
+        'target_date': str(parsed_target.isoformat() if parsed_target else ''),
     }

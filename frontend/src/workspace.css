@@ -102,10 +102,12 @@ textarea:focus {
 }
 
 .hero-right {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
   gap: 14px;
-  min-width: min(100%, 420px);
+  margin-left: auto;
+  min-width: 0;
 }
 
 .hero-note,
@@ -298,12 +300,35 @@ textarea:focus {
   border: 1px solid rgba(85, 60, 30, 0.08);
 }
 
+.stat-card--clickable {
+  transition: all 0.2s ease-in-out;
+}
+
+.stat-card--clickable:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 248, 238, 1), rgba(245, 235, 220, 1));
+  border-color: rgba(85, 60, 30, 0.16);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(58, 41, 21, 0.1);
+}
+
 .metric-card--home {
   min-height: 172px;
 }
 
 .metric-card--soft {
   min-height: 146px;
+}
+
+.metric-card--profit {
+  border-color: rgba(29, 133, 76, 0.35);
+  background: linear-gradient(180deg, rgba(236, 255, 245, 0.98), rgba(224, 250, 236, 0.96));
+}
+
+.metric-card--allowance {
+  border-color: rgba(199, 147, 0, 0.4);
+  background: linear-gradient(180deg, rgba(255, 250, 229, 0.98), rgba(255, 243, 196, 0.96));
+  box-shadow: 0 10px 22px rgba(168, 121, 0, 0.14);
 }
 
 .metric-card__top {
@@ -1335,6 +1360,63 @@ button:focus-visible {
 
 .field-block--wide {
   grid-column: span 2;
+}
+
+.login-shell {
+  --brand-black: #050505;
+  --brand-gold: #d4af37;
+  --brand-gold-soft: rgba(212, 175, 55, 0.26);
+  --brand-ink: #f6e7be;
+  min-height: 100vh;
+  background:
+    linear-gradient(rgba(5, 5, 5, 0.84), rgba(5, 5, 5, 0.9)),
+    var(--login-logo-url),
+    radial-gradient(circle at 20% 10%, rgba(212, 175, 55, 0.26), transparent 34%),
+    radial-gradient(circle at 88% 88%, rgba(212, 175, 55, 0.2), transparent 42%),
+    linear-gradient(135deg, #080808 0%, #111111 100%);
+  background-repeat: no-repeat, no-repeat, no-repeat, no-repeat, no-repeat;
+  background-size: cover, min(78vw, 720px) auto, cover, cover, cover;
+  background-position: center, center, center, center, center;
+}
+
+.login-page {
+  min-height: calc(100vh - 56px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-card {
+  width: min(100%, 560px);
+  backdrop-filter: blur(6px);
+  background: linear-gradient(180deg, rgba(8, 8, 8, 0.86), rgba(10, 10, 10, 0.93));
+  border: 1px solid var(--brand-gold-soft);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
+}
+
+.login-card .panel-header h3,
+.login-card .panel-header p,
+.login-card .field-label,
+.login-card .notice {
+  color: var(--brand-ink);
+}
+
+.login-card input {
+  border: 1px solid var(--brand-gold-soft);
+  background: rgba(18, 18, 18, 0.92);
+  color: #ffffff;
+}
+
+.login-card input:focus {
+  border-color: var(--brand-gold);
+  box-shadow: 0 0 0 4px rgba(212, 175, 55, 0.24);
+}
+
+.login-card .primary-button {
+  background: linear-gradient(135deg, #d4af37 0%, #b58d1c 100%);
+  color: #16120a;
+  border: 1px solid rgba(212, 175, 55, 0.9);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.3);
 }
 
 @media (max-width: 1320px) {

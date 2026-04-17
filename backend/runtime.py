@@ -24,6 +24,7 @@ from services.client_service import (
     validate_client_entry,
 )
 from services.contact_import_service import fetch_google_contacts
+from services.financial_foundation_service import FinancialFoundationService
 from services.name_fix_service import (
     build_name_fix_all_updates,
     build_name_fix_updates,
@@ -72,6 +73,7 @@ class BackendRuntime:
         self.main_spreadsheet = None
         self.main_sheet = None
         self.postgres_sync_manager = None
+        self.financial_data_service = FinancialFoundationService(None, logger=self.logger)
         self._google_contacts_cache = []
         self._google_contacts_synced_at = ''
         self._logo_payload = None
@@ -165,7 +167,18 @@ class BackendRuntime:
     def _load_service_account_credentials(self, scopes):
         raw_json = (os.environ.get('GOOGLE_CREDS_JSON') or '').strip()
         if not raw_json:
-            raise RuntimeError('Missing GOOGLE_CREDS_JSON environment variable for Google Sheets authentication')
+            # Fall back to credentials_file from config (e.g. credentials.json)
+            creds_file = self.config.get('credentials_file', 'credentials.json')
+            if not os.path.isabs(creds_file):
+                creds_file = os.path.join(self.base_dir, creds_file)
+            if os.path.exists(creds_file):
+                try:
+                    with open(creds_file, 'r') as f:
+                        raw_json = f.read().strip()
+                except Exception as exc:
+                    raise RuntimeError(f'Could not read credentials file {creds_file}: {exc}') from exc
+            else:
+                raise RuntimeError('Missing GOOGLE_CREDS_JSON environment variable for Google Sheets authentication')
 
         try:
             info = json.loads(raw_json)
@@ -233,6 +246,63 @@ class BackendRuntime:
     @property
     def postgres_ready(self):
         return bool(self.postgres_sync_manager and self.postgres_sync_manager.ready and self.sync_state.get('ready'))
+
+    def _safe_record_sale_ledger_entry(
+        self,
+        *,
+        stock_record_id,
+        stock_row_num,
+        selling_price,
+        cost_price_at_sale,
+        quantity,
+        date,
+        sold_by,
+    ):
+        if not self.financial_data_service or not self.financial_data_service.ready:
+            return None
+
+        stock_record_key = str(stock_record_id or '').strip()
+        if not stock_record_key:
+            return None
+
+        try:
+            existing = self.postgres_sync_manager.fetchone_dict(
+                "SELECT id FROM sales_ledger WHERE stock_record_id = %s LIMIT 1",
+                (stock_record_key,),
+            )
+            if existing and existing.get('id'):
+                return self.financial_data_service.get_sale_ledger_entry(existing.get('id'))
+
+            result = self.financial_data_service.create_sale_ledger_entry(
+                stock_record_id=stock_record_key,
+                stock_row_num=stock_row_num,
+                selling_price=selling_price,
+                cost_price_at_sale=cost_price_at_sale,
+                quantity=quantity,
+                date=date,
+                sold_by=sold_by,
+            )
+            
+            # Log the sale to audit log
+            try:
+                profit = (selling_price - cost_price_at_sale) * quantity
+                self.financial_data_service.log_sale_action(
+                    sold_by=sold_by,
+                    items_count=quantity,
+                    total_amount=selling_price * quantity,
+                    description=f"Item record_id: {stock_record_key}, profit: {profit:.2f}",
+                )
+            except Exception as audit_exc:
+                self.logger.warning('Failed to log sale audit entry: %s', audit_exc)
+            
+            return result
+        except Exception as exc:
+            self.logger.warning(
+                'Non-blocking sales_ledger write failed for stock_record_id=%s: %s',
+                stock_record_key,
+                exc,
+            )
+            return None
 
     def start(self):
         self._connect_sheets()
@@ -404,6 +474,9 @@ class BackendRuntime:
 
     def _ensure_stock_cost_price_column(self, force_refresh=False):
         values = self.get_stock_values(force_refresh=force_refresh)
+        if not values:
+            header_row_idx, headers, headers_upper = detect_stock_headers(values)
+            return values, header_row_idx, headers, headers_upper, False
         header_row_idx, headers, headers_upper = detect_stock_headers(values)
         if 'COST PRICE' in headers_upper:
             return values, header_row_idx, headers, headers_upper, False
@@ -412,7 +485,11 @@ class BackendRuntime:
         if not stock_sheet_id:
             return values, header_row_idx, headers, headers_upper, False
 
-        worksheet = self._resolve_stock_worksheet(stock_sheet_id)
+        try:
+            worksheet = self._resolve_stock_worksheet(stock_sheet_id)
+        except Exception as exc:
+            self.logger.warning('Could not resolve stock worksheet while ensuring COST PRICE column: %s', exc)
+            return values, header_row_idx, headers, headers_upper, False
         insert_after_idx = svc_stock_header_index(headers_upper, 'IMEI')
         if insert_after_idx is None:
             insert_after_idx = svc_stock_header_index(headers_upper, 'STORAGE')
@@ -434,13 +511,17 @@ class BackendRuntime:
             }]
         }
 
-        with self._sheet_lock:
-            self.sheets_api_service.spreadsheets().batchUpdate(
-                spreadsheetId=stock_sheet_id,
-                body=request_body,
-            ).execute()
-            worksheet.update_cell(header_row_idx + 1, insert_index + 1, 'COST PRICE')
-            values = worksheet.get_all_values()
+        try:
+            with self._sheet_lock:
+                self.sheets_api_service.spreadsheets().batchUpdate(
+                    spreadsheetId=stock_sheet_id,
+                    body=request_body,
+                ).execute()
+                worksheet.update_cell(header_row_idx + 1, insert_index + 1, 'COST PRICE')
+                values = worksheet.get_all_values()
+        except Exception as exc:
+            self.logger.warning('Could not insert COST PRICE column due to sheet API error: %s', exc)
+            return values, header_row_idx, headers, headers_upper, False
 
         if self.postgres_ready:
             try:
@@ -453,15 +534,22 @@ class BackendRuntime:
 
     def _ensure_stock_product_status_column(self, force_refresh=False):
         values = self.get_stock_values(force_refresh=force_refresh)
+        if not values:
+            header_row_idx, headers, headers_upper = detect_stock_headers(values)
+            return values, header_row_idx, headers, headers_upper, False
         header_row_idx, headers, headers_upper = detect_stock_headers(values)
-        if 'PRODUCT STATUS' in headers_upper:
+        if 'PRODUCT STATUS' in headers_upper or 'STATUS OF DEVICE' in headers_upper:
             return values, header_row_idx, headers, headers_upper, False
 
         stock_sheet_id = self._resolve_stock_sheet_id()
         if not stock_sheet_id:
             return values, header_row_idx, headers, headers_upper, False
 
-        worksheet = self._resolve_stock_worksheet(stock_sheet_id)
+        try:
+            worksheet = self._resolve_stock_worksheet(stock_sheet_id)
+        except Exception as exc:
+            self.logger.warning('Could not resolve stock worksheet while ensuring PRODUCT STATUS column: %s', exc)
+            return values, header_row_idx, headers, headers_upper, False
         time_col = svc_stock_header_index(headers_upper, 'TIME')
         desc_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'DESC', 'DETAILS', 'MODEL', 'PHONE MODEL')
         date_col = svc_stock_header_index(headers_upper, 'DATE')
@@ -489,16 +577,20 @@ class BackendRuntime:
             }]
         }
 
-        with self._sheet_lock:
-            self.sheets_api_service.spreadsheets().batchUpdate(
-                spreadsheetId=stock_sheet_id,
-                body=request_body,
-            ).execute()
-            worksheet.update_cell(header_row_idx + 1, insert_index + 1, 'PRODUCT STATUS')
-            values = worksheet.get_all_values()
+        try:
+            with self._sheet_lock:
+                self.sheets_api_service.spreadsheets().batchUpdate(
+                    spreadsheetId=stock_sheet_id,
+                    body=request_body,
+                ).execute()
+                worksheet.update_cell(header_row_idx + 1, insert_index + 1, 'PRODUCT STATUS')
+                values = worksheet.get_all_values()
+        except Exception as exc:
+            self.logger.warning('Could not insert PRODUCT STATUS column due to sheet API error: %s', exc)
+            return values, header_row_idx, headers, headers_upper, False
 
         header_row_idx, headers, headers_upper = detect_stock_headers(values)
-        status_col = svc_stock_header_index(headers_upper, 'PRODUCT STATUS', 'STOCK STATUS', 'ITEM STATUS')
+        status_col = svc_stock_header_index(headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS')
         qty_col = svc_stock_header_index(headers_upper, 'QTY', 'QUANTITY', 'STOCK', 'UNITS')
         desc_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'DESC', 'DETAILS', 'MODEL', 'PHONE MODEL')
 
@@ -654,7 +746,7 @@ class BackendRuntime:
         if not values or not inventory_lookup:
             return values, []
 
-        status_col = svc_stock_header_index(headers_upper, 'PRODUCT STATUS', 'STOCK STATUS', 'ITEM STATUS')
+        status_col = svc_stock_header_index(headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS')
         availability_col = svc_stock_header_index(headers_upper, 'AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE')
         imei_col = svc_stock_header_index(headers_upper, 'IMEI')
         buyer_col = svc_stock_header_index(headers_upper, 'NAME OF BUYER')
@@ -676,8 +768,14 @@ class BackendRuntime:
             if not imei_value:
                 continue
 
+            matched_by_pair = False
             inv_entry = by_pair.get((imei_value, buyer_value)) if buyer_value else None
-            if inv_entry is None:
+            if inv_entry is not None:
+                matched_by_pair = True
+
+            # When a buyer is already set on stock, avoid IMEI-only fallback because
+            # it can match an unrelated inventory row and incorrectly revert status.
+            if inv_entry is None and not buyer_value:
                 inv_entry = by_imei.get(imei_value)
             if inv_entry is None:
                 continue
@@ -691,6 +789,17 @@ class BackendRuntime:
 
             current_status = str(row[status_col] or '').strip().upper()
             desired_status = desired_status_label.upper()
+            current_status_key = normalize_stock_status_value(current_status)
+            desired_status_key = normalize_stock_status_value(desired_status)
+
+            # Never downgrade manually set SOLD/PENDING rows from loose matches.
+            if current_status_key == 'sold' and desired_status_key in {'available', 'pending'}:
+                continue
+            if current_status_key == 'pending' and desired_status_key == 'available':
+                continue
+            if not matched_by_pair and desired_status_key == 'available':
+                continue
+
             row_changed = False
             if current_status != desired_status:
                 row[status_col] = desired_status_label
@@ -874,6 +983,7 @@ class BackendRuntime:
             return
 
         self.postgres_sync_manager = create_postgres_sync_manager(self.config, logger=self.logger)
+        self.financial_data_service.configure(self.postgres_sync_manager)
         if not self.postgres_sync_manager.ready:
             self.sync_state['last_status'] = 'dsn_missing'
             self.sync_state['last_error'] = 'postgres_dsn is empty'
@@ -881,6 +991,7 @@ class BackendRuntime:
 
         try:
             self.postgres_sync_manager.ensure_schema()
+            self.financial_data_service.ensure_default_app_config()
             self.sync_state['ready'] = True
             self.sync_state['last_status'] = 'running'
             threading.Thread(target=self._seed_once_async, daemon=True).start()
@@ -1001,17 +1112,8 @@ class BackendRuntime:
                     pass
                 raise
 
-        # Fast-path replay keeps user-facing writes (like payments) in sync with Sheets
-        # even if the background queue worker is delayed.
-        try:
-            if self._ensure_sheet_connection():
-                self._replay_queue_operation({'payload_json': payload})
-                self.postgres_sync_manager.mark_operation_done(queue_id)
-        except Exception as exc:
-            try:
-                self.postgres_sync_manager.mark_operation_failed(queue_id, f'Immediate replay failed: {exc}')
-            except Exception:
-                pass
+        # Background queue worker syncs to Google Sheets within ~20 seconds.
+        # Cache is already updated above so the UI sees changes immediately.
         return queue_id
 
     def replay_pending_queue_now(self, limit=200):
@@ -1067,8 +1169,8 @@ class BackendRuntime:
         return records
 
     def get_main_values(self, force_refresh=False):
+        cached = self._load_cached_rows('main_values')
         if not force_refresh:
-            cached = self._load_cached_rows('main_values')
             if cached:
                 return cached
 
@@ -1082,10 +1184,14 @@ class BackendRuntime:
                 self.logger.warning('Backend main_values pull refresh failed: %s', exc)
 
         if not self._ensure_sheet_connection():
-            return []
+            return cached or []
 
-        with self._sheet_lock:
-            values = self.main_sheet.get_all_values()
+        try:
+            with self._sheet_lock:
+                values = self.main_sheet.get_all_values()
+        except Exception as exc:
+            self.logger.warning('Backend main_values direct sheet read failed: %s', exc)
+            return cached or []
         if self.postgres_ready:
             try:
                 self.postgres_sync_manager.upsert_sheet_cache('main_values', values)
@@ -1094,8 +1200,8 @@ class BackendRuntime:
         return values
 
     def get_stock_values(self, force_refresh=False):
+        cached = self._load_cached_rows('stock_values')
         if not force_refresh:
-            cached = self._load_cached_rows('stock_values')
             if cached:
                 return cached
 
@@ -1110,10 +1216,14 @@ class BackendRuntime:
 
         stock_sheet_id = self._resolve_stock_sheet_id()
         if not stock_sheet_id:
-            return []
+            return cached or []
 
-        with self._sheet_lock:
-            values = self._resolve_stock_worksheet(stock_sheet_id).get_all_values()
+        try:
+            with self._sheet_lock:
+                values = self._resolve_stock_worksheet(stock_sheet_id).get_all_values()
+        except Exception as exc:
+            self.logger.warning('Backend stock_values direct sheet read failed: %s', exc)
+            return cached or []
         if self.postgres_ready:
             try:
                 self.postgres_sync_manager.upsert_sheet_cache('stock_values', values)
@@ -1208,14 +1318,46 @@ class BackendRuntime:
             'header_row_idx': header_row_idx,
             'visible_headers': visible_headers,
             'defaults': build_stock_form_defaults(values, header_row_idx, headers_upper),
+            'dropdown_options': self.get_stock_dropdown_options(force_refresh),
             'cost_price_inserted': inserted_cost_price,
             'product_status_inserted': inserted_product_status,
+        }
+
+    def get_stock_dropdown_options(self, force_refresh=False):
+        stock_values, _, stock_headers, stock_headers_upper, _, _ = self._ensure_stock_required_columns(force_refresh=force_refresh)
+
+        imei_col = svc_stock_header_index(stock_headers_upper, 'IMEI')
+        device_col = svc_stock_header_index(stock_headers_upper, 'DEVICE')
+        storage_col = svc_stock_header_index(stock_headers_upper, 'STORAGE')
+
+        imei_set = set()
+        device_set = set()
+        storage_set = set()
+
+        for row in stock_values:
+            if imei_col is not None and imei_col < len(row):
+                imei = str(row[imei_col] or '').strip()
+                if imei:
+                    imei_set.add(imei)
+            if device_col is not None and device_col < len(row):
+                device = str(row[device_col] or '').strip()
+                if device:
+                    device_set.add(device)
+            if storage_col is not None and storage_col < len(row):
+                storage = str(row[storage_col] or '').strip()
+                if storage:
+                    storage_set.add(storage)
+
+        return {
+            'imei': sorted(list(imei_set)),
+            'device': sorted(list(device_set)),
+            'storage': sorted(list(storage_set)),
         }
 
     def add_stock_record(self, values_by_header, force_refresh=False):
         values, header_row_idx, headers, headers_upper, _, _ = self._ensure_stock_required_columns(force_refresh=force_refresh)
         normalized_values = dict(values_by_header or {})
-        status_col = svc_stock_header_index(headers_upper, 'PRODUCT STATUS', 'STOCK STATUS', 'ITEM STATUS')
+        status_col = svc_stock_header_index(headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS')
         if status_col is not None:
             status_header = headers[status_col]
             if not str(normalized_values.get(status_header, '')).strip():
@@ -1255,8 +1397,7 @@ class BackendRuntime:
         }
 
     def add_service_record(self, values_by_header, force_refresh=False):
-        # Always refresh before service writes so target_row is computed from the latest inventory state.
-        main_values = self.get_main_values(force_refresh=True)
+        main_values = self.get_main_values(force_refresh=force_refresh)
         if not main_values:
             return {'error': 'Main inventory sheet is empty.'}
 
@@ -1297,12 +1438,6 @@ class BackendRuntime:
                 self.postgres_sync_manager.append_cached_dict_row('main_records', record),
             ),
         )
-
-        # Push queued writes immediately so the inventory sheet reflects new services without delay.
-        try:
-            self.replay_pending_queue_now(limit=100)
-        except Exception:
-            pass
 
         return {
             'queued_operation_id': queue_id,
@@ -1410,6 +1545,27 @@ class BackendRuntime:
         current_paid = clean_amount(row[paid_col] if paid_col is not None and paid_col < len(row) else '')
         price_value = clean_amount(row[price_col] if price_col is not None and price_col < len(row) else '')
         explicit_amount = None if amount_paid is None or str(amount_paid).strip() == '' else clean_amount(amount_paid)
+        name_col = svc_stock_header_index(headers_upper, 'NAME', 'CLIENT NAME', 'CUSTOMER NAME')
+        customer_name = str(row[name_col] if name_col is not None and name_col < len(row) else '').strip().upper()
+
+        if explicit_amount is not None and price_value > 0:
+            if explicit_amount > price_value:
+                remainder = explicit_amount - price_value
+                return {
+                    'error': f'Amount paid cannot be greater than sale price. Max allowed is NGN {price_value:,}.',
+                    'error_code': 'OVERPAYMENT',
+                    'sale_price': price_value,
+                    'entered_amount': explicit_amount,
+                    'remainder': remainder,
+                    'customer_name': customer_name,
+                }
+
+            if explicit_amount == 0:
+                status_text = 'UNPAID'
+            elif explicit_amount < price_value:
+                status_text = 'PART PAYMENT'
+            else:
+                status_text = 'PAID'
 
         if status_text == 'PAID':
             resolved_amount = explicit_amount if explicit_amount and explicit_amount > 0 else price_value
@@ -1537,12 +1693,17 @@ class BackendRuntime:
         if not stock_sheet_id:
             return {'error': 'Stock sheet ID is missing.'}
 
-        status_col = svc_stock_header_index(stock_headers_upper, 'PRODUCT STATUS', 'STOCK STATUS', 'ITEM STATUS')
-        buyer_col = svc_stock_header_index(stock_headers_upper, 'NAME OF BUYER')
-        phone_col = svc_stock_header_index(stock_headers_upper, 'PHONE NUMBER OF BUYER')
+        status_col = svc_stock_header_index(stock_headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS', 'STATUS')
+        buyer_col = svc_stock_header_index(stock_headers_upper, 'NAME OF BUYER', 'BUYER NAME', 'CUSTOMER NAME')
+        phone_col = svc_stock_header_index(stock_headers_upper, 'PHONE NUMBER OF BUYER', 'PHONE OF BUYER', 'BUYER PHONE', 'BUYER PHONE NUMBER')
+        sold_amount_col = svc_stock_header_index(stock_headers_upper, 'AMOUNT SOLD', 'SELLING PRICE')
+        paid_amount_col = svc_stock_header_index(stock_headers_upper, 'AMOUNT PAID')
         availability_col = svc_stock_header_index(stock_headers_upper, 'AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE')
         desc_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
         imei_col = svc_stock_header_index(stock_headers_upper, 'IMEI')
+
+        if status_col is None:
+            return {'error': 'Could not find a stock status column (PRODUCT STATUS / STATUS OF DEVICE / STATUS).'}
 
         buyer_name_value = padded[buyer_col] if buyer_col is not None and buyer_col < len(padded) else ''
         buyer_phone_value = padded[phone_col] if phone_col is not None and phone_col < len(padded) else ''
@@ -1561,6 +1722,10 @@ class BackendRuntime:
             updates.append({'col': buyer_col + 1, 'value': ''})
         if phone_col is not None:
             updates.append({'col': phone_col + 1, 'value': ''})
+        if sold_amount_col is not None:
+            updates.append({'col': sold_amount_col + 1, 'value': ''})
+        if paid_amount_col is not None:
+            updates.append({'col': paid_amount_col + 1, 'value': ''})
         if availability_col is not None:
             updates.append({'col': availability_col + 1, 'value': ''})
 
@@ -1611,33 +1776,78 @@ class BackendRuntime:
                 )
             )
 
-        if imei_value and main_headers:
+        if main_headers:
+            main_name_col = svc_stock_header_index(main_headers_upper, 'NAME', 'CLIENT NAME', 'CUSTOMER NAME')
+            main_phone_col = svc_stock_header_index(main_headers_upper, 'PHONE NUMBER', 'PHONE', 'PHONE NO')
+            main_description_col = svc_stock_header_index(main_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
             main_imei_col = svc_stock_header_index(main_headers_upper, 'IMEI')
             main_status_col = svc_stock_header_index(main_headers_upper, 'STATUS')
+            main_paid_col = svc_stock_header_index(main_headers_upper, 'AMOUNT PAID', 'AMOUNT PAID ')
 
-            if main_imei_col is not None and main_status_col is not None:
-                latest_row_num = None
+            latest_row_num = None
+            if main_status_col is not None:
+                buyer_name_key = str(buyer_name_value or '').strip().upper()
+                buyer_phone_key = normalize_phone_number(buyer_phone_value or '')
+                imei_key = str(imei_value or '').strip()
+                desc_key = str(description_value or '').strip().upper()
+
                 for index in range(len(main_values) - 1, main_header_row_idx, -1):
                     row = main_values[index] if index < len(main_values) else []
-                    if main_imei_col >= len(row):
+                    if not row:
                         continue
-                    if str(row[main_imei_col] or '').strip() != str(imei_value).strip():
+
+                    row_status = str(row[main_status_col] or '').strip().upper() if main_status_col < len(row) else ''
+                    if row_status == 'RETURNED':
                         continue
+
+                    row_imei = str(row[main_imei_col] or '').strip() if main_imei_col is not None and main_imei_col < len(row) else ''
+                    row_name = str(row[main_name_col] or '').strip().upper() if main_name_col is not None and main_name_col < len(row) else ''
+                    row_phone = normalize_phone_number(row[main_phone_col] if main_phone_col is not None and main_phone_col < len(row) else '')
+                    row_description = str(row[main_description_col] or '').strip().upper() if main_description_col is not None and main_description_col < len(row) else ''
+
+                    if imei_key and row_imei != imei_key:
+                        continue
+
+                    # If IMEI is present, trust it as the strongest identity key and
+                    # avoid hard-failing on phone/name drift from manual edits.
+                    if not imei_key:
+                        if buyer_phone_key and row_phone != buyer_phone_key:
+                            continue
+                        if buyer_name_key and row_name and row_name != buyer_name_key:
+                            continue
+                        if desc_key and row_description and row_description != desc_key:
+                            continue
+
                     latest_row_num = index + 1
                     break
 
-                if latest_row_num is not None:
+            if latest_row_num is not None and main_status_col is not None:
+                queue_ids.append(
+                    self._enqueue_db_first_operation(
+                        'inventory',
+                        'main_update_status',
+                        {
+                            'kind': 'main_update_cell',
+                            'row': latest_row_num,
+                            'col': main_status_col + 1,
+                            'value': 'RETURNED',
+                        },
+                        cache_apply_callable=lambda rn=latest_row_num, cn=main_status_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, 'RETURNED'),
+                    )
+                )
+
+                if main_paid_col is not None:
                     queue_ids.append(
                         self._enqueue_db_first_operation(
                             'inventory',
-                            'main_update_status',
+                            'main_update_amount_paid',
                             {
                                 'kind': 'main_update_cell',
                                 'row': latest_row_num,
-                                'col': main_status_col + 1,
-                                'value': 'RETURNED',
+                                'col': main_paid_col + 1,
+                                'value': 0,
                             },
-                            cache_apply_callable=lambda rn=latest_row_num, cn=main_status_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, 'RETURNED'),
+                            cache_apply_callable=lambda rn=latest_row_num, cn=main_paid_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, 0),
                         )
                     )
 
@@ -1677,10 +1887,16 @@ class BackendRuntime:
             )
 
         # Flush queued return operations immediately so inventory reflects RETURNED entries quickly.
+        replay_result = None
         try:
-            self.replay_pending_queue_now(limit=150)
+            replay_result = self.replay_pending_queue_now(limit=150)
         except Exception:
-            pass
+            replay_result = None
+
+        if replay_result and replay_result.get('failed', 0) > 0:
+            return {
+                'error': 'Return was queued but could not be written to spreadsheet right now. Please retry in a moment.',
+            }
 
         return {
             'queued_operation_ids': queue_ids,
@@ -1710,7 +1926,7 @@ class BackendRuntime:
         buyer_col = svc_stock_header_index(stock_headers_upper, 'NAME OF BUYER')
         buyer_phone_col = svc_stock_header_index(stock_headers_upper, 'PHONE NUMBER OF BUYER', 'PHONE OF BUYER', 'BUYER PHONE')
         imei_col = svc_stock_header_index(stock_headers_upper, 'IMEI')
-        product_status_col = svc_stock_header_index(stock_headers_upper, 'PRODUCT STATUS', 'STOCK STATUS', 'ITEM STATUS')
+        product_status_col = svc_stock_header_index(stock_headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS')
         availability_col = svc_stock_header_index(stock_headers_upper, 'AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE')
         description_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
 
@@ -1764,6 +1980,33 @@ class BackendRuntime:
         if explicit_amount and explicit_amount > 0 and matched_row_values and main_price_col is not None and status_text != 'PAID':
             pre_price = clean_amount(matched_row_values[main_price_col]) if main_price_col < len(matched_row_values) else 0
             if pre_price > 0 and explicit_amount >= pre_price:
+                status_text = 'PAID'
+
+        comparison_price = 0
+        if matched_row_values and main_price_col is not None:
+            comparison_price = clean_amount(matched_row_values[main_price_col]) if main_price_col < len(matched_row_values) else 0
+        if comparison_price <= 0:
+            stock_price_col = svc_stock_header_index(stock_headers_upper, 'AMOUNT SOLD', 'SELLING PRICE', 'PRICE')
+            if stock_price_col is not None and stock_price_col < len(padded_stock_row):
+                comparison_price = clean_amount(padded_stock_row[stock_price_col])
+
+        if explicit_amount is not None and comparison_price > 0:
+            if explicit_amount > comparison_price:
+                remainder = explicit_amount - comparison_price
+                return {
+                    'error': f'Amount paid cannot be greater than sale price. Max allowed is NGN {comparison_price:,}.',
+                    'error_code': 'OVERPAYMENT',
+                    'sale_price': comparison_price,
+                    'entered_amount': explicit_amount,
+                    'remainder': remainder,
+                    'customer_name': buyer_name,
+                }
+
+            if explicit_amount == 0:
+                status_text = 'UNPAID'
+            elif explicit_amount < comparison_price:
+                status_text = 'PART PAYMENT'
+            else:
                 status_text = 'PAID'
 
         stock_status_choice = 'Sold' if status_text == 'PAID' else 'Pending Deal'
@@ -2188,10 +2431,12 @@ class BackendRuntime:
             'sync_result': sync_result,
         }
 
-    def checkout_sale_cart(self, items, force_refresh=False):
+    def checkout_sale_cart(self, items, force_refresh=False, sold_by=''):
         cart_items = list(items or [])
         if not cart_items:
             return {'error': 'Add at least one phone to the cart before checking out.'}
+
+        queued_operation_ids = []
 
         stock_values, stock_header_row_idx, stock_headers, stock_headers_upper, _, _ = self._ensure_stock_required_columns(force_refresh=force_refresh)
         main_values = self.get_main_values(force_refresh=force_refresh)
@@ -2212,13 +2457,40 @@ class BackendRuntime:
         time_text = datetime.now().strftime('%H:%M')
         next_main_row = find_next_table_write_row(main_values, main_header_row_idx)
         next_sun_serial = max(1, next_main_row - (main_header_row_idx + 1))
+
+        # Check if we need to add separator rows for new day
+        last_row_date = None
+        date_col = svc_stock_header_index(main_headers_upper, 'DATE')
+        if date_col is not None:
+            for i in range(len(main_values) - 1, main_header_row_idx, -1):
+                row = main_values[i]
+                if len(row) > date_col and str(row[date_col] or '').strip():
+                    last_row_date = str(row[date_col]).strip()
+                    break
+
+        if last_row_date and last_row_date != today_text:
+            # Add 3 empty rows as separator
+            empty_row_values = [''] * len(main_headers)
+            for _ in range(3):
+                queue_id = self._enqueue_db_first_operation(
+                    'sales',
+                    'main_write_row',
+                    {
+                        'kind': 'main_write_row',
+                        'row': next_main_row,
+                        'row_values': empty_row_values,
+                    },
+                    cache_apply_callable=lambda row=next_main_row, values=empty_row_values: self.postgres_sync_manager.replace_cached_table_row('main_values', row, values),
+                )
+                queued_operation_ids.append(queue_id)
+                next_main_row += 1
+                next_sun_serial += 1
         item_results = []
-        queued_operation_ids = []
 
         name_of_buyer_col = svc_stock_header_index(stock_headers_upper, 'NAME OF BUYER')
         phone_of_buyer_col = svc_stock_header_index(stock_headers_upper, 'PHONE NUMBER OF BUYER')
         availability_col = svc_stock_header_index(stock_headers_upper, 'AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE')
-        product_status_col = svc_stock_header_index(stock_headers_upper, 'PRODUCT STATUS', 'STOCK STATUS', 'ITEM STATUS')
+        product_status_col = svc_stock_header_index(stock_headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS')
         description_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
         imei_col = svc_stock_header_index(stock_headers_upper, 'IMEI')
         main_name_col = svc_stock_header_index(main_headers_upper, 'NAME')
@@ -2226,6 +2498,9 @@ class BackendRuntime:
         main_status_col = svc_stock_header_index(main_headers_upper, 'STATUS')
         main_paid_col = svc_stock_header_index(main_headers_upper, 'AMOUNT PAID')
         main_price_col = svc_stock_header_index(main_headers_upper, 'PRICE')
+        main_record_id_col = svc_stock_header_index(main_headers_upper, 'RECORD_ID', 'RECORD ID')
+        cost_price_col = svc_stock_header_index(stock_headers_upper, 'COST PRICE', 'COST', 'BUYING PRICE')
+        sold_by_text = str(sold_by or '').strip()
 
         for item in cart_items:
             row_num = int(item.get('stock_row_num') or 0)
@@ -2236,6 +2511,11 @@ class BackendRuntime:
             padded_stock_row = stock_row + [''] * max(0, len(stock_headers) - len(stock_row))
             description = padded_stock_row[description_col] if description_col is not None and description_col < len(padded_stock_row) else ''
             imei = padded_stock_row[imei_col] if imei_col is not None and imei_col < len(padded_stock_row) else ''
+            cost_price_at_sale = clean_amount(
+                padded_stock_row[cost_price_col]
+                if cost_price_col is not None and cost_price_col < len(padded_stock_row)
+                else 0
+            )
 
             buyer_name = str(item.get('buyer_name') or '').strip().upper()
             buyer_phone = normalize_phone_number(item.get('buyer_phone') or '')
@@ -2343,6 +2623,15 @@ class BackendRuntime:
                         break
 
             if updated_existing_row is not None:
+                existing_record_id = ''
+                existing_row = main_values[updated_existing_row - 1] if updated_existing_row - 1 < len(main_values) else []
+                if (
+                    main_record_id_col is not None
+                    and isinstance(existing_row, list)
+                    and main_record_id_col < len(existing_row)
+                ):
+                    existing_record_id = str(existing_row[main_record_id_col] or '').strip()
+
                 queue_status = self._enqueue_db_first_operation(
                     'sales',
                     'main_update_status',
@@ -2386,6 +2675,7 @@ class BackendRuntime:
                 item_results.append({
                     'stock_row_num': row_num,
                     'inventory_row_num': updated_existing_row,
+                    'stock_record_id': existing_record_id,
                     'buyer_name': buyer_name,
                     'buyer_phone': buyer_phone,
                     'sale_price': sale_price,
@@ -2395,6 +2685,18 @@ class BackendRuntime:
                     'imei': imei,
                     'mode': 'updated_existing',
                 })
+
+                if status_key == 'sold' and inventory_status != 'RETURNED':
+                    fallback_record_id = f'legacy-main-row-{updated_existing_row}'
+                    self._safe_record_sale_ledger_entry(
+                        stock_record_id=existing_record_id or fallback_record_id,
+                        stock_row_num=row_num,
+                        selling_price=sale_price,
+                        cost_price_at_sale=cost_price_at_sale,
+                        quantity=1,
+                        date=datetime.now(timezone.utc),
+                        sold_by=sold_by_text,
+                    )
             else:
                 amount_paid = sale_price if inventory_status == 'PAID' else 0
                 record_id = uuid.uuid4().hex
@@ -2431,6 +2733,7 @@ class BackendRuntime:
                 item_results.append({
                     'stock_row_num': row_num,
                     'inventory_row_num': next_main_row,
+                    'stock_record_id': record_id,
                     'buyer_name': buyer_name,
                     'buyer_phone': buyer_phone,
                     'sale_price': sale_price,
@@ -2440,6 +2743,17 @@ class BackendRuntime:
                     'imei': imei,
                     'mode': 'appended',
                 })
+
+                if status_key == 'sold' and inventory_status != 'RETURNED':
+                    self._safe_record_sale_ledger_entry(
+                        stock_record_id=record_id,
+                        stock_row_num=row_num,
+                        selling_price=sale_price,
+                        cost_price_at_sale=cost_price_at_sale,
+                        quantity=1,
+                        date=datetime.now(timezone.utc),
+                        sold_by=sold_by_text,
+                    )
 
                 next_main_row += 1
                 next_sun_serial += 1
@@ -2542,9 +2856,9 @@ class BackendRuntime:
                     'payment',
                     'main_update_paid',
                     {'kind': 'main_update_cell', 'row': row_idx + 1, 'col': paid_col + 1, 'value': paid_value},
-                    cache_apply_callable=lambda ri=row_idx, fn=paid_field_name, col=paid_col + 1, nv=paid_value: (
+                    cache_apply_callable=lambda ri=row_idx + 1, fn=paid_field_name, col=paid_col + 1, nv=paid_value: (
                         self.postgres_sync_manager.update_cached_main_record_field(ri, fn, nv),
-                        self.postgres_sync_manager.update_cached_table_value('main_values', ri + 1, col, nv),
+                        self.postgres_sync_manager.update_cached_table_value('main_values', ri, col, nv),
                     ),
                 )
             )
@@ -2554,12 +2868,17 @@ class BackendRuntime:
                     'payment',
                     'main_update_status',
                     {'kind': 'main_update_cell', 'row': row_idx + 1, 'col': status_col + 1, 'value': status_value},
-                    cache_apply_callable=lambda ri=row_idx, fn=status_field_name, col=status_col + 1, nv=status_value: (
+                    cache_apply_callable=lambda ri=row_idx + 1, fn=status_field_name, col=status_col + 1, nv=status_value: (
                         self.postgres_sync_manager.update_cached_main_record_field(ri, fn, nv),
-                        self.postgres_sync_manager.update_cached_table_value('main_values', ri + 1, col, nv),
+                        self.postgres_sync_manager.update_cached_table_value('main_values', ri, col, nv),
                     ),
                 )
             )
+
+        try:
+            self.replay_pending_queue_now(limit=120)
+        except Exception:
+            pass
 
         return {
             'queued_operation_ids': queue_ids,
@@ -2594,9 +2913,9 @@ class BackendRuntime:
                     'payment',
                     'main_update_paid',
                     {'kind': 'main_update_cell', 'row': row_idx + 1, 'col': paid_col + 1, 'value': item['new_paid']},
-                    cache_apply_callable=lambda ri=row_idx, fn=paid_field_name, col=paid_col + 1, nv=item['new_paid']: (
+                    cache_apply_callable=lambda ri=row_idx + 1, fn=paid_field_name, col=paid_col + 1, nv=item['new_paid']: (
                         self.postgres_sync_manager.update_cached_main_record_field(ri, fn, nv),
-                        self.postgres_sync_manager.update_cached_table_value('main_values', ri + 1, col, nv),
+                        self.postgres_sync_manager.update_cached_table_value('main_values', ri, col, nv),
                     ),
                 )
             )
@@ -2607,12 +2926,17 @@ class BackendRuntime:
                         'payment',
                         'main_update_status',
                         {'kind': 'main_update_cell', 'row': row_idx + 1, 'col': status_col + 1, 'value': item['new_status']},
-                        cache_apply_callable=lambda ri=row_idx, fn=status_field_name, col=status_col + 1, nv=item['new_status']: (
+                        cache_apply_callable=lambda ri=row_idx + 1, fn=status_field_name, col=status_col + 1, nv=item['new_status']: (
                             self.postgres_sync_manager.update_cached_main_record_field(ri, fn, nv),
-                            self.postgres_sync_manager.update_cached_table_value('main_values', ri + 1, col, nv),
+                            self.postgres_sync_manager.update_cached_table_value('main_values', ri, col, nv),
                         ),
                     )
                 )
+
+        try:
+            self.replay_pending_queue_now(limit=120)
+        except Exception:
+            pass
 
         self.last_payment_action = self._clone_payment_action({
             'customer': plan.get('name_input', ''),

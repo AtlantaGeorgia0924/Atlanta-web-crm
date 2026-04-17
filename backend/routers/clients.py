@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.dependencies import get_runtime
+from backend.dependencies import get_runtime, require_admin
 from services.client_service import (
     build_client_directory_rows,
     build_matched_contact_updates,
@@ -17,7 +17,11 @@ from services.client_service import (
     validate_client_entry,
 )
 
-router = APIRouter(prefix='/api/clients', tags=['clients'])
+router = APIRouter(
+    prefix='/api/clients',
+    tags=['clients'],
+    dependencies=[Depends(require_admin)],
+)
 
 
 class ContactInput(BaseModel):

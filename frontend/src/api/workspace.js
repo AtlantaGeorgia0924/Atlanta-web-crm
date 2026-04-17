@@ -108,6 +108,24 @@ export function fetchUnpaidTodayBills({ forceRefresh = false, signal } = {}) {
   });
 }
 
+export function fetchServicesToday({ forceRefresh = false, targetDate = '', signal } = {}) {
+  return requestJson('/api/billing/services-today/live', {
+    query: {
+      force_refresh: forceRefresh,
+      target_date: targetDate,
+    },
+    signal,
+  });
+}
+
+export function fetchFoundationCashflowSummary({ signal } = {}) {
+  return requestJson('/api/foundation/cashflow-summary', { signal });
+}
+
+export function fetchFoundationWeeklyAllowance({ signal } = {}) {
+  return requestJson('/api/foundation/weekly-allowance', { signal });
+}
+
 export function fetchClients({ forceReload = false, signal } = {}) {
   return requestJson('/api/clients/live', {
     query: { force_reload: forceReload },
@@ -138,7 +156,7 @@ export function deleteClient({ name, syncSheet = true }) {
 }
 
 export function importSheetPhones({ forceRefresh = false } = {}) {
-  return requestJson('/api/clients/live/import-sheet-phones', {
+  return requestJson('/api/stock/live/import-sheet-phones', {
     method: 'POST',
     query: { force_refresh: forceRefresh },
   });
@@ -161,8 +179,8 @@ export function syncGoogleContacts({ search = '' } = {}) {
   });
 }
 
-export function fetchDashboardLogo({ signal } = {}) {
-  return requestJson('/api/assets/logo', { signal });
+export function fetchDashboardLogo({ signal, auth = true } = {}) {
+  return requestJson('/api/assets/logo', { signal, auth });
 }
 
 export function fetchNameFixes({ forceRefresh = false, signal } = {}) {
