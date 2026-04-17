@@ -24,7 +24,10 @@ export function setUnauthorizedHandler(handler) {
 
 function buildUrl(path, query = null) {
 	const normalizedPath = String(path || '').startsWith('/') ? String(path || '') : `/${String(path || '')}`;
-	const base = getApiBaseUrl();
+	let base = getApiBaseUrl();
+	if (base && /\/api$/i.test(base) && /^\/api(\/|$)/i.test(normalizedPath)) {
+		base = base.replace(/\/api$/i, '');
+	}
 	const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
 	const url = new URL(base ? `${base}${normalizedPath}` : normalizedPath, origin);
 
