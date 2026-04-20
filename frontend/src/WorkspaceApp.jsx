@@ -3269,21 +3269,27 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     [deferredStockSearchText]
   );
 
-  const stockRowsForSearch = stockView?.all_rows_cache || [];
+  const stockRowsForSearch = useMemo(
+    () => (Array.isArray(stockView?.all_rows_cache) ? stockView.all_rows_cache : []),
+    [stockView?.all_rows_cache]
+  );
 
   const stockRowSearchIndex = useMemo(
-    () => stockRowsForSearch.map((row) => normalizeSearchValue([
-      row?.row_num,
-      row?.label,
-      row?.inventory_status,
-      row?.inventory_amount_paid,
-      row?.description,
-      row?.buyer_name,
-      row?.buyer_phone,
-      row?.imei,
-      row?.date,
-      ...(Array.isArray(row?.padded) ? row.padded : []),
-    ].join(' '))),
+    () => stockRowsForSearch.map((row) => {
+      const paddedPreview = Array.isArray(row?.padded) ? row.padded.slice(0, 24) : [];
+      return normalizeSearchValue([
+        row?.row_num,
+        row?.label,
+        row?.inventory_status,
+        row?.inventory_amount_paid,
+        row?.description,
+        row?.buyer_name,
+        row?.buyer_phone,
+        row?.imei,
+        row?.date,
+        ...paddedPreview,
+      ].join(' '));
+    }),
     [stockRowsForSearch]
   );
 
@@ -3911,7 +3917,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   useEffect(() => {
     if (activeView === 'products') {
       const stockViewForDisplay = stockView
-        ? { ...stockView, all_rows_cache: filteredStockRows }
+        ? { ...stockView, all_rows_cache: Array.isArray(filteredStockRows) ? filteredStockRows : [] }
         : stockView;
 
       return;
@@ -4953,7 +4959,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
     if (activeView === 'cart') {
       const stockViewForDisplay = stockView
-        ? { ...stockView, all_rows_cache: filteredStockRows }
+        ? { ...stockView, all_rows_cache: Array.isArray(filteredStockRows) ? filteredStockRows : [] }
         : stockView;
 
       return (
