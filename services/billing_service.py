@@ -212,7 +212,11 @@ def generate_bill_text(name_input, records, payment_details):
         lines.append(f"   Status: {status_text}")
         lines.append("")
 
-    lines.append("\nPayment Details:\n" + str(payment_details or '').strip() + "\n\nPLEASE DO SEND SCREENSHOTS AFTER PAYMENT. Thank you 🙏📍")
+    normalized_payment_details = str(payment_details or '').strip()
+    if not normalized_payment_details:
+        normalized_payment_details = 'Account details are not configured yet. Please contact admin.'
+
+    lines.append("\nPayment Details:\n" + normalized_payment_details + "\n\nPLEASE DO SEND SCREENSHOTS AFTER PAYMENT. Thank you 🙏📍")
     return "\n".join(lines)
 
 

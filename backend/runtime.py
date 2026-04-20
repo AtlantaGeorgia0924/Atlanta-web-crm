@@ -136,6 +136,18 @@ class BackendRuntime:
         if env_contacts_oauth_file:
             config['contacts_oauth_file'] = env_contacts_oauth_file
 
+        # Billing/payment account details can be injected via env vars in production.
+        env_payment_details = (
+            os.getenv('PAYMENT_DETAILS')
+            or os.getenv('APP_PAYMENT_DETAILS')
+            or os.getenv('BILL_PAYMENT_DETAILS')
+            or os.getenv('ACCOUNT_DETAILS')
+        )
+        if env_payment_details is not None and str(env_payment_details).strip():
+            config['payment_details'] = str(env_payment_details).replace('\\n', '\n').strip()
+        elif config.get('payment_details'):
+            config['payment_details'] = str(config.get('payment_details') or '').replace('\\n', '\n').strip()
+
         return config
 
     def _resolve_contacts_oauth_file(self):
@@ -451,6 +463,40 @@ class BackendRuntime:
 
     def get_logo_payload(self):
         if self._logo_payload is not None:
+            return dict(self._logo_payload)
+
+        env_logo_data_url = (
+            os.environ.get('LOGO_DATA_URL')
+            or os.environ.get('DASHBOARD_LOGO_DATA_URL')
+            or os.environ.get('LOGO_URL')
+            or os.environ.get('DASHBOARD_LOGO_URL')
+            or ''
+        ).strip()
+        if env_logo_data_url:
+            normalized_logo_source = env_logo_data_url.replace('\\n', '').strip()
+            file_name = ''
+            if '/' in normalized_logo_source:
+                file_name = normalized_logo_source.split('?', 1)[0].rstrip('/').rsplit('/', 1)[-1]
+            self._logo_payload = {
+                'data_url': normalized_logo_source,
+                'file_name': file_name,
+            }
+            return dict(self._logo_payload)
+
+        env_logo_base64 = (
+            os.environ.get('LOGO_BASE64')
+            or os.environ.get('DASHBOARD_LOGO_BASE64')
+            or ''
+        ).strip()
+        if env_logo_base64:
+            encoded = env_logo_base64
+            if encoded.startswith('data:') and ';base64,' in encoded:
+                encoded = encoded.split(';base64,', 1)[1]
+            mime_type = (os.environ.get('LOGO_MIME') or os.environ.get('DASHBOARD_LOGO_MIME') or 'image/png').strip()
+            self._logo_payload = {
+                'data_url': f'data:{mime_type};base64,{encoded}',
+                'file_name': 'logo',
+            }
             return dict(self._logo_payload)
 
         for path in self._find_logo_paths():
@@ -996,7 +1042,7 @@ class BackendRuntime:
             self.sync_state['last_status'] = 'running'
             threading.Thread(target=self._seed_once_async, daemon=True).start()
             self.postgres_sync_manager.start_background_pull(self.pull_once)
-            self.postgres_sync_manager.start_background_queue_worker(self._replay_queue_operation, interval_sec=20)
+            self.postgres_sync_manager.start_background_queue_worker(self._replay_queue_operation, interval_sec=1)
         except Exception as exc:
             self.sync_state['last_status'] = 'error'
             self.sync_state['last_error'] = str(exc)
@@ -1439,6 +1485,17 @@ class BackendRuntime:
             ),
         )
 
+        # Nudge queue replay immediately in the background so service rows
+        # appear in Google Sheets quickly without blocking API response time.
+        try:
+            threading.Thread(
+                target=lambda: self.replay_pending_queue_now(limit=60),
+                name='service-add-immediate-queue-flush',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
         return {
             'queued_operation_id': queue_id,
             'target_row': target_row,
@@ -1714,6 +1771,7 @@ class BackendRuntime:
         main_header_row_idx = detect_sheet_header_row(main_values)
         main_headers = [str(cell or '').strip() for cell in (main_values[main_header_row_idx] if main_header_row_idx < len(main_values) else [])]
         main_headers_upper = [header.upper() for header in main_headers]
+        latest_row_num = None
 
         updates = []
         if status_col is not None:
@@ -1784,7 +1842,6 @@ class BackendRuntime:
             main_status_col = svc_stock_header_index(main_headers_upper, 'STATUS')
             main_paid_col = svc_stock_header_index(main_headers_upper, 'AMOUNT PAID', 'AMOUNT PAID ')
 
-            latest_row_num = None
             if main_status_col is not None:
                 buyer_name_key = str(buyer_name_value or '').strip().upper()
                 buyer_phone_key = normalize_phone_number(buyer_phone_value or '')
@@ -1851,7 +1908,7 @@ class BackendRuntime:
                         )
                     )
 
-        if main_headers:
+        if main_headers and latest_row_num is None:
             now = datetime.now()
             next_main_row = find_next_table_write_row(main_values, main_header_row_idx)
             next_sun_serial = max(1, next_main_row - (main_header_row_idx + 1))

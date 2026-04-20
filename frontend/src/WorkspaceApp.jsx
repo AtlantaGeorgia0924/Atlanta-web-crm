@@ -1089,7 +1089,7 @@ function ProductDetailModal({ row, headers, onClose, onSave, saving }) {
 
   const buyerNameHeader = resolveHeader('NAME OF BUYER');
   const buyerPhoneHeader = resolveHeader('PHONE NUMBER OF BUYER', 'PHONE OF BUYER', 'BUYER PHONE');
-  const amountSoldHeader = resolveHeader('AMOUNT SOLD', 'SELLING PRICE', 'PRICE');
+  const costPriceHeader = resolveHeader('COST PRICE');
   const amountPaidHeader = resolveHeader('AMOUNT PAID', 'PAID', 'PAID AMOUNT');
   const productStatusHeader = resolveHeader('PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS');
   const availabilityHeader = resolveHeader('AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE');
@@ -1190,13 +1190,13 @@ function ProductDetailModal({ row, headers, onClose, onSave, saving }) {
                 />
               </label>
               <label className="field-block">
-                <span className="field-label">Amount Sold</span>
+                <span className="field-label">Cost Price</span>
                 <input
                   type="text"
-                  value={amountSoldHeader ? (valuesByHeader[amountSoldHeader] || '') : ''}
+                  value={costPriceHeader ? (valuesByHeader[costPriceHeader] || '') : ''}
                   onChange={(event) => setValuesByHeader((current) => ({
                     ...current,
-                    ...(amountSoldHeader ? { [amountSoldHeader]: event.target.value } : {}),
+                    ...(costPriceHeader ? { [costPriceHeader]: event.target.value } : {}),
                   }))}
                 />
               </label>
@@ -1231,7 +1231,7 @@ function ProductDetailModal({ row, headers, onClose, onSave, saving }) {
                   buyerNameHeader,
                   buyerPhoneHeader,
                   productStatusHeader,
-                  amountSoldHeader,
+                  costPriceHeader,
                   amountPaidHeader,
                   availabilityHeader,
                 ].includes(h)).map((header) => (
@@ -1307,16 +1307,51 @@ function ProductSummaryTable({
   const cartRowSet = new Set(cartRowNumbers);
   const [pendingDrafts, setPendingDrafts] = useState({});
 
+  function deriveRowPendingStatus(row, amountText, fallbackStatus = 'UNPAID') {
+    const normalizedText = String(amountText || '').trim();
+    if (!normalizedText) {
+      return 'UNPAID';
+    }
+
+    const amountValue = parseAmountLike(normalizedText);
+    if (amountValue <= 0) {
+      return 'UNPAID';
+    }
+
+    const salePriceText = getProductCellValue(row, headers, ['AMOUNT SOLD', 'SELLING PRICE', 'PRICE']);
+    const salePriceValue = parseAmountLike(salePriceText);
+    if (salePriceValue <= 0) {
+      return fallbackStatus;
+    }
+    if (amountValue < salePriceValue) {
+      return 'PART PAYMENT';
+    }
+    if (amountValue === salePriceValue) {
+      return 'PAID';
+    }
+
+    // Overpayment is validated by the apply handler.
+    return fallbackStatus;
+  }
+
   function getPendingRowDraft(row) {
     const key = `stock-${row.row_num}`;
-    return pendingDrafts[key] || { status: 'PAID', amount_paid: '' };
+    const baseStatus = String(row?.inventory_status || '').trim().toUpperCase();
+    const normalizedBaseStatus = baseStatus === 'PAID' || baseStatus === 'PART PAYMENT' || baseStatus === 'UNPAID'
+      ? baseStatus
+      : 'UNPAID';
+    return pendingDrafts[key] || { status: normalizedBaseStatus, amount_paid: '' };
   }
 
   function setPendingRowDraft(row, field, value) {
     const key = `stock-${row.row_num}`;
+    const baseStatus = String(row?.inventory_status || '').trim().toUpperCase();
+    const normalizedBaseStatus = baseStatus === 'PAID' || baseStatus === 'PART PAYMENT' || baseStatus === 'UNPAID'
+      ? baseStatus
+      : 'UNPAID';
     setPendingDrafts((prev) => ({
       ...prev,
-      [key]: { ...(prev[key] || { status: 'PAID', amount_paid: '' }), [field]: value },
+      [key]: { ...(prev[key] || { status: normalizedBaseStatus, amount_paid: '' }), [field]: value },
     }));
   }
 
@@ -1359,20 +1394,14 @@ function ProductSummaryTable({
                     {row.label === 'SOLD' ? null
                       : row.label === 'PENDING DEAL' ? (
                         <div className="inline-action-row">
-                          <select
-                            value={getPendingRowDraft(row).status}
-                            onChange={(e) => setPendingRowDraft(row, 'status', e.target.value)}
-                            disabled={updatingPendingKey === `stock-${row.row_num}` || returningPendingKey === `stock-${row.row_num}`}
-                          >
-                            <option value="PAID">PAID</option>
-                            <option value="PART PAYMENT">PART PAYMENT</option>
-                            <option value="UNPAID">UNPAID</option>
-                          </select>
                           <input
                             type="text"
                             inputMode="numeric"
                             value={getPendingRowDraft(row).amount_paid}
-                            onChange={(e) => setPendingRowDraft(row, 'amount_paid', normalizeDigits(e.target.value))}
+                            onChange={(e) => {
+                              const nextAmount = normalizeDigits(e.target.value);
+                              setPendingRowDraft(row, 'amount_paid', nextAmount);
+                            }}
                             placeholder="Amount paid"
                             style={{ width: '100px' }}
                             disabled={updatingPendingKey === `stock-${row.row_num}` || returningPendingKey === `stock-${row.row_num}`}
@@ -1382,7 +1411,7 @@ function ProductSummaryTable({
                             className="primary-button"
                             onClick={() => onFulfillPendingDeal && onFulfillPendingDeal(
                               { kind: 'stock', row_num: row.row_num },
-                              getPendingRowDraft(row).status,
+                              deriveRowPendingStatus(row, getPendingRowDraft(row).amount_paid, getPendingRowDraft(row).status || 'UNPAID'),
                               getPendingRowDraft(row).amount_paid
                             )}
                             disabled={updatingPendingKey === `stock-${row.row_num}` || returningPendingKey === `stock-${row.row_num}`}
@@ -1898,7 +1927,7 @@ function CartView({
                     <th>Date</th>
                     <th>Sale Price</th>
                     <th>Amount Paid</th>
-                    <th>Payment Fulfillment</th>
+                    <th>Amount Entry</th>
                     <th>Action</th>
                   </tr>
                 </thead>
@@ -1918,18 +1947,13 @@ function CartView({
                         <td>{row.amount_paid || row.inventory_amount_paid || '—'}</td>
                         <td>
                           <div className="inline-action-row">
-                            <span className="metric-note" style={{ minWidth: '92px', textAlign: 'center' }}>
-                              {draft.status || 'UNPAID'}
-                            </span>
                             <input
                               type="text"
                               inputMode="numeric"
                               value={draft.amount_paid}
                               onChange={(event) => {
                                 const nextAmount = normalizeDigits(event.target.value);
-                                const nextStatus = derivePendingStatusFromAmount(row, nextAmount, draft.status);
                                 updatePendingDraft(rowKey, 'amount_paid', nextAmount);
-                                updatePendingDraft(rowKey, 'status', nextStatus);
                               }}
                               placeholder="Amount paid (optional)"
                               disabled={rowBusy}
@@ -1941,7 +1965,11 @@ function CartView({
                             <button
                               type="button"
                               className="primary-button"
-                              onClick={() => onUpdatePendingDealPayment(row, draft.status, draft.amount_paid)}
+                              onClick={() => onUpdatePendingDealPayment(
+                                row,
+                                derivePendingStatusFromAmount(row, draft.amount_paid, draft.status),
+                                draft.amount_paid
+                              )}
                               disabled={rowBusy}
                             >
                               {updatingPendingKey === rowKey ? 'Updating...' : 'Apply'}
@@ -3450,14 +3478,68 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     setCashflowLoading(true);
     setCashflowError('');
     try {
-      const [cashflowResult, allowanceResult] = await Promise.all([
+      const [cashflowResult, allowanceResult] = await Promise.allSettled([
         fetchFoundationCashflowSummary(),
         fetchFoundationWeeklyAllowance(),
       ]);
 
-      setCashflowSummary(cashflowResult?.summary || null);
-      setWeeklyAllowance(allowanceResult || null);
+      const cashflowErrorText =
+        cashflowResult.status === 'rejected'
+          ? String(cashflowResult.reason?.message || '').toLowerCase()
+          : '';
+      const allowanceErrorText =
+        allowanceResult.status === 'rejected'
+          ? String(allowanceResult.reason?.message || '').toLowerCase()
+          : '';
+
+      const storageUnavailable = [cashflowErrorText, allowanceErrorText].some((text) => (
+        text.includes('financial foundation storage is not ready') || text.includes('service unavailable')
+      ));
+
+      const nextSummary = cashflowResult.status === 'fulfilled'
+        ? (cashflowResult.value?.summary || null)
+        : null;
+      const nextAllowance = allowanceResult.status === 'fulfilled'
+        ? (allowanceResult.value || null)
+        : null;
+
+      if (!nextSummary && !nextAllowance && storageUnavailable) {
+        setCashflowSummary({
+          total_cash_in: 0,
+          total_expenses: 0,
+          total_cost: 0,
+          net_profit: 0,
+          receivables_excluded: 0,
+          reserve_percentage: 0,
+          reserve_amount: 0,
+          available_cash: 0,
+          available_cash_before_reserve: 0,
+        });
+        setWeeklyAllowance({
+          suggested_allowance: 0,
+          calculation_date: '',
+          previous_week_profit: 0,
+        });
+        setCashflowError('Cash flow storage is not ready on the server yet. Showing default values.');
+        setCashflowUpdatedAt(new Date());
+        setStatusText('Cash flow storage is not ready on the server yet. Showing default values.');
+        return;
+      }
+
+      setCashflowSummary(nextSummary);
+      setWeeklyAllowance(nextAllowance);
       setCashflowUpdatedAt(new Date());
+
+      const firstFailure = [
+        cashflowResult.status === 'rejected' ? cashflowResult.reason?.message : '',
+        allowanceResult.status === 'rejected' ? allowanceResult.reason?.message : '',
+      ].find((message) => String(message || '').trim());
+
+      if (firstFailure) {
+        const message = String(firstFailure || '').trim();
+        setCashflowError(message);
+        setStatusText(message);
+      }
     } catch (error) {
       const message = error?.message || 'Could not load cashflow dashboard.';
       setCashflowError(message);
@@ -4037,8 +4119,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setRedoEnabled(Boolean(result.redo_available));
       setPaymentAmount('');
       setPaymentPlan(null);
-      await loadCoreWorkspace(false);
-      await loadSelectedDebtorDetails(selectedDebtor, false);
+      await loadCoreWorkspace(true);
+      await loadSelectedDebtorDetails(selectedDebtor, true);
       setStatusText(result.status_text || 'Payment applied.');
     } catch (error) {
       setStatusText(error.message || 'Could not apply the payment.');
@@ -4052,8 +4134,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       const result = await undoPayment();
       setUndoEnabled(Boolean(result.undo_available));
       setRedoEnabled(Boolean(result.redo_available));
-      await loadCoreWorkspace(false);
-      await loadSelectedDebtorDetails(selectedDebtor, false);
+      await loadCoreWorkspace(true);
+      await loadSelectedDebtorDetails(selectedDebtor, true);
       setStatusText(result.status_text || 'Last payment action undone.');
     } catch (error) {
       setStatusText(error.message || 'Could not undo the last payment.');
@@ -4065,8 +4147,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       const result = await redoPayment();
       setUndoEnabled(Boolean(result.undo_available));
       setRedoEnabled(Boolean(result.redo_available));
-      await loadCoreWorkspace(false);
-      await loadSelectedDebtorDetails(selectedDebtor, false);
+      await loadCoreWorkspace(true);
+      await loadSelectedDebtorDetails(selectedDebtor, true);
       setStatusText(result.status_text || 'Last undone payment reapplied.');
     } catch (error) {
       setStatusText(error.message || 'Could not redo the last payment.');
