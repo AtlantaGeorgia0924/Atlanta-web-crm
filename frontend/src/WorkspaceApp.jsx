@@ -2189,6 +2189,7 @@ function DebtorsView({
   unpaidTodaySummary,
   whatsappHistoryByName,
   onApplyPayment,
+  onApplyFullPayment,
 }) {
   const rowsPerPage = 10;
   const totalPages = Math.max(1, Math.ceil(debtors.length / rowsPerPage));
@@ -2379,6 +2380,9 @@ function DebtorsView({
 
             <button type="button" className="primary-button button-wide" onClick={onApplyPayment} disabled={applyingPayment || !selectedDebtor}>
               {applyingPayment ? 'Applying Payment...' : 'Apply Payment'}
+            </button>
+            <button type="button" className="secondary-button button-wide" onClick={onApplyFullPayment} disabled={applyingPayment || !selectedDebtor}>
+              {applyingPayment ? 'Applying Payment...' : 'Mark Fully Paid'}
             </button>
           </div>
 
@@ -3260,6 +3264,39 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     contacts: filteredGoogleContacts,
   };
 
+  const normalizedStockSearchQuery = useMemo(
+    () => normalizeSearchValue(deferredStockSearchText),
+    [deferredStockSearchText]
+  );
+
+  const stockRowsForSearch = stockView?.all_rows_cache || [];
+
+  const stockRowSearchIndex = useMemo(
+    () => stockRowsForSearch.map((row) => normalizeSearchValue([
+      row?.row_num,
+      row?.label,
+      row?.inventory_status,
+      row?.inventory_amount_paid,
+      row?.description,
+      row?.buyer_name,
+      row?.buyer_phone,
+      row?.imei,
+      row?.date,
+      ...(Array.isArray(row?.padded) ? row.padded : []),
+    ].join(' '))),
+    [stockRowsForSearch]
+  );
+
+  const filteredStockRows = useMemo(() => {
+    if (!normalizedStockSearchQuery) {
+      return stockRowsForSearch;
+    }
+
+    return stockRowsForSearch.filter((_, index) => (
+      (stockRowSearchIndex[index] || '').includes(normalizedStockSearchQuery)
+    ));
+  }, [normalizedStockSearchQuery, stockRowsForSearch, stockRowSearchIndex]);
+
   const selectedMismatch = (nameFixData.mismatches || []).find(
     (entry) => normalizeSearchValue(entry.raw) === normalizeSearchValue(selectedMismatchRaw)
   );
@@ -3475,6 +3512,23 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       return;
     }
 
+    const defaultSummary = {
+      total_cash_in: 0,
+      total_expenses: 0,
+      total_cost: 0,
+      net_profit: 0,
+      receivables_excluded: 0,
+      reserve_percentage: 0,
+      reserve_amount: 0,
+      available_cash: 0,
+      available_cash_before_reserve: 0,
+    };
+    const defaultAllowance = {
+      suggested_allowance: 0,
+      calculation_date: '',
+      previous_week_profit: 0,
+    };
+
     setCashflowLoading(true);
     setCashflowError('');
     try {
@@ -3492,43 +3546,33 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           ? String(allowanceResult.reason?.message || '').toLowerCase()
           : '';
 
-      const storageUnavailable = [cashflowErrorText, allowanceErrorText].some((text) => (
-        text.includes('financial foundation storage is not ready') || text.includes('service unavailable')
+      const knownRecoverableFailure = [cashflowErrorText, allowanceErrorText].some((text) => (
+        text.includes('financial foundation storage is not ready')
+        || text.includes('service unavailable')
+        || text.includes('load failed')
+        || text.includes('failed to fetch')
+        || text.includes('network')
       ));
 
       const nextSummary = cashflowResult.status === 'fulfilled'
-        ? (cashflowResult.value?.summary || null)
-        : null;
+        ? (cashflowResult.value?.summary || defaultSummary)
+        : defaultSummary;
       const nextAllowance = allowanceResult.status === 'fulfilled'
-        ? (allowanceResult.value || null)
-        : null;
-
-      if (!nextSummary && !nextAllowance && storageUnavailable) {
-        setCashflowSummary({
-          total_cash_in: 0,
-          total_expenses: 0,
-          total_cost: 0,
-          net_profit: 0,
-          receivables_excluded: 0,
-          reserve_percentage: 0,
-          reserve_amount: 0,
-          available_cash: 0,
-          available_cash_before_reserve: 0,
-        });
-        setWeeklyAllowance({
-          suggested_allowance: 0,
-          calculation_date: '',
-          previous_week_profit: 0,
-        });
-        setCashflowError('Cash flow storage is not ready on the server yet. Showing default values.');
-        setCashflowUpdatedAt(new Date());
-        setStatusText('Cash flow storage is not ready on the server yet. Showing default values.');
-        return;
-      }
+        ? (allowanceResult.value || defaultAllowance)
+        : defaultAllowance;
 
       setCashflowSummary(nextSummary);
       setWeeklyAllowance(nextAllowance);
       setCashflowUpdatedAt(new Date());
+
+      const bothFailed = cashflowResult.status === 'rejected' && allowanceResult.status === 'rejected';
+      if (bothFailed && knownRecoverableFailure) {
+        const fallbackMessage = 'Cash flow data could not be loaded from server right now. Showing default values.';
+        setCashflowError(fallbackMessage);
+        setCashflowUpdatedAt(new Date());
+        setStatusText(fallbackMessage);
+        return;
+      }
 
       const firstFailure = [
         cashflowResult.status === 'rejected' ? cashflowResult.reason?.message : '',
@@ -3613,7 +3657,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     try {
       const activeFilterMode = activeView === 'cart' ? cartFilterMode : productFilterMode;
       const result = await fetchStockDashboard({
-        filterText: deferredStockSearchText,
+        // Text search is filtered locally to keep typing instant.
+        filterText: '',
         filterMode: activeFilterMode,
         forceRefresh,
       });
@@ -3804,7 +3849,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     return () => {
       window.clearTimeout(delay);
     };
-  }, [activeView, deferredStockSearchText, productFilterMode, cartFilterMode]);
+  }, [activeView, productFilterMode, cartFilterMode]);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -3865,9 +3910,13 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
   useEffect(() => {
     if (activeView === 'products') {
+      const stockViewForDisplay = stockView
+        ? { ...stockView, all_rows_cache: filteredStockRows }
+        : stockView;
+
       return;
     }
-
+          stockView={stockViewForDisplay}
     setIsProductComposerOpen(false);
   }, [activeView]);
 
@@ -4097,8 +4146,27 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
-  async function handleApplyPayment() {
-    const parsedAmount = Number(normalizeDigits(paymentAmount));
+  function getSelectedDebtorOutstandingAmount() {
+    const entries = debtorsData?.sorted_debtors || [];
+    for (const entry of entries) {
+      const name = String(entry?.[0] || '').trim().toUpperCase();
+      if (name === String(selectedDebtor || '').trim().toUpperCase()) {
+        return Number(entry?.[1] || 0);
+      }
+    }
+    return 0;
+  }
+
+  function getTargetOutstandingAmount() {
+    if (selectedServiceRow !== 'automatic') {
+      const selectedRowValue = Number(selectedServiceRow);
+      const matched = (outstandingItems || []).find((item) => Number(item?.row_idx) === selectedRowValue);
+      return Number(matched?.balance || 0);
+    }
+    return getSelectedDebtorOutstandingAmount();
+  }
+
+  async function applyDebtorPaymentByAmount(parsedAmount) {
     if (!selectedDebtor) {
       setStatusText('Select a debtor first.');
       return;
@@ -4127,6 +4195,23 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     } finally {
       setIsApplyingPayment(false);
     }
+  }
+
+  async function handleApplyPayment() {
+    const parsedAmount = Number(normalizeDigits(paymentAmount));
+    await applyDebtorPaymentByAmount(parsedAmount);
+  }
+
+  async function handleApplyFullPayment() {
+    const targetAmount = Number(getTargetOutstandingAmount());
+    if (!Number.isFinite(targetAmount) || targetAmount <= 0) {
+      setStatusText('No outstanding amount was found for this payment target.');
+      return;
+    }
+
+    const roundedAmount = Math.round(targetAmount);
+    setPaymentAmount(String(roundedAmount));
+    await applyDebtorPaymentByAmount(roundedAmount);
   }
 
   async function handleUndo() {
@@ -4867,9 +4952,13 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
 
     if (activeView === 'cart') {
+      const stockViewForDisplay = stockView
+        ? { ...stockView, all_rows_cache: filteredStockRows }
+        : stockView;
+
       return (
         <CartView
-          stockView={stockView}
+          stockView={stockViewForDisplay}
           productSearchText={stockSearchText}
           setProductSearchText={setStockSearchText}
           filterMode={cartFilterMode}
@@ -4979,6 +5068,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           unpaidTodaySummary={unpaidTodaySummary}
           whatsappHistoryByName={whatsappHistoryByName}
           onApplyPayment={handleApplyPayment}
+          onApplyFullPayment={handleApplyFullPayment}
         />
       );
     }
