@@ -3962,13 +3962,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
   useEffect(() => {
     if (activeView === 'products') {
-      const stockViewForDisplay = stockView
-        ? { ...stockView, all_rows_cache: Array.isArray(filteredStockRows) ? filteredStockRows : [] }
-        : stockView;
-
       return;
     }
-          stockView={stockViewForDisplay}
+
     setIsProductComposerOpen(false);
   }, [activeView]);
 
