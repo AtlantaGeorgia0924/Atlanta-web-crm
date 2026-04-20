@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import React, { startTransition, useDeferredValue, useEffect, useMemo, useState } from 'react';
 
 import { getApiLabel } from './api/http';
 import { addServiceRecord, checkoutSaleCart, fetchPendingServiceDeals, fetchStockDashboard, returnServiceDeal, returnStockItem, updatePendingDealPayment, updateServiceDealPayment, updateStockRow } from './api/stock';
@@ -566,6 +566,52 @@ function PageNavigator({ page, totalPages, onChange }) {
       </button>
     </div>
   );
+}
+
+class ViewErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = {
+      hasError: false,
+      message: '',
+    };
+  }
+
+  static getDerivedStateFromError(error) {
+    return {
+      hasError: true,
+      message: String(error?.message || 'A view rendering error occurred.'),
+    };
+  }
+
+  componentDidCatch(error) {
+    // Keep this visible in browser console for debugging in production.
+    // eslint-disable-next-line no-console
+    console.error('ViewErrorBoundary caught:', error);
+  }
+
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false, message: '' });
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <section className="content-panel content-panel--main content-panel--full">
+          <div className="panel-header">
+            <h3>Section Failed To Render</h3>
+            <p>This section crashed while rendering. Switch sections and try again.</p>
+          </div>
+          <div className="notice notice-error">
+            {this.state.message || 'Unknown render error.'}
+          </div>
+        </section>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function MaskedMetricCard({ label, value, note, revealKey, revealedMetric, setRevealedMetric }) {
@@ -5241,7 +5287,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
               {coreLoading ? <div className="notice notice-inline">Loading workspace data...</div> : null}
             </section>
 
-            {renderActiveView()}
+            <ViewErrorBoundary resetKey={`${activeView}-${isAdmin ? 'admin' : 'staff'}`}>
+              {renderActiveView()}
+            </ViewErrorBoundary>
           </section>
         </section>
       </main>

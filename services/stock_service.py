@@ -252,6 +252,8 @@ def build_stock_view(values, headers, headers_upper, header_row_idx, color_statu
     values = values or []
     qty_col = header_index(headers_upper, 'QTY', 'QUANTITY', 'STOCK', 'UNITS')
     product_status_col = header_index(headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS')
+    availability_col = header_index(headers_upper, 'AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE')
+    buyer_col = header_index(headers_upper, 'NAME OF BUYER', 'BUYER NAME', 'CUSTOMER NAME', 'NAME')
     desc_col = header_index(headers_upper, 'DESCRIPTION', 'DESC', 'DETAILS')
     model_col = header_index(headers_upper, 'MODEL', 'PHONE MODEL', 'PHONE', 'NAME', 'DEVICE')
 
@@ -270,12 +272,43 @@ def build_stock_view(values, headers, headers_upper, header_row_idx, color_statu
 
         row_status = ''
         raw_status_text = ''
+        raw_availability_text = ''
+        buyer_text = ''
         needs_review = False
         if product_status_col is not None and product_status_col < len(padded):
             raw_status_text = str(padded[product_status_col] or '').strip()
             row_status = normalize_stock_status_value(raw_status_text)
             if not row_status:
                 needs_review = True
+
+        if availability_col is not None and availability_col < len(padded):
+            raw_availability_text = str(padded[availability_col] or '').strip()
+        if buyer_col is not None and buyer_col < len(padded):
+            buyer_text = str(padded[buyer_col] or '').strip()
+
+        # Fallback/override with AVAILABILITY/DATE SOLD when PRODUCT STATUS is stale.
+        availability_upper = raw_availability_text.upper()
+        if availability_upper:
+            if availability_upper in {'AVAILABLE', 'IN STOCK', 'AVAIL', 'OPEN'}:
+                if not row_status:
+                    row_status = 'available'
+                    needs_review = False
+            elif 'PENDING' in availability_upper:
+                row_status = 'pending'
+                needs_review = False
+            elif (
+                availability_upper in {'SOLD', 'PAID', 'CLOSED'}
+                or '/' in availability_upper
+                or '-' in availability_upper
+                or any(ch.isdigit() for ch in availability_upper)
+            ):
+                row_status = 'sold'
+                needs_review = False
+
+        # If buyer is present and status still says available, it's not truly available.
+        if buyer_text and row_status == 'available':
+            row_status = 'pending' if 'PENDING' in availability_upper else 'sold'
+            needs_review = False
 
         if row_status not in {'available', 'pending', 'needs_details', 'sold'}:
             row_status = 'needs_review'
@@ -324,6 +357,7 @@ def build_stock_view(values, headers, headers_upper, header_row_idx, color_statu
             'tags': row_tags,
             'needs_review': needs_review,
             'raw_product_status': raw_status_text,
+            'raw_availability_status': raw_availability_text,
         })
 
     return {

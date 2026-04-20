@@ -22,8 +22,8 @@
         ]
     },
     "STARBOX": {
-        "send_count": 4,
-        "last_sent_at": "2026-04-10T18:20:08",
+        "send_count": 5,
+        "last_sent_at": "2026-04-17T18:16:59",
         "events": [
             {
                 "sent_at": "2026-04-10T16:03:39",
@@ -40,12 +40,16 @@
             {
                 "sent_at": "2026-04-10T18:20:08",
                 "source": "single"
+            },
+            {
+                "sent_at": "2026-04-17T18:16:59",
+                "source": "single"
             }
         ]
     },
     "IGEE": {
-        "send_count": 2,
-        "last_sent_at": "2026-04-10T22:21:21",
+        "send_count": 3,
+        "last_sent_at": "2026-04-17T18:36:58",
         "events": [
             {
                 "sent_at": "2026-04-10T16:07:59",
@@ -54,16 +58,24 @@
             {
                 "sent_at": "2026-04-10T22:21:21",
                 "source": "today_list"
+            },
+            {
+                "sent_at": "2026-04-17T18:36:58",
+                "source": "single"
             }
         ]
     },
     "STAR BUSSY": {
-        "send_count": 1,
-        "last_sent_at": "2026-04-10T16:14:23",
+        "send_count": 2,
+        "last_sent_at": "2026-04-17T18:37:24",
         "events": [
             {
                 "sent_at": "2026-04-10T16:14:23",
                 "source": "today_list"
+            },
+            {
+                "sent_at": "2026-04-17T18:37:24",
+                "source": "single"
             }
         ]
     },
@@ -88,8 +100,8 @@
         ]
     },
     "CH4": {
-        "send_count": 5,
-        "last_sent_at": "2026-04-10T18:21:36",
+        "send_count": 7,
+        "last_sent_at": "2026-04-18T16:19:58",
         "events": [
             {
                 "sent_at": "2026-04-10T18:21:09",
@@ -109,6 +121,398 @@
             },
             {
                 "sent_at": "2026-04-10T18:21:36",
+                "source": "single"
+            },
+            {
+                "sent_at": "2026-04-17T18:16:29",
+                "source": "single"
+            },
+            {
+                "sent_at": "2026-04-18T16:19:58",
+                "source": "single"
+            }
+        ]
+    },
+    "TECH JAR": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T15:59:38",
+        "events": [
+            {
+                "sent_at": "2026-04-17T15:59:38",
+                "source": "single"
+            }
+        ]
+    },
+    "ACTIVE": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T17:12:39",
+        "events": [
+            {
+                "sent_at": "2026-04-17T17:12:39",
+                "source": "single"
+            }
+        ]
+    },
+    "HORJOR": {
+        "send_count": 2,
+        "last_sent_at": "2026-04-17T18:06:47",
+        "events": [
+            {
+                "sent_at": "2026-04-17T17:54:34",
+                "source": "single"
+            },
+            {
+                "sent_at": "2026-04-17T18:06:47",
+                "source": "single"
+            }
+        ]
+    },
+    "IPRO GADGET": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T18:05:57",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:05:57",
+                "source": "single"
+            }
+        ]
+    },
+    "BAHMS": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T18:08:14",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:08:14",
+                "source": "single"
+            }
+        ]
+    },
+    "MD GADGS": {
+        "send_count": 2,
+        "last_sent_at": "2026-04-18T16:33:13",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:08:33",
+                "source": "single"
+            },
+            {
+                "sent_at": "2026-04-18T16:33:13",
+                "source": "single"
+            }
+        ]
+    },
+    "CSGV": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T18:11:37",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:11:37",
+                "source": "single"
+            }
+        ]
+    },
+    "MARVY T.M": {
+        "send_count": 2,
+        "last_sent_at": "2026-04-18T16:20:08",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:17:17",
+                "source": "single"
+            },
+            {
+                "sent_at": "2026-04-18T16:20:08",
+                "source": "single"
+            }
+        ]
+    },
+    "ZEE": {
+        "send_count": 2,
+        "last_sent_at": "2026-04-18T16:21:24",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:18:02",
+                "source": "single"
+            },
+            {
+                "sent_at": "2026-04-18T16:21:24",
+                "source": "single"
+            }
+        ]
+    },
+    "YUPPIE GADGETS": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T18:18:13",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:18:13",
+                "source": "single"
+            }
+        ]
+    },
+    "RAYMOND": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T18:18:42",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:18:42",
+                "source": "single"
+            }
+        ]
+    },
+    "DAPPER": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T18:18:54",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:18:54",
+                "source": "single"
+            }
+        ]
+    },
+    "OLABTC": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T18:19:16",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:19:16",
+                "source": "single"
+            }
+        ]
+    },
+    "OLAJIRE": {
+        "send_count": 2,
+        "last_sent_at": "2026-04-18T15:11:05",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:19:30",
+                "source": "single"
+            },
+            {
+                "sent_at": "2026-04-18T15:11:05",
+                "source": "single"
+            }
+        ]
+    },
+    "OLALEKAN AWOGBOLA": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T18:33:52",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:33:52",
+                "source": "single"
+            }
+        ]
+    },
+    "PANKYGEE": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T18:34:28",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:34:28",
+                "source": "single"
+            }
+        ]
+    },
+    "WIZZY": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T18:35:55",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:35:55",
+                "source": "single"
+            }
+        ]
+    },
+    "PRINZE GADGETS": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-17T18:37:08",
+        "events": [
+            {
+                "sent_at": "2026-04-17T18:37:08",
+                "source": "single"
+            }
+        ]
+    },
+    "KAYWISE": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T15:06:32",
+        "events": [
+            {
+                "sent_at": "2026-04-18T15:06:32",
+                "source": "single"
+            }
+        ]
+    },
+    "MZEE": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T15:07:23",
+        "events": [
+            {
+                "sent_at": "2026-04-18T15:07:23",
+                "source": "single"
+            }
+        ]
+    },
+    "HONEYTEE": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T15:10:11",
+        "events": [
+            {
+                "sent_at": "2026-04-18T15:10:11",
+                "source": "single"
+            }
+        ]
+    },
+    "SEVILEN AUTOS": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T15:10:37",
+        "events": [
+            {
+                "sent_at": "2026-04-18T15:10:37",
+                "source": "single"
+            }
+        ]
+    },
+    "DON": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:21:59",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:21:59",
+                "source": "single"
+            }
+        ]
+    },
+    "CLEARIES GASGETS": {
+        "send_count": 2,
+        "last_sent_at": "2026-04-18T16:24:24",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:22:38",
+                "source": "single"
+            },
+            {
+                "sent_at": "2026-04-18T16:24:24",
+                "source": "single"
+            }
+        ]
+    },
+    "BAYESH": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:22:49",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:22:49",
+                "source": "single"
+            }
+        ]
+    },
+    "FORMULA": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:22:58",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:22:58",
+                "source": "single"
+            }
+        ]
+    },
+    "NURUDEEN": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:25:06",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:25:06",
+                "source": "single"
+            }
+        ]
+    },
+    "OSAMA": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:25:31",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:25:31",
+                "source": "single"
+            }
+        ]
+    },
+    "DAH UNIQUE": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:25:45",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:25:45",
+                "source": "single"
+            }
+        ]
+    },
+    "MBENZ": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:27:27",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:27:27",
+                "source": "single"
+            }
+        ]
+    },
+    "DEMEX": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:27:53",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:27:53",
+                "source": "single"
+            }
+        ]
+    },
+    "GNF": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:28:11",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:28:11",
+                "source": "single"
+            }
+        ]
+    },
+    "VERTEX": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:28:22",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:28:22",
+                "source": "single"
+            }
+        ]
+    },
+    "EMMEX": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:28:33",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:28:33",
+                "source": "single"
+            }
+        ]
+    },
+    "TEE BEST GADGET": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:28:52",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:28:52",
+                "source": "single"
+            }
+        ]
+    },
+    "AFRIKA": {
+        "send_count": 1,
+        "last_sent_at": "2026-04-18T16:33:28",
+        "events": [
+            {
+                "sent_at": "2026-04-18T16:33:28",
                 "source": "single"
             }
         ]

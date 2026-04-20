@@ -507,28 +507,34 @@ class PostgresSyncManager:
             })
         return output
 
-    def start_background_queue_worker(self, process_item_callable, interval_sec=20):
+    def start_background_queue_worker(self, process_item_callable, interval_sec=3):
         if not self.ready:
             return False
         if self._queue_thread and self._queue_thread.is_alive():
             return True
 
-        wait_sec = max(5, int(interval_sec or 20))
+        idle_wait_sec = max(1, int(interval_sec or 3))
 
         def loop():
             while not self._stop_event.is_set():
                 try:
-                    items = self.fetch_pending_operations(limit=40)
-                    for item in items:
-                        try:
-                            process_item_callable(item)
-                            self.mark_operation_done(item['id'])
-                        except Exception as item_exc:
-                            self.mark_operation_failed(item['id'], str(item_exc))
+                    items = self.fetch_pending_operations(limit=100)
+                    if items:
+                        for item in items:
+                            try:
+                                process_item_callable(item)
+                                self.mark_operation_done(item['id'])
+                            except Exception as item_exc:
+                                self.mark_operation_failed(item['id'], str(item_exc))
+                        # If we got a full batch, loop immediately to drain remaining items
+                        if len(items) >= 100:
+                            continue
+                    else:
+                        # Nothing pending — wait before checking again
+                        self._stop_event.wait(idle_wait_sec)
                 except Exception as exc:
                     self.logger.warning('Queue worker cycle failed: %s', exc)
-
-                self._stop_event.wait(wait_sec)
+                    self._stop_event.wait(idle_wait_sec)
 
         self._queue_thread = threading.Thread(target=loop, name='postgres-queue-sync', daemon=True)
         self._queue_thread.start()

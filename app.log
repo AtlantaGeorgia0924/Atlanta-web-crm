@@ -98,3 +98,11 @@
 2026-04-10 06:13:31 [INFO] PostgreSQL sync is running with pull interval=90s
 2026-04-10 06:13:34 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
 2026-04-10 06:13:35 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-15 21:34:19 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-15 21:34:24 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=106 main_err= stock_err=
+2026-04-15 21:34:25 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=106 main_err= stock_err=
+2026-04-15 21:34:29 [INFO] PostgreSQL sync is running with pull interval=90s
+2026-04-15 21:34:34 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-15 21:34:34 [INFO] RECORD_ID rollout pull phase: main_updated=0 stock_updated=0 main_err= stock_err=
+2026-04-15 22:52:11 [WARNING] PostgreSQL cache enabled but psycopg2 is unavailable; using legacy sheet mode.
+2026-04-15 22:52:42 [WARNING] PostgreSQL cache enabled but psycopg2 is unavailable; using legacy sheet mode.
