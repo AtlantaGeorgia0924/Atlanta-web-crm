@@ -1356,7 +1356,7 @@ function ProductSummaryTable({
   }
 
   return (
-    <div className="table-wrap">
+    <div className="table-wrap table-wrap--mobile-cards">
       <table className="data-table data-table--products">
         <thead>
           <tr>
@@ -1374,23 +1374,23 @@ function ProductSummaryTable({
           {rows.length ? (
             rows.map((row) => (
               <tr key={row.row_num}>
-                <td>
+                <td data-label="See More">
                   <button type="button" className="table-action-button" onClick={() => onOpenDetails(row)}>
                     See More
                   </button>
                 </td>
-                <td className="row-number">#{row.row_num}</td>
-                <td>
+                <td className="row-number" data-label="Row">#{row.row_num}</td>
+                <td data-label="Status">
                   <span className={`status-pill status-pill--${getStatusClass(row.label)}`}>{row.label}</span>
                 </td>
                 {summaryColumns.map((column) => (
-                  <td key={`${row.row_num}-${column.key}`}>{getProductCellValue(row, headers, column.aliases)}</td>
+                  <td key={`${row.row_num}-${column.key}`} data-label={column.label}>{getProductCellValue(row, headers, column.aliases)}</td>
                 ))}
                 {showAmountPaidColumn ? (
-                  <td>{row.inventory_amount_paid || getProductCellValue(row, headers, ['AMOUNT PAID']) || '—'}</td>
+                  <td data-label="Amount Paid">{row.inventory_amount_paid || getProductCellValue(row, headers, ['AMOUNT PAID']) || '—'}</td>
                 ) : null}
                 {onAddToCart ? (
-                  <td>
+                  <td data-label="Cart">
                     {row.label === 'SOLD' ? null
                       : row.label === 'PENDING DEAL' ? (
                         <div className="inline-action-row">
@@ -1916,7 +1916,7 @@ function CartView({
                 onChange={(event) => setPendingSearchText(event.target.value)}
               />
             </div>
-            <div className="table-wrap">
+            <div className="table-wrap table-wrap--mobile-cards">
               <table className="data-table">
                 <thead>
                   <tr>
@@ -1938,14 +1938,14 @@ function CartView({
                     const rowBusy = returningPendingKey === rowKey || updatingPendingKey === rowKey;
                     return (
                       <tr key={`cart-pending-${rowKey}`}>
-                        <td>{row.kind === 'service' ? 'Service' : 'Stock'}</td>
-                        <td>#{row.row_num}</td>
-                        <td>{row.description || getProductCellValue(row, headers, ['DESCRIPTION', 'MODEL', 'DEVICE']) || '—'}</td>
-                        <td>{row.buyer_name || row.name || getProductCellValue(row, headers, ['NAME OF BUYER']) || '—'}</td>
-                        <td>{row.date || getProductCellValue(row, headers, ['DATE', 'DATE BOUGHT', 'AVAILABILITY/DATE SOLD']) || '—'}</td>
-                        <td>{row.price || row.amount || '—'}</td>
-                        <td>{row.amount_paid || row.inventory_amount_paid || '—'}</td>
-                        <td>
+                        <td data-label="Type">{row.kind === 'service' ? 'Service' : 'Stock'}</td>
+                        <td data-label="Row">#{row.row_num}</td>
+                        <td data-label="Description">{row.description || getProductCellValue(row, headers, ['DESCRIPTION', 'MODEL', 'DEVICE']) || '—'}</td>
+                        <td data-label="Customer">{row.buyer_name || row.name || getProductCellValue(row, headers, ['NAME OF BUYER']) || '—'}</td>
+                        <td data-label="Date">{row.date || getProductCellValue(row, headers, ['DATE', 'DATE BOUGHT', 'AVAILABILITY/DATE SOLD']) || '—'}</td>
+                        <td data-label="Sale Price">{row.price || row.amount || '—'}</td>
+                        <td data-label="Amount Paid">{row.amount_paid || row.inventory_amount_paid || '—'}</td>
+                        <td data-label="Amount Entry">
                           <div className="inline-action-row">
                             <input
                               type="text"
@@ -1960,7 +1960,7 @@ function CartView({
                             />
                           </div>
                         </td>
-                        <td>
+                        <td data-label="Action">
                           <div className="inline-action-row">
                             <button
                               type="button"
@@ -2234,7 +2234,7 @@ function DebtorsView({
           Today unpaid customers: {formatCount(unpaidTodaySummary?.count || 0)} | With phone: {formatCount(unpaidTodaySummary?.with_phone_count || 0)}
         </div>
 
-        <div className="table-wrap">
+        <div className="table-wrap table-wrap--mobile-cards">
           <table className="data-table">
             <thead>
               <tr>
@@ -2256,11 +2256,11 @@ function DebtorsView({
                     className={name === selectedDebtor ? 'table-row-selected' : ''}
                     onClick={() => onSelectDebtor(name)}
                   >
-                    <td>{name}</td>
-                    <td className="amount-cell">{formatCurrency(amount)}</td>
-                    <td>{formatCount(sendStats.send_count || 0)}</td>
-                    <td>{sendStats.last_sent_at ? sendStats.last_sent_at.replace('T', ' ').slice(0, 16) : 'Never'}</td>
-                    <td className="row-actions-cell">
+                    <td data-label="Customer">{name}</td>
+                    <td className="amount-cell" data-label="Outstanding Amount">{formatCurrency(amount)}</td>
+                    <td data-label="WhatsApp Sends">{formatCount(sendStats.send_count || 0)}</td>
+                    <td data-label="Last Sent">{sendStats.last_sent_at ? sendStats.last_sent_at.replace('T', ' ').slice(0, 16) : 'Never'}</td>
+                    <td className="row-actions-cell" data-label="Quick Copy">
                       <button
                         type="button"
                         className="table-action-button"
@@ -2294,7 +2294,7 @@ function DebtorsView({
           <p>Customers serviced today who have not fully paid. Send each bill one by one at end of day.</p>
         </div>
 
-        <div className="table-wrap">
+        <div className="table-wrap table-wrap--mobile-cards">
           <table className="data-table">
             <thead>
               <tr>
@@ -2312,12 +2312,12 @@ function DebtorsView({
                   const tracked = whatsappHistoryByName?.[entry.name] || entry.send_stats || {};
                   return (
                     <tr key={`today-${entry.name}`}>
-                      <td>{entry.name}</td>
-                      <td>{formatCount(entry.services_today || 0)}</td>
-                      <td className="amount-cell">{formatCurrency(entry.outstanding_today || 0)}</td>
-                      <td>{formatCount(tracked.send_count || 0)}</td>
-                      <td>{tracked.last_sent_at ? tracked.last_sent_at.replace('T', ' ').slice(0, 16) : 'Never'}</td>
-                      <td className="row-actions-cell">
+                      <td data-label="Customer">{entry.name}</td>
+                      <td data-label="Services Today">{formatCount(entry.services_today || 0)}</td>
+                      <td className="amount-cell" data-label="Outstanding Today">{formatCurrency(entry.outstanding_today || 0)}</td>
+                      <td data-label="Sends">{formatCount(tracked.send_count || 0)}</td>
+                      <td data-label="Last Sent">{tracked.last_sent_at ? tracked.last_sent_at.replace('T', ' ').slice(0, 16) : 'Never'}</td>
+                      <td className="row-actions-cell" data-label="Action">
                         <button
                           type="button"
                           className="table-action-button"
@@ -2477,7 +2477,7 @@ function ClientsView({
           </div>
         </div>
 
-        <div className="table-wrap">
+        <div className="table-wrap table-wrap--mobile-cards">
           <table className="data-table">
             <thead>
               <tr>
@@ -2490,9 +2490,9 @@ function ClientsView({
               {pagedClients.length ? (
                 pagedClients.map((entry) => (
                   <tr key={entry.name} onClick={() => onSelectClient(entry)}>
-                    <td>{entry.name}</td>
-                    <td>{entry.phone || '—'}</td>
-                    <td>{entry.has_phone ? 'Saved' : 'Missing Number'}</td>
+                    <td data-label="Name">{entry.name}</td>
+                    <td data-label="WhatsApp Number">{entry.phone || '—'}</td>
+                    <td data-label="Status">{entry.has_phone ? 'Saved' : 'Missing Number'}</td>
                   </tr>
                 ))
               ) : (
@@ -2605,7 +2605,7 @@ function ClientsView({
             <span>Last sync: {googleContacts.synced_at || 'Not synced yet'}</span>
           </div>
 
-          <div className="table-wrap table-wrap--narrow">
+          <div className="table-wrap table-wrap--narrow table-wrap--mobile-cards">
             <table className="data-table">
               <thead>
                 <tr>
@@ -2623,8 +2623,8 @@ function ClientsView({
                         className={selectedGoogleContact?.phone === contact.phone && selectedGoogleContact?.name === contact.name ? 'table-row-selected' : ''}
                         onClick={() => onSelectGoogleContact(contact)}
                       >
-                        <td>{contact.name}</td>
-                        <td>{contact.phone}</td>
+                        <td data-label="Name">{contact.name}</td>
+                        <td data-label="Phone">{contact.phone}</td>
                       </tr>
                     );
                   })
@@ -2666,7 +2666,7 @@ function FixView({ mismatches, selectedMismatch, correctName, setCorrectName, on
           </div>
         </div>
 
-        <div className="table-wrap">
+        <div className="table-wrap table-wrap--mobile-cards">
           <table className="data-table">
             <thead>
               <tr>
@@ -2683,9 +2683,9 @@ function FixView({ mismatches, selectedMismatch, correctName, setCorrectName, on
                     className={selectedMismatch?.raw === entry.raw ? 'table-row-selected' : ''}
                     onClick={() => onSelectMismatch(entry)}
                   >
-                    <td>{entry.raw}</td>
-                    <td>{formatCount(entry.rows?.length)}</td>
-                    <td>{entry.candidates?.[0] || 'No suggestion'}</td>
+                    <td data-label="Sheet Name">{entry.raw}</td>
+                    <td data-label="Rows">{formatCount(entry.rows?.length)}</td>
+                    <td data-label="Top Suggestion">{entry.candidates?.[0] || 'No suggestion'}</td>
                   </tr>
                 ))
               ) : (
@@ -2766,7 +2766,7 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
           Total services for {servicesTodayDate || 'selected date'}: {formatCount(servicesTodayData?.count || 0)}
         </div>
 
-        <div className="table-wrap">
+        <div className="table-wrap table-wrap--mobile-cards">
           <table className="data-table">
             <thead>
               <tr>
@@ -2785,15 +2785,15 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
               {items.length ? (
                 items.map((entry) => (
                   <tr key={`service-today-${entry.row_num}`}>
-                    <td className="row-number">#{entry.row_num}</td>
-                    <td>{entry.time || '—'}</td>
-                    <td>{entry.name || '—'}</td>
-                    <td>{entry.description || '—'}</td>
-                    <td>{entry.imei || '—'}</td>
-                    <td>{entry.status || '—'}</td>
-                    <td className="amount-cell">{formatCurrency(entry.price || 0)}</td>
-                    <td className="amount-cell">{formatCurrency(entry.amount_paid || 0)}</td>
-                    <td className="amount-cell">{formatCurrency(entry.balance || 0)}</td>
+                    <td className="row-number" data-label="Row">#{entry.row_num}</td>
+                    <td data-label="Time">{entry.time || '—'}</td>
+                    <td data-label="Customer">{entry.name || '—'}</td>
+                    <td data-label="Description">{entry.description || '—'}</td>
+                    <td data-label="IMEI">{entry.imei || '—'}</td>
+                    <td data-label="Status">{entry.status || '—'}</td>
+                    <td className="amount-cell" data-label="Price">{formatCurrency(entry.price || 0)}</td>
+                    <td className="amount-cell" data-label="Amount Paid">{formatCurrency(entry.amount_paid || 0)}</td>
+                    <td className="amount-cell" data-label="Balance">{formatCurrency(entry.balance || 0)}</td>
                   </tr>
                 ))
               ) : (
@@ -2847,7 +2847,7 @@ function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onR
           </article>
         </div>
 
-        <div className="table-wrap table-wrap--compact">
+        <div className="table-wrap table-wrap--compact table-wrap--mobile-cards">
           <table className="data-table">
             <thead>
               <tr>
@@ -2859,8 +2859,8 @@ function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onR
               {Object.keys(cacheCounts).length ? (
                 Object.entries(cacheCounts).map(([key, value]) => (
                   <tr key={key}>
-                    <td>{key}</td>
-                    <td>{formatCount(getCacheRowCount(value))}</td>
+                    <td data-label="Cache">{key}</td>
+                    <td data-label="Rows">{formatCount(getCacheRowCount(value))}</td>
                   </tr>
                 ))
               ) : (
@@ -2948,7 +2948,7 @@ function UsersView({
           <p>Create user accounts and manage role/access state. This section is admin-only.</p>
         </div>
 
-        <div className="table-wrap">
+        <div className="table-wrap table-wrap--mobile-cards">
           <table className="data-table">
             <thead>
               <tr>
@@ -2964,9 +2964,9 @@ function UsersView({
               {users.length ? (
                 users.map((entry) => (
                   <tr key={entry.id}>
-                    <td>{entry.id}</td>
-                    <td>{entry.username}</td>
-                    <td>
+                    <td data-label="ID">{entry.id}</td>
+                    <td data-label="Username">{entry.username}</td>
+                    <td data-label="Role">
                       <select
                         value={entry.role}
                         onChange={(event) => onUpdateUserRole(entry.id, event.target.value)}
@@ -2976,13 +2976,13 @@ function UsersView({
                         <option value="staff">staff</option>
                       </select>
                     </td>
-                    <td>
+                    <td data-label="Status">
                       <span className={entry.is_active ? 'status-pill status-pill--available' : 'status-pill status-pill--needs-details'}>
                         {entry.is_active ? 'ACTIVE' : 'DISABLED'}
                       </span>
                     </td>
-                    <td>{formatShortStamp(entry.created_at)}</td>
-                    <td>
+                    <td data-label="Created">{formatShortStamp(entry.created_at)}</td>
+                    <td data-label="Action">
                       <button
                         type="button"
                         className="secondary-button"
