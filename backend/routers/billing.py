@@ -94,6 +94,29 @@ def _whatsapp_history_file(runtime):
     return os.path.join(getattr(runtime, 'base_dir', os.getcwd()), 'whatsapp_bill_history.json')
 
 
+def _resolve_payment_details(runtime, explicit_value=''):
+    explicit = str(explicit_value or '').strip()
+    if explicit:
+        return explicit.replace('\\n', '\n')
+
+    env_value = (
+        os.getenv('PAYMENT_DETAILS')
+        or os.getenv('APP_PAYMENT_DETAILS')
+        or os.getenv('BILL_PAYMENT_DETAILS')
+        or os.getenv('ACCOUNT_DETAILS')
+        or ''
+    )
+    if str(env_value or '').strip():
+        return str(env_value).replace('\\n', '\n').strip()
+
+    configured = ''
+    try:
+        configured = str((getattr(runtime, 'config', {}) or {}).get('payment_details', '') or '').strip()
+    except Exception:
+        configured = ''
+    return configured.replace('\\n', '\n').strip()
+
+
 @router.post('/outstanding-items/from-values')
 def outstanding_items_from_values(payload: OutstandingItemsValuesRequest):
     outstanding_items, total_outstanding, columns = get_customer_outstanding_items_from_values(
@@ -136,11 +159,12 @@ def build_payment_plan_endpoint(payload: PaymentPlanRequest):
 
 @router.post('/bill/generate')
 def generate_bill_endpoint(payload: GenerateBillRequest):
+    payment_details = _resolve_payment_details(None, payload.payment_details)
     return {
         'bill_text': generate_bill_text(
             payload.name_input,
             payload.records,
-            payload.payment_details,
+            payment_details,
         )
     }
 
@@ -174,11 +198,12 @@ def outstanding_items_live(name_input: str, force_refresh: bool = False, runtime
 
 @router.get('/bill/live/{name_input}')
 def generate_live_bill(name_input: str, force_refresh: bool = False, runtime=Depends(get_runtime)):
+    payment_details = _resolve_payment_details(runtime)
     return {
         'bill_text': generate_bill_text(
             name_input,
             runtime.get_main_records(force_refresh=force_refresh),
-            runtime.config.get('payment_details', ''),
+            payment_details,
         )
     }
 
@@ -309,7 +334,7 @@ def unpaid_today_live_bills(force_refresh: bool = False, runtime=Depends(get_run
     records = runtime.get_main_records(force_refresh=force_refresh)
     registry = runtime.get_client_registry(force_reload=False)
     history = load_whatsapp_send_history(_whatsapp_history_file(runtime))
-    payment_details = runtime.config.get('payment_details', '')
+    payment_details = _resolve_payment_details(runtime)
 
     customers = []
     for entry in build_unpaid_today_customers(records):
