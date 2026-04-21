@@ -7,6 +7,15 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
 
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    PSYCOPG2_AVAILABLE = True
+except Exception:
+    psycopg2 = None
+    RealDictCursor = None
+    PSYCOPG2_AVAILABLE = False
+
 
 class AuthError(RuntimeError):
     pass
@@ -35,6 +44,7 @@ class UserNotFoundError(AuthError):
 @dataclass(frozen=True)
 class AuthSettings:
     db_path: str
+    postgres_dsn: str
     jwt_secret: str
     jwt_algorithm: str
     jwt_expiration_minutes: int
@@ -44,6 +54,13 @@ class AuthSettings:
     @classmethod
     def from_base_dir(cls, base_dir: str):
         db_path = os.getenv('APP_AUTH_DB_PATH') or os.path.join(base_dir, 'auth.db')
+        postgres_dsn = (
+            os.getenv('APP_AUTH_POSTGRES_DSN')
+            or os.getenv('AUTH_POSTGRES_DSN')
+            or os.getenv('POSTGRES_DSN')
+            or os.getenv('DATABASE_URL')
+            or ''
+        ).strip()
         jwt_secret = os.getenv('APP_JWT_SECRET') or 'change-this-jwt-secret-in-production'
         jwt_algorithm = os.getenv('APP_JWT_ALGORITHM') or 'HS256'
         expiration_text = os.getenv('APP_JWT_EXPIRATION_MINUTES') or '480'
@@ -54,6 +71,7 @@ class AuthSettings:
 
         return cls(
             db_path=db_path,
+            postgres_dsn=postgres_dsn,
             jwt_secret=jwt_secret,
             jwt_algorithm=jwt_algorithm,
             jwt_expiration_minutes=jwt_expiration_minutes,
@@ -67,12 +85,19 @@ class AuthService:
         self.base_dir = base_dir
         self.settings = AuthSettings.from_base_dir(base_dir)
         self._connection = None
+        self._pg_connection = None
         self._connection_lock = threading.RLock()
         self._initialized = False
+        self._storage_mode = 'sqlite'
 
     def initialize(self):
         with self._connection_lock:
-            if self._initialized and self._connection is not None:
+            if self._initialized:
+                return
+
+            if self._initialize_postgres_storage():
+                self._storage_mode = 'postgres'
+                self._initialized = True
                 return
 
             db_dir = os.path.dirname(self.settings.db_path)
@@ -81,7 +106,6 @@ class AuthService:
 
             self._connection = sqlite3.connect(self.settings.db_path, check_same_thread=False)
             self._connection.row_factory = sqlite3.Row
-
             self._connection.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS users (
@@ -96,36 +120,146 @@ class AuthService:
                 )
                 '''
             )
-            self._connection.execute(
-                'CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)'
-            )
-            self._connection.execute(
-                'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username))'
-            )
-            
-            # Add logo_url column if it doesn't exist (migration for existing databases)
+            self._connection.execute('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)')
+            self._connection.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username))')
             try:
                 self._connection.execute('ALTER TABLE users ADD COLUMN logo_url TEXT')
             except Exception:
-                pass  # Column already exists
-            
+                pass
+
             self._connection.commit()
+            self._storage_mode = 'sqlite'
             self._initialized = True
+
+    def _initialize_postgres_storage(self):
+        if not self.settings.postgres_dsn or not PSYCOPG2_AVAILABLE:
+            return False
+
+        try:
+            self._pg_connection = psycopg2.connect(self.settings.postgres_dsn, connect_timeout=5)
+            self._pg_connection.autocommit = True
+            self._ensure_postgres_schema()
+            self._maybe_migrate_sqlite_users_to_postgres()
+            return True
+        except Exception:
+            if self._pg_connection is not None:
+                try:
+                    self._pg_connection.close()
+                except Exception:
+                    pass
+            self._pg_connection = None
+            return False
+
+    def _ensure_postgres_schema(self):
+        connection = self._get_postgres_connection()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS auth_users (
+                    id BIGSERIAL PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('admin', 'staff')),
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    logo_url TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                '''
+            )
+            cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_users_username_lower ON auth_users(lower(username))')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_auth_users_role ON auth_users(role)')
+
+    def _maybe_migrate_sqlite_users_to_postgres(self):
+        if not os.path.exists(self.settings.db_path):
+            return
+
+        sqlite_connection = None
+        try:
+            sqlite_connection = sqlite3.connect(self.settings.db_path)
+            sqlite_connection.row_factory = sqlite3.Row
+            rows = sqlite_connection.execute(
+                '''
+                SELECT id, username, password_hash, role, is_active, logo_url, created_at, updated_at
+                FROM users
+                ORDER BY id ASC
+                '''
+            ).fetchall()
+        except Exception:
+            return
+        finally:
+            if sqlite_connection is not None:
+                try:
+                    sqlite_connection.close()
+                except Exception:
+                    pass
+
+        if not rows:
+            return
+
+        connection = self._get_postgres_connection()
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT COUNT(*) FROM auth_users')
+            existing_count = int((cursor.fetchone() or [0])[0] or 0)
+            if existing_count:
+                return
+
+            for row in rows:
+                cursor.execute(
+                    '''
+                    INSERT INTO auth_users (username, password_hash, role, is_active, logo_url, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (username) DO NOTHING
+                    ''',
+                    (
+                        row['username'],
+                        row['password_hash'],
+                        row['role'],
+                        bool(row['is_active']),
+                        row['logo_url'],
+                        row['created_at'],
+                        row['updated_at'],
+                    ),
+                )
 
     def close(self):
         with self._connection_lock:
             if self._connection is not None:
                 self._connection.close()
                 self._connection = None
+            if self._pg_connection is not None:
+                try:
+                    self._pg_connection.close()
+                except Exception:
+                    pass
+                self._pg_connection = None
             self._initialized = False
+            self._storage_mode = 'sqlite'
 
     def _get_connection(self):
         if self._connection is None:
             raise RuntimeError('AuthService is not initialized. Call initialize() at startup.')
         return self._connection
 
+    def _get_postgres_connection(self):
+        if self._pg_connection is None:
+            raise RuntimeError('AuthService PostgreSQL connection is not initialized.')
+        if getattr(self._pg_connection, 'closed', 1):
+            self._pg_connection = psycopg2.connect(self.settings.postgres_dsn, connect_timeout=5)
+            self._pg_connection.autocommit = True
+        return self._pg_connection
+
+    def _is_postgres_storage(self):
+        return self._storage_mode == 'postgres'
+
     def _execute(self, query: str, params=()):
         with self._connection_lock:
+            if self._is_postgres_storage():
+                connection = self._get_postgres_connection()
+                with connection.cursor() as cursor:
+                    cursor.execute(query, params)
+                    return cursor
+
             connection = self._get_connection()
             cursor = connection.execute(query, params)
             connection.commit()
@@ -133,16 +267,31 @@ class AuthService:
 
     def _fetchone(self, query: str, params=()):
         with self._connection_lock:
+            if self._is_postgres_storage():
+                connection = self._get_postgres_connection()
+                with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute(query, params)
+                    return cursor.fetchone()
+
             connection = self._get_connection()
             return connection.execute(query, params).fetchone()
 
     def _fetchall(self, query: str, params=()):
         with self._connection_lock:
+            if self._is_postgres_storage():
+                connection = self._get_postgres_connection()
+                with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute(query, params)
+                    return cursor.fetchall()
+
             connection = self._get_connection()
             return connection.execute(query, params).fetchall()
 
     def ensure_default_admin(self):
-        existing = self._fetchone("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
+        if self._is_postgres_storage():
+            existing = self._fetchone("SELECT id FROM auth_users WHERE role = 'admin' LIMIT 1")
+        else:
+            existing = self._fetchone("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
         if existing:
             return False
 
@@ -152,18 +301,34 @@ class AuthService:
             )
 
         timestamp = self._utc_now_iso()
-        self._execute(
-            '''
-            INSERT INTO users (username, password_hash, role, is_active, created_at, updated_at)
-            VALUES (?, ?, 'admin', 1, ?, ?)
-            ''',
-            (
-                self.settings.default_admin_username,
-                self.hash_password(self.settings.default_admin_password),
-                timestamp,
-                timestamp,
-            ),
-        )
+        if self._is_postgres_storage():
+            self._execute(
+                '''
+                INSERT INTO auth_users (username, password_hash, role, is_active, created_at, updated_at)
+                VALUES (%s, %s, 'admin', TRUE, %s, %s)
+                ON CONFLICT (username) DO NOTHING
+                '''
+                ,
+                (
+                    self.settings.default_admin_username,
+                    self.hash_password(self.settings.default_admin_password),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        else:
+            self._execute(
+                '''
+                INSERT INTO users (username, password_hash, role, is_active, created_at, updated_at)
+                VALUES (?, ?, 'admin', 1, ?, ?)
+                ''',
+                (
+                    self.settings.default_admin_username,
+                    self.hash_password(self.settings.default_admin_password),
+                    timestamp,
+                    timestamp,
+                ),
+            )
         return True
 
     def hash_password(self, password: str):
@@ -222,30 +387,54 @@ class AuthService:
             normalized_user_id = int(user_id)
         except (TypeError, ValueError):
             return None
-        row = self._fetchone(
-            '''
-            SELECT id, username, password_hash, role, is_active, created_at, updated_at
-            FROM users
-            WHERE id = ?
-            LIMIT 1
-            ''',
-            (normalized_user_id,),
-        )
+
+        if self._is_postgres_storage():
+            row = self._fetchone(
+                '''
+                SELECT id, username, password_hash, role, is_active, logo_url, created_at, updated_at
+                FROM auth_users
+                WHERE id = %s
+                LIMIT 1
+                ''',
+                (normalized_user_id,),
+            )
+        else:
+            row = self._fetchone(
+                '''
+                SELECT id, username, password_hash, role, is_active, logo_url, created_at, updated_at
+                FROM users
+                WHERE id = ?
+                LIMIT 1
+                ''',
+                (normalized_user_id,),
+            )
         return self._row_to_user(row)
 
     def get_user_by_username(self, username: str):
         normalized = str(username or '').strip()
         if not normalized:
             return None
-        row = self._fetchone(
-            '''
-            SELECT id, username, password_hash, role, is_active, created_at, updated_at
-            FROM users
-            WHERE lower(username) = lower(?)
-            LIMIT 1
-            ''',
-            (normalized,),
-        )
+
+        if self._is_postgres_storage():
+            row = self._fetchone(
+                '''
+                SELECT id, username, password_hash, role, is_active, logo_url, created_at, updated_at
+                FROM auth_users
+                WHERE lower(username) = lower(%s)
+                LIMIT 1
+                ''',
+                (normalized,),
+            )
+        else:
+            row = self._fetchone(
+                '''
+                SELECT id, username, password_hash, role, is_active, logo_url, created_at, updated_at
+                FROM users
+                WHERE lower(username) = lower(?)
+                LIMIT 1
+                ''',
+                (normalized,),
+            )
         return self._row_to_user(row)
 
     def public_user(self, user: dict):
@@ -259,13 +448,22 @@ class AuthService:
         }
 
     def list_users(self):
-        rows = self._fetchall(
-            '''
-            SELECT id, username, password_hash, role, is_active, created_at, updated_at
-            FROM users
-            ORDER BY lower(username) ASC
-            '''
-        )
+        if self._is_postgres_storage():
+            rows = self._fetchall(
+                '''
+                SELECT id, username, password_hash, role, is_active, logo_url, created_at, updated_at
+                FROM auth_users
+                ORDER BY lower(username) ASC
+                '''
+            )
+        else:
+            rows = self._fetchall(
+                '''
+                SELECT id, username, password_hash, role, is_active, logo_url, created_at, updated_at
+                FROM users
+                ORDER BY lower(username) ASC
+                '''
+            )
         return [self.public_user(self._row_to_user(row)) for row in rows]
 
     def create_user(self, username: str, password: str, role: str = 'staff', is_active: bool = True):
@@ -282,11 +480,28 @@ class AuthService:
         if normalized_role not in {'admin', 'staff'}:
             raise ValueError('Role must be either admin or staff.')
 
-        existing = self.get_user_by_username(normalized_username)
-        if existing is not None:
+        if self.get_user_by_username(normalized_username) is not None:
             raise UserExistsError('A user with this username already exists.')
 
         timestamp = self._utc_now_iso()
+        if self._is_postgres_storage():
+            self._execute(
+                '''
+                INSERT INTO auth_users (username, password_hash, role, is_active, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ''',
+                (
+                    normalized_username,
+                    self.hash_password(normalized_password),
+                    normalized_role,
+                    bool(is_active),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            created = self.get_user_by_username(normalized_username)
+            return self.public_user(created)
+
         cursor = self._execute(
             '''
             INSERT INTO users (username, password_hash, role, is_active, created_at, updated_at)
@@ -301,7 +516,6 @@ class AuthService:
                 timestamp,
             ),
         )
-
         created = self.get_user_by_id(cursor.lastrowid)
         return self.public_user(created)
 
@@ -326,20 +540,36 @@ class AuthService:
             next_logo_url = str(logo_url or '').strip() or None
 
         timestamp = self._utc_now_iso()
-        self._execute(
-            '''
-            UPDATE users
-            SET role = ?, is_active = ?, logo_url = ?, updated_at = ?
-            WHERE id = ?
-            ''',
-            (
-                next_role,
-                1 if next_active else 0,
-                next_logo_url,
-                timestamp,
-                int(user_id),
-            ),
-        )
+        if self._is_postgres_storage():
+            self._execute(
+                '''
+                UPDATE auth_users
+                SET role = %s, is_active = %s, logo_url = %s, updated_at = %s
+                WHERE id = %s
+                ''',
+                (
+                    next_role,
+                    bool(next_active),
+                    next_logo_url,
+                    timestamp,
+                    int(user_id),
+                ),
+            )
+        else:
+            self._execute(
+                '''
+                UPDATE users
+                SET role = ?, is_active = ?, logo_url = ?, updated_at = ?
+                WHERE id = ?
+                ''',
+                (
+                    next_role,
+                    1 if next_active else 0,
+                    next_logo_url,
+                    timestamp,
+                    int(user_id),
+                ),
+            )
 
         updated = self.get_user_by_id(user_id)
         return self.public_user(updated)

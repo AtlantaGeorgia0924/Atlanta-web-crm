@@ -3617,8 +3617,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setWeeklyAllowance(nextAllowance);
       setCashflowUpdatedAt(new Date());
 
-      const bothFailed = cashflowResult.status === 'rejected' && allowanceResult.status === 'rejected';
-      if (bothFailed && knownRecoverableFailure) {
+      if (knownRecoverableFailure) {
         const fallbackMessage = 'Cash flow data could not be loaded from server right now. Showing default values.';
         setCashflowError(fallbackMessage);
         setCashflowUpdatedAt(new Date());
