@@ -371,7 +371,7 @@ class BackendRuntime:
         if not self._ensure_sheet_connection():
             raise RuntimeError(self.sync_state.get('sheet_error') or 'Google Sheets connection unavailable')
 
-        expected_titles = {'DATA SHEET 2', 'CASH FLOW EXPENSES'}
+        expected_titles = {'CASH FLOW', 'DATA SHEET 2', 'CASH FLOW EXPENSES'}
         with self._sheet_lock:
             for worksheet in self.main_spreadsheet.worksheets():
                 if str(worksheet.title or '').strip().upper() in expected_titles:
@@ -380,7 +380,7 @@ class BackendRuntime:
             if not create_if_missing:
                 return None
 
-            worksheet = self.main_spreadsheet.add_worksheet(title='DATA SHEET 2', rows='1000', cols='6')
+            worksheet = self.main_spreadsheet.add_worksheet(title='CASH FLOW', rows='1000', cols='6')
             worksheet.update(
                 'A1:F1',
                 [['DATE', 'CATEGORY', 'AMOUNT', 'DESCRIPTION', 'CREATED BY', 'SOURCE']],
@@ -404,10 +404,17 @@ class BackendRuntime:
 
     def get_cashflow_expense_records(self, force_refresh=False):
         sheet_entries = []
+        sheet_title = 'CASH FLOW'
 
         if not force_refresh:
             cached_values = self._load_cached_rows('cashflow_expense_values')
             if cached_values:
+                try:
+                    worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=False)
+                    if worksheet is not None:
+                        sheet_title = worksheet.title or sheet_title
+                except Exception:
+                    pass
                 for row_num, row_values in enumerate(cached_values[1:], start=2):
                     if not row_values or not any(str(cell or '').strip() for cell in row_values):
                         continue
@@ -420,6 +427,7 @@ class BackendRuntime:
                         'count': len(sheet_entries),
                         'total': total,
                         'source': 'sheet',
+                        'sheet_title': sheet_title,
                     }
 
         try:
@@ -429,6 +437,7 @@ class BackendRuntime:
             worksheet = None
 
         if worksheet is not None:
+            sheet_title = worksheet.title or sheet_title
             with self._sheet_lock:
                 values = worksheet.get_all_values()
             if self.postgres_ready:
@@ -449,6 +458,7 @@ class BackendRuntime:
                 'count': len(sheet_entries),
                 'total': total,
                 'source': 'sheet',
+                'sheet_title': sheet_title,
             }
 
         db_entries = self.financial_data_service.list_expenses(limit=500, offset=0)
@@ -458,6 +468,7 @@ class BackendRuntime:
             'count': len(db_entries),
             'total': total,
             'source': 'database',
+            'sheet_title': sheet_title,
         }
 
     def append_cashflow_expense_record(self, amount, category='', description='', date_text='', created_by=''):

@@ -859,6 +859,7 @@ function CashFlowView({
   weeklyAllowance,
   expenses,
   expenseSource,
+  expenseSheetTitle,
   loading,
   errorText,
   expenseErrorText,
@@ -1036,7 +1037,7 @@ function CashFlowView({
       <section className="summary-frame">
         <h3>Recent Expenses</h3>
         <p className="metric-note" style={{ marginTop: '8px' }}>
-          Source: {expenseSource === 'sheet' ? 'Data sheet 2 in the inventory workbook' : 'Database fallback'}.
+          Source: {expenseSource === 'sheet' ? `${expenseSheetTitle || 'CASH FLOW'} tab in the inventory workbook` : 'Database fallback'}.
         </p>
         {recentExpenses.length ? (
           <div className="summary-grid" style={{ marginTop: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
@@ -3351,6 +3352,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [weeklyAllowance, setWeeklyAllowance] = useState(null);
   const [cashflowExpenses, setCashflowExpenses] = useState([]);
   const [cashflowExpenseSource, setCashflowExpenseSource] = useState('database');
+  const [cashflowExpenseSheetTitle, setCashflowExpenseSheetTitle] = useState('CASH FLOW');
   const [cashflowLoading, setCashflowLoading] = useState(false);
   const [cashflowError, setCashflowError] = useState('');
   const [cashflowExpenseBusy, setCashflowExpenseBusy] = useState(false);
@@ -3740,6 +3742,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setWeeklyAllowance(nextAllowance);
       setCashflowExpenses(Array.isArray(result?.expenses) ? result.expenses : []);
       setCashflowExpenseSource(result?.expense_source || nextSummary.expense_source || 'database');
+      setCashflowExpenseSheetTitle(result?.expense_sheet_title || 'CASH FLOW');
       setCashflowExpenseError('');
       setCashflowUpdatedAt(new Date());
 
@@ -5140,6 +5143,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           weeklyAllowance={weeklyAllowance}
           expenses={cashflowExpenses}
           expenseSource={cashflowExpenseSource}
+          expenseSheetTitle={cashflowExpenseSheetTitle}
           loading={cashflowLoading}
           errorText={cashflowError}
           expenseErrorText={cashflowExpenseError}

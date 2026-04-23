@@ -175,6 +175,7 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
         'weekly_allowance': weekly_allowance,
         'expenses': expense_summary.get('items', []),
         'expense_source': expense_summary.get('source', 'database'),
+        'expense_sheet_title': expense_summary.get('sheet_title', 'CASH FLOW'),
     }
 
 
