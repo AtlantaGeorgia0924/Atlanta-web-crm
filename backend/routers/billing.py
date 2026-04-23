@@ -184,6 +184,16 @@ def compute_live_sales_snapshot(force_refresh: bool = False, runtime=Depends(get
     return compute_sales_snapshot(runtime.get_main_records(force_refresh=force_refresh))
 
 
+@router.get('/home-bootstrap')
+def get_home_bootstrap(force_refresh: bool = False, runtime=Depends(get_runtime)):
+    records = runtime.get_main_records(force_refresh=force_refresh)
+    return {
+        'debtors': compute_debtors(records),
+        'sales_snapshot': compute_sales_snapshot(records),
+        'sync_status': runtime.get_sync_status(),
+    }
+
+
 @router.get('/outstanding-items/live/{name_input}')
 def outstanding_items_live(name_input: str, force_refresh: bool = False, runtime=Depends(get_runtime)):
     outstanding_items, total_outstanding = get_customer_outstanding_items_from_records(

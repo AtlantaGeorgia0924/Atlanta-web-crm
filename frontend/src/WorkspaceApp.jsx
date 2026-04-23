@@ -8,15 +8,14 @@ import {
   applyAllNameFixes,
   applyNameFix,
   applyPayment,
+  createFoundationExpense,
   deleteClient,
   fetchDashboardLogo,
   fetchClients,
-  fetchFoundationCashflowSummary,
-  fetchFoundationWeeklyAllowance,
+  fetchFoundationCashflowDashboard,
   fetchGoogleContacts,
+  fetchHomeBootstrap,
   fetchLiveBill,
-  fetchLiveDebtors,
-  fetchLiveSalesSnapshot,
   fetchNameFixes,
   fetchOutstandingItems,
   fetchPaymentPlan,
@@ -203,6 +202,7 @@ const VIEW_META = {
 const STAFF_ALLOWED_VIEWS = new Set(['products', 'cart']);
 const STOCK_VIEW_CACHE_KEY = 'atlanta_stock_view_cache_v1';
 const STOCK_FORM_CACHE_KEY = 'atlanta_stock_form_cache_v1';
+const WORKSPACE_CORE_CACHE_KEY = 'atlanta_workspace_core_cache_v1';
 
 const STATUS_CLASS_MAP = {
   AVAILABLE: 'available',
@@ -274,6 +274,26 @@ function getCacheRowCount(value) {
   }
 
   return 0;
+}
+
+function readSessionCache(key) {
+  try {
+    const cachedText = sessionStorage.getItem(key);
+    if (!cachedText) {
+      return null;
+    }
+    return JSON.parse(cachedText);
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionCache(key, value) {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Ignore cache storage failures.
+  }
 }
 
 function normalizeSearchValue(value) {
@@ -834,9 +854,48 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
   );
 }
 
-function CashFlowView({ cashflowSummary, weeklyAllowance, loading, errorText, lastUpdatedAt, onReload }) {
+function CashFlowView({
+  cashflowSummary,
+  weeklyAllowance,
+  expenses,
+  expenseSource,
+  loading,
+  errorText,
+  expenseErrorText,
+  expenseBusy,
+  lastUpdatedAt,
+  onReload,
+  onCreateExpense,
+}) {
   const summary = cashflowSummary || {};
   const allowance = weeklyAllowance || {};
+  const [expenseDraft, setExpenseDraft] = useState({
+    amount: '',
+    category: '',
+    description: '',
+    date: formatDateForInput(),
+  });
+
+  const recentExpenses = Array.isArray(expenses) ? expenses.slice(0, 8) : [];
+
+  async function handleSubmitExpense(event) {
+    event.preventDefault();
+    const saved = await onCreateExpense?.({
+      amount: expenseDraft.amount,
+      category: expenseDraft.category,
+      description: expenseDraft.description,
+      date: expenseDraft.date,
+    });
+
+    if (saved) {
+      setExpenseDraft({
+        amount: '',
+        category: '',
+        description: '',
+        date: formatDateForInput(),
+      });
+    }
+  }
 
   const cards = [
     {
@@ -850,7 +909,7 @@ function CashFlowView({ cashflowSummary, weeklyAllowance, loading, errorText, la
       key: 'expenses',
       label: 'Total Expenses',
       value: formatCurrency(summary.total_expenses || 0),
-      note: 'Tracked operating expenses.',
+      note: summary.expense_source === 'sheet' ? 'Tracked from data sheet 2.' : 'Tracked from database fallback.',
       className: '',
     },
     {
@@ -916,6 +975,87 @@ function CashFlowView({ cashflowSummary, weeklyAllowance, loading, errorText, la
             </article>
           ))}
         </div>
+      </section>
+
+      <section className="summary-frame">
+        <h3>Record Expense</h3>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          This writes to the inventory workbook cash-flow sheet and keeps the database mirror in sync.
+        </p>
+        <form onSubmit={handleSubmitExpense} className="workspace-stack" style={{ marginTop: '12px' }}>
+          <div className="summary-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+            <label className="workspace-field">
+              <span className="metric-label">Amount</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={expenseDraft.amount}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, amount: event.target.value }))}
+                placeholder="5000"
+              />
+            </label>
+            <label className="workspace-field">
+              <span className="metric-label">Category</span>
+              <input
+                type="text"
+                value={expenseDraft.category}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, category: event.target.value }))}
+                placeholder="Transport, fuel, data..."
+              />
+            </label>
+            <label className="workspace-field">
+              <span className="metric-label">Date</span>
+              <input
+                type="date"
+                value={expenseDraft.date}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, date: event.target.value }))}
+              />
+            </label>
+          </div>
+          <label className="workspace-field">
+            <span className="metric-label">Description</span>
+            <input
+              type="text"
+              value={expenseDraft.description}
+              onChange={(event) => setExpenseDraft((current) => ({ ...current, description: event.target.value }))}
+              placeholder="Short note about the expense"
+            />
+          </label>
+          {expenseErrorText ? (
+            <div className="notice notice-error">{expenseErrorText}</div>
+          ) : null}
+          <div className="button-row">
+            <button type="submit" className="secondary-button" disabled={expenseBusy || loading}>
+              {expenseBusy ? 'Saving...' : 'Add Expense'}
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section className="summary-frame">
+        <h3>Recent Expenses</h3>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          Source: {expenseSource === 'sheet' ? 'Data sheet 2 in the inventory workbook' : 'Database fallback'}.
+        </p>
+        {recentExpenses.length ? (
+          <div className="summary-grid" style={{ marginTop: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+            {recentExpenses.map((expense, index) => (
+              <article key={`${expense.row_num || index}-${expense.date || ''}-${expense.amount || ''}`} className="metric-card metric-card--home">
+                <span className="metric-label">{expense.category || 'Expense'}</span>
+                <strong className="metric-value">{formatCurrency(expense.amount || 0)}</strong>
+                <span className="metric-note">
+                  {expense.date || 'No date'}
+                  {expense.description ? ` • ${expense.description}` : ''}
+                </span>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="notice" style={{ marginTop: '12px' }}>
+            No expenses recorded yet.
+          </div>
+        )}
       </section>
     </div>
   );
@@ -3209,8 +3349,12 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [syncBusy, setSyncBusy] = useState(false);
   const [cashflowSummary, setCashflowSummary] = useState(null);
   const [weeklyAllowance, setWeeklyAllowance] = useState(null);
+  const [cashflowExpenses, setCashflowExpenses] = useState([]);
+  const [cashflowExpenseSource, setCashflowExpenseSource] = useState('database');
   const [cashflowLoading, setCashflowLoading] = useState(false);
   const [cashflowError, setCashflowError] = useState('');
+  const [cashflowExpenseBusy, setCashflowExpenseBusy] = useState(false);
+  const [cashflowExpenseError, setCashflowExpenseError] = useState('');
   const [cashflowUpdatedAt, setCashflowUpdatedAt] = useState(null);
   const [coreLoading, setCoreLoading] = useState(false);
   const [logoData, setLogoData] = useState({ data_url: '', file_name: '' });
@@ -3459,51 +3603,40 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       return;
     }
 
-    const [debtorsResult, salesResult, syncResult, pendingServicesResult, servicesTodayResult] = await Promise.allSettled([
-      fetchLiveDebtors({ forceRefresh }),
-      fetchLiveSalesSnapshot({ forceRefresh }),
-      fetchSyncStatus(),
-      fetchPendingServiceDeals({ forceRefresh }),
-      fetchServicesToday({ forceRefresh, targetDate: servicesTodayDate }),
-    ]);
+    const bootstrapResult = await fetchHomeBootstrap({ forceRefresh });
 
     const failures = [];
 
-    if (debtorsResult.status === 'fulfilled') {
-      const nextDebtors = debtorsResult.value;
+    if (bootstrapResult?.debtors) {
+      const nextDebtors = bootstrapResult.debtors;
       setDebtorsData(nextDebtors);
       const availableNames = (nextDebtors.sorted_debtors || []).map(([name]) => name);
       const nextSelected = availableNames.includes(selectedDebtor) ? selectedDebtor : availableNames[0] || '';
       startTransition(() => setSelectedDebtor(nextSelected));
     } else {
-      failures.push(debtorsResult.reason?.message || 'Could not load debtors.');
+      failures.push('Could not load debtors.');
     }
 
-    if (salesResult.status === 'fulfilled') {
-      setSalesSnapshot(salesResult.value);
+    if (bootstrapResult?.sales_snapshot) {
+      setSalesSnapshot(bootstrapResult.sales_snapshot);
     } else {
-      failures.push(salesResult.reason?.message || 'Could not load sales snapshot.');
+      failures.push('Could not load sales snapshot.');
     }
 
-    if (syncResult.status === 'fulfilled') {
-      setSyncStatus(syncResult.value);
+    if (bootstrapResult?.sync_status) {
+      setSyncStatus(bootstrapResult.sync_status);
     } else {
-      failures.push(syncResult.reason?.message || 'Could not load sync status.');
-    }
-
-    if (pendingServicesResult.status === 'fulfilled') {
-      setServicePendingDeals(pendingServicesResult.value || { items: [], count: 0 });
-    } else {
-      failures.push(pendingServicesResult.reason?.message || 'Could not load pending service deals.');
-    }
-
-    if (servicesTodayResult.status === 'fulfilled') {
-      setServicesTodayData(servicesTodayResult.value || { services: [], count: 0 });
-    } else {
-      failures.push(servicesTodayResult.reason?.message || 'Could not load services done today.');
+      failures.push('Could not load sync status.');
     }
 
     const uniqueFailures = Array.from(new Set(failures.filter(Boolean).map((item) => String(item).trim()).filter(Boolean)));
+
+    writeSessionCache(WORKSPACE_CORE_CACHE_KEY, {
+      debtorsData: bootstrapResult?.debtors || { sorted_debtors: [], total_debtors_amount: 0 },
+      salesSnapshot: bootstrapResult?.sales_snapshot || { daily_totals: [], week_totals: [] },
+      syncStatus: bootstrapResult?.sync_status || null,
+      cached_at: new Date().toISOString(),
+    });
 
     setLastLoadedAt(new Date());
     setWorkspaceError(uniqueFailures.join(' | '));
@@ -3511,12 +3644,26 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     setHasCoreLoaded(true);
     setCoreLoading(false);
 
-    // Keep first paint fast: hydrate clients/whatsapp/unpaid in the background.
+    // Keep first paint fast: hydrate clients/whatsapp/unpaid and the secondary workspace data in the background.
     Promise.allSettled([
+      fetchPendingServiceDeals({ forceRefresh }),
+      fetchServicesToday({ forceRefresh, targetDate: servicesTodayDate }),
       fetchClients({ forceReload: true }),
       fetchWhatsappHistory({ forceRefresh }),
       fetchUnpaidToday({ forceRefresh }),
-    ]).then(([clientsResult, whatsappHistoryResult, unpaidTodayResult]) => {
+    ]).then(([
+      pendingServicesResult,
+      servicesTodayResult,
+      clientsResult,
+      whatsappHistoryResult,
+      unpaidTodayResult,
+    ]) => {
+      if (pendingServicesResult.status === 'fulfilled') {
+        setServicePendingDeals(pendingServicesResult.value || { items: [], count: 0 });
+      }
+      if (servicesTodayResult.status === 'fulfilled') {
+        setServicesTodayData(servicesTodayResult.value || { services: [], count: 0 });
+      }
       if (clientsResult.status === 'fulfilled') {
         setClientsData(clientsResult.value);
       }
@@ -3559,7 +3706,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
-  async function loadCashflowDashboard() {
+  async function loadCashflowDashboard(forceRefresh = false) {
     if (!isAdmin) {
       return;
     }
@@ -3584,63 +3731,48 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     setCashflowLoading(true);
     setCashflowError('');
     try {
-      const [cashflowResult, allowanceResult] = await Promise.allSettled([
-        fetchFoundationCashflowSummary(),
-        fetchFoundationWeeklyAllowance(),
-      ]);
+      const result = await fetchFoundationCashflowDashboard({ forceRefresh });
 
-      const cashflowErrorText =
-        cashflowResult.status === 'rejected'
-          ? String(cashflowResult.reason?.message || '').toLowerCase()
-          : '';
-      const allowanceErrorText =
-        allowanceResult.status === 'rejected'
-          ? String(allowanceResult.reason?.message || '').toLowerCase()
-          : '';
-
-      const knownRecoverableFailure = [cashflowErrorText, allowanceErrorText].some((text) => (
-        text.includes('financial foundation storage is not ready')
-        || text.includes('service unavailable')
-        || text.includes('load failed')
-        || text.includes('failed to fetch')
-        || text.includes('network')
-      ));
-
-      const nextSummary = cashflowResult.status === 'fulfilled'
-        ? (cashflowResult.value?.summary || defaultSummary)
-        : defaultSummary;
-      const nextAllowance = allowanceResult.status === 'fulfilled'
-        ? (allowanceResult.value || defaultAllowance)
-        : defaultAllowance;
+      const nextSummary = result?.summary || defaultSummary;
+      const nextAllowance = result?.weekly_allowance || defaultAllowance;
 
       setCashflowSummary(nextSummary);
       setWeeklyAllowance(nextAllowance);
+      setCashflowExpenses(Array.isArray(result?.expenses) ? result.expenses : []);
+      setCashflowExpenseSource(result?.expense_source || nextSummary.expense_source || 'database');
+      setCashflowExpenseError('');
       setCashflowUpdatedAt(new Date());
 
-      if (knownRecoverableFailure) {
-        const fallbackMessage = 'Cash flow data could not be loaded from server right now. Showing default values.';
-        setCashflowError(fallbackMessage);
-        setCashflowUpdatedAt(new Date());
-        setStatusText(fallbackMessage);
-        return;
-      }
-
-      const firstFailure = [
-        cashflowResult.status === 'rejected' ? cashflowResult.reason?.message : '',
-        allowanceResult.status === 'rejected' ? allowanceResult.reason?.message : '',
-      ].find((message) => String(message || '').trim());
-
-      if (firstFailure) {
-        const message = String(firstFailure || '').trim();
-        setCashflowError(message);
-        setStatusText(message);
-      }
+      setCashflowError('');
     } catch (error) {
       const message = error?.message || 'Could not load cashflow dashboard.';
       setCashflowError(message);
       setStatusText(message);
     } finally {
       setCashflowLoading(false);
+    }
+  }
+
+  async function handleCreateCashflowExpense(expenseDraft) {
+    setCashflowExpenseBusy(true);
+    setCashflowExpenseError('');
+
+    try {
+      await createFoundationExpense({
+        amount: Number(expenseDraft.amount || 0),
+        category: expenseDraft.category,
+        description: expenseDraft.description,
+        date: expenseDraft.date,
+      });
+      await loadCashflowDashboard(true);
+      return true;
+    } catch (error) {
+      const message = error?.message || 'Could not save expense.';
+      setCashflowExpenseError(message);
+      setStatusText(message);
+      return false;
+    } finally {
+      setCashflowExpenseBusy(false);
     }
   }
 
@@ -3865,6 +3997,22 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
   useEffect(() => {
     try {
+      const cachedCore = readSessionCache(WORKSPACE_CORE_CACHE_KEY);
+      if (cachedCore && typeof cachedCore === 'object') {
+        if (cachedCore.debtorsData) {
+          setDebtorsData(cachedCore.debtorsData);
+        }
+        if (cachedCore.salesSnapshot) {
+          setSalesSnapshot(cachedCore.salesSnapshot);
+        }
+        if (cachedCore.syncStatus) {
+          setSyncStatus(cachedCore.syncStatus);
+        }
+        if (cachedCore.cached_at) {
+          setLastLoadedAt(new Date(cachedCore.cached_at));
+        }
+      }
+
       const cachedStockViewText = sessionStorage.getItem(STOCK_VIEW_CACHE_KEY);
       if (cachedStockViewText) {
         const cachedStockView = JSON.parse(cachedStockViewText);
@@ -4990,10 +5138,15 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         <CashFlowView
           cashflowSummary={cashflowSummary}
           weeklyAllowance={weeklyAllowance}
+          expenses={cashflowExpenses}
+          expenseSource={cashflowExpenseSource}
           loading={cashflowLoading}
           errorText={cashflowError}
+          expenseErrorText={cashflowExpenseError}
+          expenseBusy={cashflowExpenseBusy}
           lastUpdatedAt={cashflowUpdatedAt}
           onReload={loadCashflowDashboard}
+          onCreateExpense={handleCreateCashflowExpense}
         />
       );
     }

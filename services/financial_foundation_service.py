@@ -595,7 +595,7 @@ class FinancialFoundationService:
             user_id=edited_by,
         )
 
-    def get_cashflow_summary(self, actor_role=None):
+    def get_cashflow_summary(self, actor_role=None, expense_total_override=None):
         self._require_admin(actor_role)
         manager = self._require_manager()
 
@@ -613,7 +613,9 @@ class FinancialFoundationService:
 
         total_cash_in = self._to_number(sales_row.get('total_cash_in'))
         total_cost = self._to_number(sales_row.get('total_cost'))
-        total_expenses = self._to_number(expense_row.get('total_expenses'))
+        database_expenses_total = self._to_number(expense_row.get('total_expenses'))
+        sheet_expenses_total = None if expense_total_override is None else self._to_number(expense_total_override)
+        total_expenses = database_expenses_total if sheet_expenses_total is None else sheet_expenses_total
         net_profit = total_cash_in - total_cost - total_expenses
 
         # Receivables are explicitly excluded from available cash.
@@ -627,6 +629,9 @@ class FinancialFoundationService:
         return {
             'total_cash_in': total_cash_in,
             'total_expenses': total_expenses,
+            'database_expenses_total': database_expenses_total,
+            'sheet_expenses_total': 0.0 if sheet_expenses_total is None else sheet_expenses_total,
+            'expense_source': 'database' if sheet_expenses_total is None else 'sheet',
             'total_cost': total_cost,
             'net_profit': net_profit,
             'receivables_excluded': receivables_excluded,

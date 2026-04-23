@@ -367,6 +367,118 @@ class BackendRuntime:
             raise RuntimeError(self.sync_state.get('sheet_error') or 'Google Sheets connection unavailable')
         return self.gspread_client.open_by_key(stock_sheet_id).sheet1
 
+    def _resolve_cashflow_expense_worksheet(self, create_if_missing=True):
+        if not self._ensure_sheet_connection():
+            raise RuntimeError(self.sync_state.get('sheet_error') or 'Google Sheets connection unavailable')
+
+        expected_titles = {'DATA SHEET 2', 'CASH FLOW EXPENSES'}
+        with self._sheet_lock:
+            for worksheet in self.main_spreadsheet.worksheets():
+                if str(worksheet.title or '').strip().upper() in expected_titles:
+                    return worksheet
+
+            if not create_if_missing:
+                return None
+
+            worksheet = self.main_spreadsheet.add_worksheet(title='DATA SHEET 2', rows='1000', cols='6')
+            worksheet.update(
+                'A1:F1',
+                [['DATE', 'CATEGORY', 'AMOUNT', 'DESCRIPTION', 'CREATED BY', 'SOURCE']],
+            )
+            return worksheet
+
+    @staticmethod
+    def _normalize_cashflow_expense_row(row_values, row_num=None):
+        row_values = list(row_values or [])
+        if len(row_values) < 6:
+            row_values = row_values + [''] * (6 - len(row_values))
+        return {
+            'row_num': row_num,
+            'date': str(row_values[0] or '').strip(),
+            'category': str(row_values[1] or '').strip(),
+            'amount': str(row_values[2] or '').strip(),
+            'description': str(row_values[3] or '').strip(),
+            'created_by': str(row_values[4] or '').strip(),
+            'source': str(row_values[5] or '').strip() or 'sheet',
+        }
+
+    def get_cashflow_expense_records(self, force_refresh=False):
+        sheet_entries = []
+
+        if not force_refresh:
+            cached_values = self._load_cached_rows('cashflow_expense_values')
+            if cached_values:
+                for row_num, row_values in enumerate(cached_values[1:], start=2):
+                    if not row_values or not any(str(cell or '').strip() for cell in row_values):
+                        continue
+                    sheet_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
+                if sheet_entries:
+                    sheet_entries.reverse()
+                    total = sum(clean_amount(entry.get('amount')) for entry in sheet_entries)
+                    return {
+                        'items': sheet_entries,
+                        'count': len(sheet_entries),
+                        'total': total,
+                        'source': 'sheet',
+                    }
+
+        try:
+            worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=False)
+        except Exception as exc:
+            self.logger.warning('Failed to resolve cashflow expense worksheet: %s', exc)
+            worksheet = None
+
+        if worksheet is not None:
+            with self._sheet_lock:
+                values = worksheet.get_all_values()
+            if self.postgres_ready:
+                try:
+                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', values)
+                except Exception as exc:
+                    self.logger.warning('Failed to upsert cashflow expense cache: %s', exc)
+            for row_num, row_values in enumerate(values[1:], start=2):
+                if not row_values or not any(str(cell or '').strip() for cell in row_values):
+                    continue
+                sheet_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
+
+        if sheet_entries:
+            sheet_entries.reverse()
+            total = sum(clean_amount(entry.get('amount')) for entry in sheet_entries)
+            return {
+                'items': sheet_entries,
+                'count': len(sheet_entries),
+                'total': total,
+                'source': 'sheet',
+            }
+
+        db_entries = self.financial_data_service.list_expenses(limit=500, offset=0)
+        total = sum(clean_amount(entry.get('amount')) for entry in db_entries)
+        return {
+            'items': db_entries,
+            'count': len(db_entries),
+            'total': total,
+            'source': 'database',
+        }
+
+    def append_cashflow_expense_record(self, amount, category='', description='', date_text='', created_by=''):
+        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+        row_values = [
+            str(date_text or datetime.now(timezone.utc).date().isoformat()).strip(),
+            str(category or '').strip(),
+            str(amount or '').strip(),
+            str(description or '').strip(),
+            str(created_by or '').strip(),
+            'sheet',
+        ]
+        with self._sheet_lock:
+            worksheet.append_row(row_values, value_input_option='USER_ENTERED')
+            if self.postgres_ready:
+                try:
+                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', worksheet.get_all_values())
+                except Exception as exc:
+                    self.logger.warning('Failed to refresh cashflow expense cache after append: %s', exc)
+        return self._normalize_cashflow_expense_row(row_values)
+
     @staticmethod
     def _build_sheet_row_values(headers, values_by_header):
         normalized = {
@@ -974,6 +1086,15 @@ class BackendRuntime:
             self.postgres_sync_manager.upsert_sheet_cache('main_values', main_values)
             self.postgres_sync_manager.upsert_sheet_cache('main_records', main_records)
 
+            cashflow_expense_values = []
+            try:
+                cashflow_expense_ws = self._resolve_cashflow_expense_worksheet(create_if_missing=False)
+                if cashflow_expense_ws is not None:
+                    cashflow_expense_values = cashflow_expense_ws.get_all_values()
+                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', cashflow_expense_values)
+            except Exception as exc:
+                self.logger.warning('Failed to pull cashflow expense sheet cache: %s', exc)
+
             stock_values = []
             stock_color_status_map = {}
             if stock_sheet_id:
@@ -1004,6 +1125,7 @@ class BackendRuntime:
         return {
             'main_records': len(main_records),
             'main_values': len(main_values),
+            'cashflow_expense_values': len(cashflow_expense_values),
             'stock_values': len(stock_values),
             'stock_color_status_map': len(stock_color_status_map),
         }

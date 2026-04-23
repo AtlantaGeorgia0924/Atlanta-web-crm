@@ -14,6 +14,13 @@ export function fetchLiveSalesSnapshot({ forceRefresh = false, signal } = {}) {
   });
 }
 
+export function fetchHomeBootstrap({ forceRefresh = false, signal } = {}) {
+  return requestJson('/api/billing/home-bootstrap', {
+    query: { force_refresh: forceRefresh },
+    signal,
+  });
+}
+
 export function fetchOutstandingItems(nameInput, { forceRefresh = false, signal } = {}) {
   return requestJson(`/api/billing/outstanding-items/live/${encodeURIComponent(nameInput)}`, {
     query: { force_refresh: forceRefresh },
@@ -124,6 +131,25 @@ export function fetchFoundationCashflowSummary({ signal } = {}) {
 
 export function fetchFoundationWeeklyAllowance({ signal } = {}) {
   return requestJson('/api/foundation/weekly-allowance', { signal });
+}
+
+export function fetchFoundationCashflowDashboard({ forceRefresh = false, signal } = {}) {
+  return requestJson('/api/foundation/cashflow-dashboard', {
+    query: { force_refresh: forceRefresh },
+    signal,
+  });
+}
+
+export function createFoundationExpense({ amount, category = '', description = '', date = '' }) {
+  return requestJson('/api/foundation/expenses', {
+    method: 'POST',
+    body: {
+      amount,
+      category,
+      description,
+      date,
+    },
+  });
 }
 
 export function fetchClients({ forceReload = false, signal } = {}) {
