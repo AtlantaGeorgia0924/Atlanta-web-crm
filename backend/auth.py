@@ -75,8 +75,8 @@ class AuthSettings:
             jwt_secret=jwt_secret,
             jwt_algorithm=jwt_algorithm,
             jwt_expiration_minutes=jwt_expiration_minutes,
-            default_admin_username=(os.getenv('APP_DEFAULT_ADMIN_USERNAME') or '').strip(),
-            default_admin_password=os.getenv('APP_DEFAULT_ADMIN_PASSWORD') or '',
+            default_admin_username=(os.getenv('APP_DEFAULT_ADMIN_USERNAME') or 'admin').strip(),
+            default_admin_password=os.getenv('APP_DEFAULT_ADMIN_PASSWORD') or 'Atlanta',
         )
 
 
@@ -288,45 +288,85 @@ class AuthService:
             return connection.execute(query, params).fetchall()
 
     def ensure_default_admin(self):
-        if self._is_postgres_storage():
-            existing = self._fetchone("SELECT id FROM auth_users WHERE role = 'admin' LIMIT 1")
-        else:
-            existing = self._fetchone("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
-        if existing:
-            return False
+        default_admin_username = self.settings.default_admin_username
+        default_admin_password = self.settings.default_admin_password
 
-        if not self.settings.default_admin_username or not self.settings.default_admin_password:
+        if not default_admin_username or not default_admin_password:
+            if self._is_postgres_storage():
+                existing_admin = self._fetchone("SELECT id FROM auth_users WHERE role = 'admin' LIMIT 1")
+            else:
+                existing_admin = self._fetchone("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
+            if existing_admin:
+                return False
             raise RuntimeError(
                 'APP_DEFAULT_ADMIN_USERNAME and APP_DEFAULT_ADMIN_PASSWORD must be set before first startup.'
             )
 
+        existing_default_admin = self.get_user_by_username(default_admin_username)
         timestamp = self._utc_now_iso()
+        desired_password_hash = self.hash_password(default_admin_password)
+
+        if existing_default_admin is None:
+            if self._is_postgres_storage():
+                self._execute(
+                    '''
+                    INSERT INTO auth_users (username, password_hash, role, is_active, created_at, updated_at)
+                    VALUES (%s, %s, 'admin', TRUE, %s, %s)
+                    ON CONFLICT (username) DO NOTHING
+                    ''',
+                    (
+                        default_admin_username,
+                        desired_password_hash,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            else:
+                self._execute(
+                    '''
+                    INSERT INTO users (username, password_hash, role, is_active, created_at, updated_at)
+                    VALUES (?, ?, 'admin', 1, ?, ?)
+                    ''',
+                    (
+                        default_admin_username,
+                        desired_password_hash,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            return True
+
+        password_matches = self.verify_password(default_admin_password, existing_default_admin.get('password_hash', ''))
+        role_matches = str(existing_default_admin.get('role') or '').strip().lower() == 'admin'
+        active_matches = bool(existing_default_admin.get('is_active'))
+
+        if password_matches and role_matches and active_matches:
+            return False
+
         if self._is_postgres_storage():
             self._execute(
                 '''
-                INSERT INTO auth_users (username, password_hash, role, is_active, created_at, updated_at)
-                VALUES (%s, %s, 'admin', TRUE, %s, %s)
-                ON CONFLICT (username) DO NOTHING
-                '''
-                ,
+                UPDATE auth_users
+                SET password_hash = %s, role = 'admin', is_active = TRUE, updated_at = %s
+                WHERE id = %s
+                ''',
                 (
-                    self.settings.default_admin_username,
-                    self.hash_password(self.settings.default_admin_password),
+                    desired_password_hash,
                     timestamp,
-                    timestamp,
+                    int(existing_default_admin['id']),
                 ),
             )
         else:
             self._execute(
                 '''
-                INSERT INTO users (username, password_hash, role, is_active, created_at, updated_at)
-                VALUES (?, ?, 'admin', 1, ?, ?)
+                UPDATE users
+                SET password_hash = ?, role = 'admin', is_active = 1, updated_at = ?
+                WHERE id = ?
                 ''',
                 (
-                    self.settings.default_admin_username,
-                    self.hash_password(self.settings.default_admin_password),
+                    desired_password_hash,
                     timestamp,
-                    timestamp,
+                    int(existing_default_admin['id']),
                 ),
             )
         return True

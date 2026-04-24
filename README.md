@@ -11,6 +11,8 @@ Set these environment variables on the backend deployment:
 - `APP_DEFAULT_ADMIN_USERNAME`
 - `APP_DEFAULT_ADMIN_PASSWORD`
 
+If those two admin variables are not set, the backend now falls back to `admin` / `Atlanta` so the app can still boot and repair the seeded admin account.
+
 Set this on the frontend deployment:
 
 - `VITE_API_BASE_URL=https://your-backend-host.example.com`
