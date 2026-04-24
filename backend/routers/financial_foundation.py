@@ -26,30 +26,19 @@ class AppConfigUpsertRequest(BaseModel):
 @router.post('/expenses')
 def create_expense(payload: CreateExpenseRequest, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        item = runtime.financial_data_service.create_expense(
+        sheet_item = runtime.append_cashflow_expense_record(
             amount=payload.amount,
             category=payload.category,
             description=payload.description,
-            date=payload.date,
+            date_text=payload.date,
             created_by=str((current_user or {}).get('username') or ''),
         )
-        sheet_item = None
-        try:
-            sheet_item = runtime.append_cashflow_expense_record(
-                amount=payload.amount,
-                category=payload.category,
-                description=payload.description,
-                date_text=payload.date,
-                created_by=str((current_user or {}).get('username') or ''),
-            )
-        except Exception as exc:
-            runtime.logger.warning('Cashflow expense sheet append failed: %s', exc)
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    return {'expense': item, 'sheet_expense': sheet_item}
+    return {'expense': sheet_item, 'sheet_expense': sheet_item}
 
 
 @router.get('/expenses')
@@ -141,11 +130,7 @@ def set_app_config(
 @router.get('/cashflow-summary', dependencies=[Depends(require_admin)])
 def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        expense_summary = runtime.get_cashflow_expense_records(force_refresh=force_refresh)
-        summary = runtime.financial_data_service.get_cashflow_summary(
-            actor_role=str((current_user or {}).get('role') or ''),
-            expense_total_override=expense_summary['total'] if expense_summary.get('source') == 'sheet' else None,
-        )
+        summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -157,14 +142,9 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
 @router.get('/cashflow-dashboard', dependencies=[Depends(require_admin)])
 def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
+        summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh)
         expense_summary = runtime.get_cashflow_expense_records(force_refresh=force_refresh)
-        summary = runtime.financial_data_service.get_cashflow_summary(
-            actor_role=str((current_user or {}).get('role') or ''),
-            expense_total_override=expense_summary['total'] if expense_summary.get('source') == 'sheet' else None,
-        )
-        weekly_allowance = runtime.financial_data_service.get_weekly_allowance_summary(
-            actor_role=str((current_user or {}).get('role') or ''),
-        )
+        weekly_allowance = summary.get('weekly_allowance') or runtime.get_weekly_allowance_from_sheet(force_refresh=force_refresh)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:

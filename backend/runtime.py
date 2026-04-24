@@ -6,14 +6,14 @@ import mimetypes
 import os
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import gspread
 from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from googleapiclient.discovery import build
 
 from db_sync import PSYCOPG2_AVAILABLE, create_postgres_sync_manager
-from services.billing_service import build_payment_plan, clean_amount, compute_debtors
+from services.billing_service import build_payment_plan, clean_amount, compute_debtors, parse_sheet_date
 from services.client_service import (
     build_client_directory_rows,
     find_existing_client_key,
@@ -270,11 +270,24 @@ class BackendRuntime:
         date,
         sold_by,
     ):
-        if not self.financial_data_service or not self.financial_data_service.ready:
-            return None
-
         stock_record_key = str(stock_record_id or '').strip()
         if not stock_record_key:
+            return None
+
+        try:
+            profit = (selling_price - cost_price_at_sale) * quantity
+            if profit > 0:
+                self.append_cashflow_income_record(
+                    amount=profit,
+                    category='PHONE PROFIT',
+                    description=f'Item record_id: {stock_record_key}, sale: {selling_price:.2f}, cost: {cost_price_at_sale:.2f}',
+                    date_text=datetime.now(timezone.utc).date().isoformat(),
+                    created_by=str(sold_by or '').strip(),
+                )
+        except Exception as cashflow_exc:
+            self.logger.warning('Failed to write phone profit to cashflow sheet: %s', cashflow_exc)
+
+        if not self.financial_data_service or not self.financial_data_service.ready:
             return None
 
         try:
@@ -399,8 +412,60 @@ class BackendRuntime:
             'amount': str(row_values[2] or '').strip(),
             'description': str(row_values[3] or '').strip(),
             'created_by': str(row_values[4] or '').strip(),
-            'source': str(row_values[5] or '').strip() or 'sheet',
+            'source': str(row_values[5] or '').strip() or 'expense',
         }
+
+    def _append_cashflow_sheet_record(self, *, amount, category='', description='', date_text='', created_by='', source='expense'):
+        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+        row_values = [
+            str(date_text or datetime.now(timezone.utc).date().isoformat()).strip(),
+            str(category or '').strip(),
+            str(amount or '').strip(),
+            str(description or '').strip(),
+            str(created_by or '').strip(),
+            str(source or '').strip() or 'expense',
+        ]
+        with self._sheet_lock:
+            worksheet.append_row(row_values, value_input_option='USER_ENTERED')
+            if self.postgres_ready:
+                try:
+                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', worksheet.get_all_values())
+                except Exception as exc:
+                    self.logger.warning('Failed to refresh cashflow sheet cache after append: %s', exc)
+        return self._normalize_cashflow_expense_row(row_values)
+
+    @staticmethod
+    def _most_recent_saturday(today=None):
+        today = today or datetime.now(timezone.utc).date()
+        days_since_saturday = (today.weekday() - 5) % 7
+        return today - timedelta(days=days_since_saturday)
+
+    def _normalized_reserve_percentage(self):
+        raw_value = self.config.get('reserve_percentage', 0.3)
+        try:
+            reserve = float(raw_value)
+        except (TypeError, ValueError):
+            reserve = 0.3
+        if reserve > 1.0 and reserve <= 100.0:
+            reserve /= 100.0
+        return max(0.0, min(reserve, 1.0))
+
+    def _normalized_allowance_percentage(self):
+        raw_value = self.config.get('allowance_percentage', 0.25)
+        try:
+            allowance = float(raw_value)
+        except (TypeError, ValueError):
+            allowance = 0.25
+        if allowance > 1.0 and allowance <= 100.0:
+            allowance /= 100.0
+        return max(0.0, min(allowance, 1.0))
+
+    def _read_numeric_config(self, key, default=0.0):
+        raw_value = self.config.get(key, default)
+        try:
+            return float(raw_value)
+        except (TypeError, ValueError):
+            return float(default)
 
     def get_cashflow_expense_records(self, force_refresh=False):
         sheet_entries = []
@@ -418,7 +483,10 @@ class BackendRuntime:
                 for row_num, row_values in enumerate(cached_values[1:], start=2):
                     if not row_values or not any(str(cell or '').strip() for cell in row_values):
                         continue
-                    sheet_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
+                    normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+                    if str(normalized.get('source') or '').strip().lower() == 'income':
+                        continue
+                    sheet_entries.append(normalized)
                 if sheet_entries:
                     sheet_entries.reverse()
                     total = sum(clean_amount(entry.get('amount')) for entry in sheet_entries)
@@ -448,7 +516,10 @@ class BackendRuntime:
             for row_num, row_values in enumerate(values[1:], start=2):
                 if not row_values or not any(str(cell or '').strip() for cell in row_values):
                     continue
-                sheet_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
+                normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+                if str(normalized.get('source') or '').strip().lower() == 'income':
+                    continue
+                sheet_entries.append(normalized)
 
         if sheet_entries:
             sheet_entries.reverse()
@@ -461,34 +532,164 @@ class BackendRuntime:
                 'sheet_title': sheet_title,
             }
 
-        db_entries = self.financial_data_service.list_expenses(limit=500, offset=0)
-        total = sum(clean_amount(entry.get('amount')) for entry in db_entries)
         return {
-            'items': db_entries,
-            'count': len(db_entries),
-            'total': total,
-            'source': 'database',
+            'items': [],
+            'count': 0,
+            'total': 0.0,
+            'source': 'sheet',
             'sheet_title': sheet_title,
         }
 
     def append_cashflow_expense_record(self, amount, category='', description='', date_text='', created_by=''):
-        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
-        row_values = [
-            str(date_text or datetime.now(timezone.utc).date().isoformat()).strip(),
-            str(category or '').strip(),
-            str(amount or '').strip(),
-            str(description or '').strip(),
-            str(created_by or '').strip(),
-            'sheet',
-        ]
-        with self._sheet_lock:
-            worksheet.append_row(row_values, value_input_option='USER_ENTERED')
+        return self._append_cashflow_sheet_record(
+            amount=amount,
+            category=category,
+            description=description,
+            date_text=date_text,
+            created_by=created_by,
+            source='expense',
+        )
+
+    def append_cashflow_income_record(self, amount, category='', description='', date_text='', created_by=''):
+        return self._append_cashflow_sheet_record(
+            amount=amount,
+            category=category,
+            description=description,
+            date_text=date_text,
+            created_by=created_by,
+            source='income',
+        )
+
+    def get_cashflow_sheet_records(self, force_refresh=False):
+        sheet_title = 'CASH FLOW'
+        sheet_entries = []
+
+        if not force_refresh:
+            cached_values = self._load_cached_rows('cashflow_expense_values')
+            if cached_values:
+                try:
+                    worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=False)
+                    if worksheet is not None:
+                        sheet_title = worksheet.title or sheet_title
+                except Exception:
+                    pass
+                for row_num, row_values in enumerate(cached_values[1:], start=2):
+                    if not row_values or not any(str(cell or '').strip() for cell in row_values):
+                        continue
+                    sheet_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
+                if sheet_entries:
+                    sheet_entries.reverse()
+                    return {
+                        'items': sheet_entries,
+                        'count': len(sheet_entries),
+                        'source': 'sheet',
+                        'sheet_title': sheet_title,
+                    }
+
+        try:
+            worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=False)
+        except Exception as exc:
+            self.logger.warning('Failed to resolve cashflow expense worksheet: %s', exc)
+            worksheet = None
+
+        if worksheet is not None:
+            sheet_title = worksheet.title or sheet_title
+            with self._sheet_lock:
+                values = worksheet.get_all_values()
             if self.postgres_ready:
                 try:
-                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', worksheet.get_all_values())
+                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', values)
                 except Exception as exc:
-                    self.logger.warning('Failed to refresh cashflow expense cache after append: %s', exc)
-        return self._normalize_cashflow_expense_row(row_values)
+                    self.logger.warning('Failed to upsert cashflow expense cache: %s', exc)
+            for row_num, row_values in enumerate(values[1:], start=2):
+                if not row_values or not any(str(cell or '').strip() for cell in row_values):
+                    continue
+                sheet_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
+
+        sheet_entries.reverse()
+        return {
+            'items': sheet_entries,
+            'count': len(sheet_entries),
+            'source': 'sheet',
+            'sheet_title': sheet_title,
+        }
+
+    def get_cashflow_summary_from_sheet(self, force_refresh=False):
+        payload = self.get_cashflow_sheet_records(force_refresh=force_refresh)
+        items = payload.get('items') or []
+
+        total_income = 0.0
+        total_expenses = 0.0
+        weekly_profit_by_start = {}
+
+        current_week_end = self._most_recent_saturday()
+        previous_week_end = current_week_end - timedelta(days=7)
+        previous_week_start = current_week_end - timedelta(days=14)
+
+        for item in items:
+            amount = max(0.0, clean_amount(item.get('amount')))
+            source = str(item.get('source') or '').strip().lower()
+            category = str(item.get('category') or '').strip().lower()
+            try:
+                entry_date = parse_sheet_date(item.get('date'))
+            except Exception:
+                entry_date = None
+
+            is_income = source == 'income'
+            if is_income:
+                total_income += amount
+            else:
+                total_expenses += amount
+
+            if entry_date is not None:
+                days_since_saturday = (entry_date.weekday() - 5) % 7
+                week_start = entry_date - timedelta(days=days_since_saturday)
+                weekly_profit_by_start.setdefault(week_start, 0.0)
+                weekly_profit_by_start[week_start] += amount if is_income else -amount
+
+        previous_week_profit = round(float(weekly_profit_by_start.get(previous_week_start, 0.0)), 2)
+        allowance_percentage = self._normalized_allowance_percentage()
+        suggested_allowance = round(max(0.0, previous_week_profit) * allowance_percentage, 2)
+
+        total_cash_in = round(total_income, 2)
+        total_cost = 0.0
+        total_expenses = round(total_expenses, 2)
+        net_profit = round(total_cash_in - total_expenses, 2)
+
+        receivables_excluded = max(0.0, self._read_numeric_config('receivables_amount', default=0.0))
+        reserve_percentage = self._normalized_reserve_percentage()
+        available_cash_before_reserve = total_cash_in - total_expenses - receivables_excluded
+        reserve_amount = max(0.0, available_cash_before_reserve) * reserve_percentage
+        available_cash_after_reserve = available_cash_before_reserve - reserve_amount
+
+        return {
+            'total_cash_in': total_cash_in,
+            'total_expenses': total_expenses,
+            'database_expenses_total': 0.0,
+            'sheet_expenses_total': total_expenses,
+            'expense_source': 'sheet',
+            'total_cost': total_cost,
+            'net_profit': net_profit,
+            'receivables_excluded': receivables_excluded,
+            'reserve_percentage': reserve_percentage,
+            'reserve_amount': reserve_amount,
+            'available_cash': available_cash_after_reserve,
+            'available_cash_before_reserve': available_cash_before_reserve,
+            'weekly_allowance': {
+                'suggested_allowance': suggested_allowance,
+                'calculation_date': current_week_end.isoformat(),
+                'previous_week_profit': previous_week_profit,
+            },
+            'expense_sheet_title': payload.get('sheet_title', 'CASH FLOW'),
+        }
+
+    def get_weekly_allowance_from_sheet(self, force_refresh=False):
+        summary = self.get_cashflow_summary_from_sheet(force_refresh=force_refresh)
+        return summary.get('weekly_allowance') or {
+            'suggested_allowance': 0.0,
+            'calculation_date': self._most_recent_saturday().isoformat(),
+            'previous_week_profit': 0.0,
+        }
 
     @staticmethod
     def _build_sheet_row_values(headers, values_by_header):
@@ -1621,6 +1822,19 @@ class BackendRuntime:
         # Nudge queue replay immediately in the background so service rows
         # appear in Google Sheets quickly without blocking API response time.
         try:
+            try:
+                cash_amount = clean_amount(merged_values.get('AMOUNT PAID') or merged_values.get('PRICE') or 0)
+                if cash_amount > 0:
+                    self.append_cashflow_income_record(
+                        amount=cash_amount,
+                        category='SERVICE PROFIT',
+                        description=str(merged_values.get('DESCRIPTION') or merged_values.get('MODEL') or merged_values.get('DEVICE') or '').strip(),
+                        date_text=str(merged_values.get('DATE') or now.date().isoformat()),
+                        created_by='service',
+                    )
+            except Exception as cashflow_exc:
+                self.logger.warning('Failed to write service income to cashflow sheet: %s', cashflow_exc)
+
             threading.Thread(
                 target=lambda: self.replay_pending_queue_now(limit=60),
                 name='service-add-immediate-queue-flush',
