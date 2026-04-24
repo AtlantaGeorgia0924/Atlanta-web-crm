@@ -625,6 +625,13 @@ class BackendRuntime:
         current_week_end = self._most_recent_saturday()
         previous_week_end = current_week_end - timedelta(days=7)
         previous_week_start = current_week_end - timedelta(days=14)
+        current_day = datetime.now(timezone.utc).date()
+        current_week_start = current_day - timedelta(days=(current_day.weekday() + 1) % 7)
+        current_week_end_date = current_day
+        current_week_cash_in = 0.0
+        current_week_expenses = 0.0
+        current_week_phone_profit = 0.0
+        current_week_service_profit = 0.0
 
         for item in items:
             amount = max(0.0, clean_amount(item.get('amount')))
@@ -647,9 +654,15 @@ class BackendRuntime:
                 weekly_profit_by_start.setdefault(week_start, 0.0)
                 weekly_profit_by_start[week_start] += amount if is_income else -amount
 
-        previous_week_profit = round(float(weekly_profit_by_start.get(previous_week_start, 0.0)), 2)
-        allowance_percentage = self._normalized_allowance_percentage()
-        suggested_allowance = round(max(0.0, previous_week_profit) * allowance_percentage, 2)
+                if current_week_start <= entry_date <= current_week_end_date:
+                    if is_income:
+                        current_week_cash_in += amount
+                        if 'service' in category:
+                            current_week_service_profit += amount
+                        else:
+                            current_week_phone_profit += amount
+                    else:
+                        current_week_expenses += amount
 
         total_cash_in = round(total_income, 2)
         total_cost = 0.0
@@ -661,6 +674,9 @@ class BackendRuntime:
         available_cash_before_reserve = total_cash_in - total_expenses - receivables_excluded
         reserve_amount = max(0.0, available_cash_before_reserve) * reserve_percentage
         available_cash_after_reserve = available_cash_before_reserve - reserve_amount
+        current_week_net_cash_flow = round(current_week_cash_in - current_week_expenses, 2)
+        allowance_percentage = 0.20
+        suggested_allowance = round(max(0.0, current_week_net_cash_flow) * allowance_percentage, 2)
 
         return {
             'total_cash_in': total_cash_in,
@@ -675,10 +691,18 @@ class BackendRuntime:
             'reserve_amount': reserve_amount,
             'available_cash': available_cash_after_reserve,
             'available_cash_before_reserve': available_cash_before_reserve,
+            'current_week_cash_in': round(current_week_cash_in, 2),
+            'current_week_expenses': round(current_week_expenses, 2),
+            'current_week_phone_profit': round(current_week_phone_profit, 2),
+            'current_week_service_profit': round(current_week_service_profit, 2),
+            'current_week_net_cash_flow': current_week_net_cash_flow,
+            'current_week_start': current_week_start.isoformat(),
+            'current_week_end': current_week_end_date.isoformat(),
             'weekly_allowance': {
                 'suggested_allowance': suggested_allowance,
-                'calculation_date': current_week_end.isoformat(),
-                'previous_week_profit': previous_week_profit,
+                'calculation_date': current_day.isoformat(),
+                'previous_week_profit': current_week_net_cash_flow,
+                'allowance_percentage': allowance_percentage,
             },
             'expense_sheet_title': payload.get('sheet_title', 'CASH FLOW'),
         }

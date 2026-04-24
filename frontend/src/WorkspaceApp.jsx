@@ -928,6 +928,13 @@ function CashFlowView({
       className: 'metric-card--profit',
     },
     {
+      key: 'week-flow',
+      label: 'This Week Cash Flow',
+      value: formatCurrency(summary.current_week_net_cash_flow || 0),
+      note: `Phone ${formatCurrency(summary.current_week_phone_profit || 0)} + services ${formatCurrency(summary.current_week_service_profit || 0)} - expenses ${formatCurrency(summary.current_week_expenses || 0)}.`,
+      className: 'metric-card--profit',
+    },
+    {
       key: 'available-cash',
       label: 'Available Cash',
       value: formatCurrency(summary.available_cash || 0),
@@ -945,7 +952,7 @@ function CashFlowView({
       key: 'allowance',
       label: 'Weekly Allowance',
       value: formatCurrency(allowance.suggested_allowance || 0),
-      note: `Calculated on ${allowance.calculation_date || 'N/A'}.`,
+      note: '20% of this week\'s profit.',
       className: 'metric-card--allowance',
     },
   ];
@@ -3723,6 +3730,13 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       reserve_amount: 0,
       available_cash: 0,
       available_cash_before_reserve: 0,
+      current_week_cash_in: 0,
+      current_week_expenses: 0,
+      current_week_phone_profit: 0,
+      current_week_service_profit: 0,
+      current_week_net_cash_flow: 0,
+      current_week_start: '',
+      current_week_end: '',
     };
     const defaultAllowance = {
       suggested_allowance: 0,
