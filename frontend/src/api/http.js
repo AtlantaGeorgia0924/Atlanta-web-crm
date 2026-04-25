@@ -53,6 +53,7 @@ export async function requestJson(path, {
 	headers = {},
 	signal,
 	auth = true,
+	skipUnauthorizedHandler = false,
 } = {}) {
 	const nextHeaders = {
 		Accept: 'application/json',
@@ -79,7 +80,7 @@ export async function requestJson(path, {
 	const payload = isJson ? await response.json().catch(() => ({})) : await response.text().catch(() => '');
 
 	if (!response.ok) {
-		if (response.status === 401 && unauthorizedHandler) {
+		if (!skipUnauthorizedHandler && response.status === 401 && unauthorizedHandler) {
 			unauthorizedHandler();
 		}
 

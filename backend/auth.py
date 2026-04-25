@@ -48,6 +48,7 @@ class AuthSettings:
     jwt_secret: str
     jwt_algorithm: str
     jwt_expiration_minutes: int
+    jwt_refresh_expiration_days: int
     default_admin_username: str
     default_admin_password: str
 
@@ -64,10 +65,16 @@ class AuthSettings:
         jwt_secret = os.getenv('APP_JWT_SECRET') or 'change-this-jwt-secret-in-production'
         jwt_algorithm = os.getenv('APP_JWT_ALGORITHM') or 'HS256'
         expiration_text = os.getenv('APP_JWT_EXPIRATION_MINUTES') or '480'
+        refresh_expiration_text = os.getenv('APP_JWT_REFRESH_EXPIRATION_DAYS') or '30'
         try:
             jwt_expiration_minutes = max(1, int(expiration_text))
         except ValueError:
             jwt_expiration_minutes = 480
+
+        try:
+            jwt_refresh_expiration_days = max(1, int(refresh_expiration_text))
+        except ValueError:
+            jwt_refresh_expiration_days = 30
 
         return cls(
             db_path=db_path,
@@ -75,6 +82,7 @@ class AuthSettings:
             jwt_secret=jwt_secret,
             jwt_algorithm=jwt_algorithm,
             jwt_expiration_minutes=jwt_expiration_minutes,
+            jwt_refresh_expiration_days=jwt_refresh_expiration_days,
             default_admin_username=(os.getenv('APP_DEFAULT_ADMIN_USERNAME') or 'admin').strip(),
             default_admin_password=os.getenv('APP_DEFAULT_ADMIN_PASSWORD') or 'Atlanta',
         )
@@ -391,20 +399,33 @@ class AuthService:
             raise InactiveUserError('User account is inactive.')
         return self.public_user(user)
 
-    def create_access_token(self, user: dict):
+    def _create_token(self, user: dict, token_type: str, expires_at: datetime):
         now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(minutes=self.settings.jwt_expiration_minutes)
         payload = {
             'sub': str(user['id']),
             'username': user['username'],
             'role': user['role'],
-            'type': 'access',
+            'type': token_type,
             'iat': int(now.timestamp()),
             'exp': int(expires_at.timestamp()),
         }
         return jwt.encode(payload, self.settings.jwt_secret, algorithm=self.settings.jwt_algorithm)
 
+    def create_access_token(self, user: dict):
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=self.settings.jwt_expiration_minutes)
+        return self._create_token(user, 'access', expires_at)
+
+    def create_refresh_token(self, user: dict):
+        expires_at = datetime.now(timezone.utc) + timedelta(days=self.settings.jwt_refresh_expiration_days)
+        return self._create_token(user, 'refresh', expires_at)
+
     def validate_access_token(self, token: str):
+        return self._validate_token(token, 'access')
+
+    def validate_refresh_token(self, token: str):
+        return self._validate_token(token, 'refresh')
+
+    def _validate_token(self, token: str, expected_type: str):
         try:
             payload = jwt.decode(
                 token,
@@ -418,7 +439,7 @@ class AuthService:
 
         token_type = str(payload.get('type') or '').strip().lower()
         subject = str(payload.get('sub') or '').strip()
-        if token_type != 'access' or not subject:
+        if token_type != expected_type or not subject:
             raise TokenValidationError('Access token payload is invalid.')
         return payload
 

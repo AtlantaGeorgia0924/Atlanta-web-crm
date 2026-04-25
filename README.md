@@ -10,8 +10,10 @@ Set these environment variables on the backend deployment:
 - `APP_AUTH_POSTGRES_DSN` or `AUTH_POSTGRES_DSN` or `POSTGRES_DSN` or `DATABASE_URL`
 - `APP_DEFAULT_ADMIN_USERNAME`
 - `APP_DEFAULT_ADMIN_PASSWORD`
+- `APP_JWT_REFRESH_EXPIRATION_DAYS` if you want to change how long staff refresh tokens stay valid
 
 If those two admin variables are not set, the backend now falls back to `admin` / `Atlanta` so the app can still boot and repair the seeded admin account.
+The backend now returns both access and refresh tokens, and the frontend renews the access token automatically when it expires.
 
 Set this on the frontend deployment:
 

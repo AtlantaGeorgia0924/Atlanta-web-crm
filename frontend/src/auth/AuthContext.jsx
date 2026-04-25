@@ -1,10 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
-import { fetchCurrentUser, loginRequest } from '../api/auth';
+import { fetchCurrentUser, loginRequest, refreshRequest } from '../api/auth';
 import { setAuthToken, setUnauthorizedHandler } from '../api/http';
 
 const TOKEN_STORAGE_KEY = 'atlanta_auth_token';
+const REFRESH_TOKEN_STORAGE_KEY = 'atlanta_refresh_token';
 const INITIAL_TOKEN = readStoredToken();
+const INITIAL_REFRESH_TOKEN = readStoredRefreshToken();
 
 setAuthToken(INITIAL_TOKEN);
 
@@ -24,6 +26,26 @@ function writeStoredToken(token) {
       localStorage.setItem(TOKEN_STORAGE_KEY, token);
     } else {
       localStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage failures in restricted browser modes.
+  }
+}
+
+function readStoredRefreshToken() {
+  try {
+    return localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function writeStoredRefreshToken(token) {
+  try {
+    if (token) {
+      localStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, token);
+    } else {
+      localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
     }
   } catch {
     // Ignore storage failures in restricted browser modes.
@@ -63,32 +85,80 @@ function decodeTokenUser(token) {
 
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => INITIAL_TOKEN);
+  const [refreshToken, setRefreshToken] = useState(() => INITIAL_REFRESH_TOKEN);
   const [user, setUser] = useState(() => decodeTokenUser(INITIAL_TOKEN));
-  const [isUserLoading, setIsUserLoading] = useState(Boolean(INITIAL_TOKEN));
+  const [isUserLoading, setIsUserLoading] = useState(Boolean(INITIAL_TOKEN || INITIAL_REFRESH_TOKEN));
+
+  async function clearAuth() {
+    setAuthToken('');
+    setToken('');
+    setRefreshToken('');
+    setUser(null);
+    setIsUserLoading(false);
+    writeStoredToken('');
+    writeStoredRefreshToken('');
+  }
+
+  async function refreshSession() {
+    if (!refreshToken) {
+      await clearAuth();
+      return false;
+    }
+
+    try {
+      const result = await refreshRequest({ refreshToken });
+      const nextAccessToken = String(result?.access_token || '').trim();
+      const nextRefreshToken = String(result?.refresh_token || '').trim();
+      const nextUser = result?.user || null;
+      if (!nextAccessToken || !nextRefreshToken || !nextUser) {
+        throw new Error('Refresh succeeded but auth payload is incomplete.');
+      }
+
+      setAuthToken(nextAccessToken);
+      setToken(nextAccessToken);
+      setRefreshToken(nextRefreshToken);
+      setUser(nextUser);
+      setIsUserLoading(false);
+      writeStoredToken(nextAccessToken);
+      writeStoredRefreshToken(nextRefreshToken);
+      return true;
+    } catch {
+      await clearAuth();
+      return false;
+    }
+  }
 
   useEffect(() => {
     setAuthToken(token || '');
   }, [token]);
 
   useEffect(() => {
+    if (token || refreshToken) {
+      return;
+    }
+    setIsUserLoading(false);
+  }, [token, refreshToken]);
+
+  useEffect(() => {
     setUnauthorizedHandler(() => {
-      setAuthToken('');
-      setToken('');
-      setUser(null);
-      setIsUserLoading(false);
-      writeStoredToken('');
+      void refreshSession();
     });
 
     return () => {
       setUnauthorizedHandler(null);
     };
-  }, []);
+  }, [refreshToken]);
 
   useEffect(() => {
     let active = true;
 
     async function hydrateUser() {
       if (!token) {
+        if (refreshToken) {
+          await refreshSession();
+          return;
+        }
+
         if (active) {
           setUser(null);
           setIsUserLoading(false);
@@ -108,10 +178,7 @@ export function AuthProvider({ children }) {
         }
       } catch {
         if (active) {
-          setToken('');
-          setUser(null);
           setIsUserLoading(false);
-          writeStoredToken('');
         }
       } finally {
         if (active) {
@@ -130,26 +197,25 @@ export function AuthProvider({ children }) {
   async function login(username, password) {
     const result = await loginRequest({ username, password });
     const nextToken = String(result?.access_token || '').trim();
+    const nextRefreshToken = String(result?.refresh_token || '').trim();
     const nextUser = result?.user || null;
-    if (!nextToken || !nextUser) {
+    if (!nextToken || !nextRefreshToken || !nextUser) {
       throw new Error('Login succeeded but auth payload is incomplete.');
     }
 
     // Set HTTP auth header source immediately to avoid first-render 401 races.
     setAuthToken(nextToken);
     setToken(nextToken);
+    setRefreshToken(nextRefreshToken);
     setUser(nextUser);
     setIsUserLoading(false);
     writeStoredToken(nextToken);
+    writeStoredRefreshToken(nextRefreshToken);
     return nextUser;
   }
 
   function logout() {
-    setAuthToken('');
-    setToken('');
-    setUser(null);
-    setIsUserLoading(false);
-    writeStoredToken('');
+    void clearAuth();
   }
 
   const value = useMemo(() => ({
