@@ -1,6 +1,7 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Header
 from pydantic import BaseModel, Field
 
 from backend.dependencies import get_current_user, get_runtime, require_admin
@@ -23,7 +24,37 @@ class AppConfigUpsertRequest(BaseModel):
     value: Any
 
 
-@router.post('/expenses')
+class CashflowPinChangeRequest(BaseModel):
+    current_pin: str = Field(min_length=4, max_length=4, pattern=r'^\d{4}$')
+    new_pin: str = Field(min_length=4, max_length=4, pattern=r'^\d{4}$')
+
+
+def _normalize_cashflow_pin(value: Any) -> str:
+    text = ''.join(ch for ch in str(value or '').strip() if ch.isdigit())
+    return text if len(text) == 4 else ''
+
+
+def _get_cashflow_pin(runtime) -> str:
+    item = runtime.financial_data_service.get_app_config('cashflow_pin', actor_role='admin')
+    return _normalize_cashflow_pin((item or {}).get('value') if isinstance(item, dict) else '') or '1111'
+
+
+def require_cashflow_pin(
+    x_cashflow_pin: str = Header(default='', alias='X-Cashflow-PIN'),
+    runtime=Depends(get_runtime),
+    current_user=Depends(get_current_user),
+):
+    expected_pin = _get_cashflow_pin(runtime)
+    provided_pin = _normalize_cashflow_pin(x_cashflow_pin)
+    if not expected_pin or provided_pin != expected_pin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cash flow PIN is required.',
+        )
+    return current_user
+
+
+@router.post('/expenses', dependencies=[Depends(require_cashflow_pin)])
 def create_expense(payload: CreateExpenseRequest, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
         sheet_item = runtime.append_cashflow_expense_record(
@@ -41,7 +72,7 @@ def create_expense(payload: CreateExpenseRequest, runtime=Depends(get_runtime), 
     return {'expense': sheet_item, 'sheet_expense': sheet_item}
 
 
-@router.get('/expenses')
+@router.get('/expenses', dependencies=[Depends(require_cashflow_pin)])
 def list_expenses(limit: int = 200, offset: int = 0, runtime=Depends(get_runtime)):
     try:
         payload = runtime.get_cashflow_expense_records(force_refresh=False)
@@ -127,7 +158,7 @@ def set_app_config(
     return {'item': item}
 
 
-@router.get('/cashflow-summary', dependencies=[Depends(require_admin)])
+@router.get('/cashflow-summary', dependencies=[Depends(require_admin), Depends(require_cashflow_pin)])
 def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
         summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh)
@@ -139,7 +170,7 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
     return {'summary': summary}
 
 
-@router.get('/cashflow-dashboard', dependencies=[Depends(require_admin)])
+@router.get('/cashflow-dashboard', dependencies=[Depends(require_admin), Depends(require_cashflow_pin)])
 def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
         summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh)
@@ -159,7 +190,7 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
     }
 
 
-@router.get('/weekly-allowance', dependencies=[Depends(require_admin)])
+@router.get('/weekly-allowance', dependencies=[Depends(require_admin), Depends(require_cashflow_pin)])
 def get_weekly_allowance(runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
         summary = runtime.financial_data_service.get_weekly_allowance_summary(
@@ -171,3 +202,46 @@ def get_weekly_allowance(runtime=Depends(get_runtime), current_user=Depends(get_
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
     return summary
+
+
+@router.post('/cashflow/rebuild-week', dependencies=[Depends(require_admin), Depends(require_cashflow_pin)])
+def rebuild_cashflow_week(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
+    try:
+        result = runtime.rebuild_cashflow_sheet_for_current_week(force_refresh=force_refresh)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    return result
+
+
+@router.post('/cashflow-pin/change', dependencies=[Depends(require_admin)])
+def change_cashflow_pin(payload: CashflowPinChangeRequest, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
+    expected_pin = _get_cashflow_pin(runtime)
+    current_pin = _normalize_cashflow_pin(payload.current_pin)
+    new_pin = _normalize_cashflow_pin(payload.new_pin)
+
+    if current_pin != expected_pin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Current cash flow PIN is incorrect.',
+        )
+    if not new_pin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='New cash flow PIN must be four digits.',
+        )
+
+    try:
+        item = runtime.financial_data_service.set_app_config(
+            key='cashflow_pin',
+            value=new_pin,
+            actor_role=str((current_user or {}).get('role') or ''),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    return {'item': item}

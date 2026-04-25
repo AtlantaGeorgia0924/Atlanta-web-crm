@@ -139,6 +139,7 @@ class FinancialFoundationService:
         defaults = {
             'allowance_percentage': 0.25,
             'reserve_percentage': 0.3,
+            'cashflow_pin': '1111',
         }
         for key, value in defaults.items():
             manager.execute(

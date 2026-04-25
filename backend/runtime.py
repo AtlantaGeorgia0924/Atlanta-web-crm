@@ -716,6 +716,140 @@ class BackendRuntime:
         }
 
     @staticmethod
+    def _normalize_cashflow_lookup_text(value):
+        text = str(value or '').upper().strip()
+        if not text:
+            return ''
+        for token in ('IOS UPDATE', 'UPDATE', 'FIX'):
+            text = text.replace(token, ' ')
+        return ' '.join(text.split())
+
+    def rebuild_cashflow_sheet_for_current_week(self, force_refresh=False):
+        today = datetime.now(timezone.utc).date()
+        week_start = today - timedelta(days=today.weekday())
+
+        main_records = self.get_main_records(force_refresh=force_refresh)
+        stock_values = self.get_stock_values(force_refresh=force_refresh)
+
+        stock_cost_by_desc = {}
+        for row_values in stock_values[3:]:
+            row = list(row_values or [])
+            description = self._normalize_cashflow_lookup_text(row[3] if len(row) > 3 else '')
+            cost_price = clean_amount(row[7] if len(row) > 7 else '')
+            if description and cost_price and description not in stock_cost_by_desc:
+                stock_cost_by_desc[description] = cost_price
+
+        expense_rows = []
+        for expense in self.get_cashflow_expense_records(force_refresh=force_refresh).get('items', []):
+            expense_date = parse_sheet_date(expense.get('date'))
+            if expense_date is None or expense_date < week_start or expense_date > today:
+                continue
+            expense_rows.append({
+                'date': expense_date.isoformat(),
+                'category': str(expense.get('category') or 'EXPENSE').strip() or 'EXPENSE',
+                'amount': round(clean_amount(expense.get('amount')), 2),
+                'description': str(expense.get('description') or '').strip(),
+                'created_by': str(expense.get('created_by') or '').strip(),
+                'source': 'expense',
+            })
+
+        income_rows = []
+        phone_profit_total = 0.0
+        service_profit_total = 0.0
+
+        for record in main_records:
+            record_date = parse_sheet_date(record.get('DATE'))
+            if record_date is None or record_date < week_start or record_date > today:
+                continue
+
+            status = str(record.get('STATUS') or '').strip().upper()
+            if status != 'PAID':
+                continue
+
+            price = clean_amount(record.get('PRICE'))
+            if price <= 0:
+                continue
+
+            description = str(record.get('DESCRIPTION') or '').strip()
+            normalized_description = self._normalize_cashflow_lookup_text(description)
+            imei = str(record.get('IMEI') or '').strip()
+            seller_or_buyer = str(record.get('NAME') or '').strip()
+
+            if imei and 'IPHONE' in normalized_description:
+                cost_price = stock_cost_by_desc.get(normalized_description)
+                if cost_price is None:
+                    continue
+                profit = round(price - cost_price, 2)
+                phone_profit_total += profit
+                income_rows.append({
+                    'date': record_date.isoformat(),
+                    'category': 'PHONE PROFIT',
+                    'amount': profit,
+                    'description': description,
+                    'created_by': seller_or_buyer,
+                    'source': 'income',
+                })
+                continue
+
+            if not imei:
+                service_profit_total += price
+                income_rows.append({
+                    'date': record_date.isoformat(),
+                    'category': 'SERVICE PROFIT',
+                    'amount': price,
+                    'description': description,
+                    'created_by': seller_or_buyer,
+                    'source': 'income',
+                })
+
+        sheet_rows = sorted(expense_rows + income_rows, key=lambda row: (row.get('date') or '', row.get('category') or '', row.get('description') or ''))
+        sheet_values = [[
+            'DATE',
+            'CATEGORY',
+            'AMOUNT',
+            'DESCRIPTION',
+            'CREATED BY',
+            'SOURCE',
+        ]]
+        for row in sheet_rows:
+            sheet_values.append([
+                row.get('date', ''),
+                row.get('category', ''),
+                str(row.get('amount', 0)),
+                row.get('description', ''),
+                row.get('created_by', ''),
+                row.get('source', 'expense'),
+            ])
+
+        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+        with self._sheet_lock:
+            worksheet.clear()
+            if len(sheet_values) == 1:
+                worksheet.update('A1:F1', sheet_values)
+            else:
+                end_letter = column_index_to_letter(5)
+                worksheet.update(f'A1:{end_letter}{len(sheet_values)}', sheet_values, value_input_option='USER_ENTERED')
+            if self.postgres_ready:
+                try:
+                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', worksheet.get_all_values())
+                except Exception as exc:
+                    self.logger.warning('Failed to refresh cashflow cache after weekly rebuild: %s', exc)
+
+        allowance = round(max(0.0, phone_profit_total + service_profit_total - sum(row.get('amount', 0) for row in expense_rows)) * 0.20, 2)
+        return {
+            'week_start': week_start.isoformat(),
+            'week_end': today.isoformat(),
+            'phone_profit_total': round(phone_profit_total, 2),
+            'service_profit_total': round(service_profit_total, 2),
+            'expense_total': round(sum(row.get('amount', 0) for row in expense_rows), 2),
+            'net_profit': round(phone_profit_total + service_profit_total - sum(row.get('amount', 0) for row in expense_rows), 2),
+            'weekly_allowance': allowance,
+            'rows_written': max(0, len(sheet_values) - 1),
+            'source': 'sheet',
+            'sheet_title': 'CASH FLOW',
+        }
+
+    @staticmethod
     def _build_sheet_row_values(headers, values_by_header):
         normalized = {
             str(key or '').strip().upper(): '' if value is None else str(value)

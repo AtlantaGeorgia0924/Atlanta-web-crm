@@ -129,18 +129,22 @@ export function fetchFoundationCashflowSummary({ signal } = {}) {
   return requestJson('/api/foundation/cashflow-summary', { signal });
 }
 
-export function fetchFoundationWeeklyAllowance({ signal } = {}) {
-  return requestJson('/api/foundation/weekly-allowance', { signal });
-}
-
-export function fetchFoundationCashflowDashboard({ forceRefresh = false, signal } = {}) {
-  return requestJson('/api/foundation/cashflow-dashboard', {
-    query: { force_refresh: forceRefresh },
+export function fetchFoundationWeeklyAllowance({ signal, cashflowPin = '' } = {}) {
+  return requestJson('/api/foundation/weekly-allowance', {
     signal,
+    headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
   });
 }
 
-export function createFoundationExpense({ amount, category = '', description = '', date = '' }) {
+export function fetchFoundationCashflowDashboard({ forceRefresh = false, signal, cashflowPin = '' } = {}) {
+  return requestJson('/api/foundation/cashflow-dashboard', {
+    query: { force_refresh: forceRefresh },
+    signal,
+    headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
+  });
+}
+
+export function createFoundationExpense({ amount, category = '', description = '', date = '', cashflowPin = '' }) {
   return requestJson('/api/foundation/expenses', {
     method: 'POST',
     body: {
@@ -148,6 +152,17 @@ export function createFoundationExpense({ amount, category = '', description = '
       category,
       description,
       date,
+    },
+    headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
+  });
+}
+
+export function changeCashflowPin({ currentPin, newPin }) {
+  return requestJson('/api/foundation/cashflow-pin/change', {
+    method: 'POST',
+    body: {
+      current_pin: currentPin,
+      new_pin: newPin,
     },
   });
 }
