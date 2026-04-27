@@ -9,7 +9,6 @@ import {
   applyNameFix,
   applyPayment,
   createFoundationExpense,
-  changeCashflowPin,
   deleteClient,
   fetchDashboardLogo,
   fetchClients,
@@ -33,6 +32,8 @@ import {
   refreshWorkspace,
   syncGoogleContacts,
   undoPayment,
+  returnDebtorService,
+  updateDebtorService,
   upsertClient,
 } from './api/workspace';
 
@@ -88,12 +89,6 @@ const ACTION_ITEMS = [
     type: 'view',
     title: 'Cart',
     description: 'Select stock items, add buyer details, and sell phones into inventory.',
-  },
-  {
-    key: 'cashflow',
-    type: 'view',
-    title: 'Cash Flow',
-    description: 'Track simple inflow, outstanding balances, and short-term projections.',
   },
   {
     key: 'undo',
@@ -399,7 +394,7 @@ function buildOutstandingLabel(item) {
   return `${description}${dateText} - ${formatCurrency(item?.balance)}`;
 }
 
-function buildPaymentPreviewText(selectedDebtor, paymentAmount, paymentPlan, paymentPlanError) {
+function buildPaymentPreviewText(selectedDebtor, paymentAmount, paymentPlan, paymentPlanError, selectedServiceItem = null, selectedServicePrice = '') {
   if (!selectedDebtor) {
     return 'Select a debtor to preview payment allocation.';
   }
@@ -425,6 +420,24 @@ function buildPaymentPreviewText(selectedDebtor, paymentAmount, paymentPlan, pay
     '',
     'Updates:',
   ];
+
+  if (selectedServiceItem) {
+    const currentPrice = Number(selectedServiceItem.price || 0);
+    const nextPrice = Number(normalizeDigits(selectedServicePrice || ''));
+    const hasEditedPrice = Number.isFinite(nextPrice) && nextPrice > 0;
+    const effectivePrice = hasEditedPrice ? nextPrice : currentPrice;
+    const paidValue = Number(selectedServiceItem.paid || 0);
+    const effectiveBalance = Math.max(0, effectivePrice - paidValue);
+
+    lines.push('');
+    lines.push('Selected service draft:');
+    lines.push(`- ${selectedServiceItem.description || `Row ${selectedServiceItem.row_idx}`}`);
+    lines.push(`- Current price: ${formatCurrency(currentPrice)}`);
+    if (hasEditedPrice && nextPrice !== currentPrice) {
+      lines.push(`- Edited price: ${formatCurrency(nextPrice)}`);
+    }
+    lines.push(`- Balance after edit: ${formatCurrency(effectiveBalance)}`);
+  }
 
   paymentPlan.updates.forEach((update) => {
     const service = (paymentPlan.outstanding_items || []).find((item) => item.row_idx === update.row_idx);
@@ -718,7 +731,7 @@ function ActionSidebar({ activeView, undoEnabled, redoEnabled, onTrigger, action
   );
 }
 
-function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStatus, lastLoadedAt, revealedMetric, setRevealedMetric, onStatisticClick }) {
+function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStatus, lastLoadedAt, revealedMetric, setRevealedMetric, onStatisticClick, onSecretCashflow }) {
   const stockCounts = stockView?.counts || {};
   const homeSummaryCards = [
     {
@@ -782,7 +795,25 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
   return (
     <div className="workspace-stack">
       <section className="summary-frame">
-        <h2>Live Summary</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', gap: '12px' }}>
+          <h2>Live Summary</h2>
+          <button
+            type="button"
+            onClick={() => onSecretCashflow?.()}
+            aria-label="Open cash flow"
+            title=""
+            style={{
+              width: '14px',
+              height: '14px',
+              borderRadius: '999px',
+              border: 'none',
+              background: 'transparent',
+              opacity: 0.06,
+              padding: 0,
+              cursor: 'pointer',
+            }}
+          />
+        </div>
         <div className="summary-grid summary-grid--home">
           {homeSummaryCards.map((card) =>
             card.type === 'masked' ? (
@@ -866,21 +897,11 @@ function CashFlowView({
   expenseErrorText,
   expenseBusy,
   lastUpdatedAt,
-  isUnlocked,
-  cashflowPinValue,
-  onUnlockCashflow,
-  onLockCashflow,
-  onChangeCashflowPin,
   onReload,
   onCreateExpense,
 }) {
   const summary = cashflowSummary || {};
   const allowance = weeklyAllowance || {};
-  const pinHoldTimerRef = useRef(null);
-  const [cashflowPinPromptOpen, setCashflowPinPromptOpen] = useState(false);
-  const [cashflowPinPromptValue, setCashflowPinPromptValue] = useState('');
-  const [cashflowPinPromptError, setCashflowPinPromptError] = useState('');
-  const [changePinDraft, setChangePinDraft] = useState({ currentPin: '', newPin: '', confirmPin: '' });
   const [expenseDraft, setExpenseDraft] = useState({
     amount: '',
     category: '',
@@ -889,93 +910,6 @@ function CashFlowView({
   });
 
   const recentExpenses = Array.isArray(expenses) ? expenses.slice(0, 8) : [];
-
-  useEffect(() => () => {
-    if (pinHoldTimerRef.current) {
-      clearTimeout(pinHoldTimerRef.current);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (isUnlocked) {
-      setCashflowPinPromptOpen(false);
-      setCashflowPinPromptValue('');
-      setCashflowPinPromptError('');
-    }
-  }, [isUnlocked]);
-
-  function clearPinHoldTimer() {
-    if (pinHoldTimerRef.current) {
-      clearTimeout(pinHoldTimerRef.current);
-      pinHoldTimerRef.current = null;
-    }
-  }
-
-  function openCashflowPinPrompt() {
-    setCashflowPinPromptError('');
-    setCashflowPinPromptOpen(true);
-  }
-
-  function handleHoldToRevealStart() {
-    if (isUnlocked) {
-      return;
-    }
-
-    clearPinHoldTimer();
-    pinHoldTimerRef.current = setTimeout(() => {
-      pinHoldTimerRef.current = null;
-      openCashflowPinPrompt();
-    }, 450);
-  }
-
-  function handleHoldToRevealEnd() {
-    clearPinHoldTimer();
-  }
-
-  function closeCashflowPinPrompt() {
-    clearPinHoldTimer();
-    setCashflowPinPromptOpen(false);
-    setCashflowPinPromptValue('');
-    setCashflowPinPromptError('');
-  }
-
-  async function handleCashflowPinPromptSubmit(event) {
-    event.preventDefault();
-    const nextPin = String(cashflowPinPromptValue || '').trim();
-    if (!/^\d{4}$/.test(nextPin)) {
-      setCashflowPinPromptError('Enter a valid 4-digit PIN.');
-      return;
-    }
-
-    const ok = await onUnlockCashflow?.(nextPin);
-    if (ok) {
-      closeCashflowPinPrompt();
-    } else {
-      setCashflowPinPromptError('Invalid PIN. Try again or close the prompt.');
-    }
-  }
-
-  function lockCashflow() {
-    onLockCashflow?.();
-    setPinInput('');
-    setChangePinDraft({ currentPin: '', newPin: '', confirmPin: '' });
-  }
-
-  async function handleChangePin(event) {
-    event.preventDefault();
-    const currentPin = String(changePinDraft.currentPin || '').trim();
-    const newPin = String(changePinDraft.newPin || '').trim();
-    const confirmPin = String(changePinDraft.confirmPin || '').trim();
-
-    if (!/^\d{4}$/.test(currentPin) || !/^\d{4}$/.test(newPin) || newPin !== confirmPin) {
-      return;
-    }
-
-    const ok = await onChangeCashflowPin?.({ currentPin, newPin });
-    if (ok) {
-      setChangePinDraft({ currentPin: newPin, newPin: '', confirmPin: '' });
-    }
-  }
 
   async function handleSubmitExpense(event) {
     event.preventDefault();
@@ -1055,12 +989,6 @@ function CashFlowView({
     },
   ];
 
-  const lockedCards = cards.map((card) => ({
-    ...card,
-    value: 'Locked',
-    note: 'Hold to unhide, then enter the cash-flow PIN to view this value.',
-  }));
-
   return (
     <div className="workspace-stack">
       <section className="summary-frame">
@@ -1068,20 +996,10 @@ function CashFlowView({
         <p className="metric-note" style={{ marginTop: '8px' }}>
           Last Updated: {lastUpdatedAt ? formatShortStamp(lastUpdatedAt) : 'Not loaded yet'}
         </p>
-        {!isUnlocked ? (
-          <div className="notice notice-error" style={{ marginTop: '12px' }}>
-            Cash flow details are locked. Hold any cash flow card to open the PIN prompt and reveal the values.
-          </div>
-        ) : null}
         <div className="button-row" style={{ marginTop: '10px' }}>
           <button type="button" className="secondary-button" onClick={() => onReload?.()} disabled={loading}>
             {loading ? 'Loading...' : 'Reload'}
           </button>
-          {isUnlocked ? (
-            <button type="button" className="secondary-button" onClick={lockCashflow}>
-              Lock Again
-            </button>
-          ) : null}
         </div>
         {errorText ? (
           <div className="notice notice-error" style={{ marginTop: '12px' }}>
@@ -1089,212 +1007,96 @@ function CashFlowView({
           </div>
         ) : null}
         <div className="summary-grid summary-grid--home">
-          {(isUnlocked ? cards : lockedCards).map((card) => (
+          {cards.map((card) => (
             <article key={card.key} className={`metric-card metric-card--home ${card.className}`.trim()}>
               <span className="metric-label">{card.label}</span>
               <strong className="metric-value">{loading ? 'Loading...' : card.value}</strong>
               <span className="metric-note">{card.note}</span>
-              {!isUnlocked ? (
-                <button
-                  type="button"
-                  className="hold-button"
-                  onPointerDown={handleHoldToRevealStart}
-                  onPointerUp={handleHoldToRevealEnd}
-                  onPointerLeave={handleHoldToRevealEnd}
-                  onPointerCancel={handleHoldToRevealEnd}
-                >
-                  Hold to unhide
-                </button>
-              ) : null}
             </article>
           ))}
         </div>
-
-        {cashflowPinPromptOpen ? (
-          <div className="modal-backdrop" role="presentation" onClick={closeCashflowPinPrompt}>
-            <section
-              className="modal-sheet modal-sheet--detail"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="cashflow-pin-prompt-title"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className="modal-sheet__header">
-                <div className="panel-header">
-                  <h3 id="cashflow-pin-prompt-title">Enter Cash Flow PIN</h3>
-                  <p>Hold-to-unhide opened a protected view. Enter the PIN to disclose the cash flow values.</p>
-                </div>
-
-                <button type="button" className="secondary-button" onClick={closeCashflowPinPrompt}>
-                  Close
-                </button>
-              </div>
-
-              <form onSubmit={handleCashflowPinPromptSubmit} className="workspace-stack">
-                <label className="workspace-field">
-                  <span className="metric-label">PIN</span>
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={4}
-                    value={cashflowPinPromptValue}
-                    onChange={(event) => setCashflowPinPromptValue(event.target.value)}
-                    placeholder="Enter PIN"
-                    autoFocus
-                  />
-                </label>
-
-                {cashflowPinPromptError ? (
-                  <div className="notice notice-error">{cashflowPinPromptError}</div>
-                ) : null}
-
-                <div className="button-row button-row--end">
-                  <button type="button" className="secondary-button" onClick={closeCashflowPinPrompt}>
-                    Close
-                  </button>
-                  <button type="submit" className="primary-button">
-                    Unlock Cash Flow
-                  </button>
-                </div>
-              </form>
-            </section>
-          </div>
-        ) : null}
       </section>
 
-      {isUnlocked ? (
-        <>
-          <section className="summary-frame">
-            <h3>Record Expense</h3>
-            <p className="metric-note" style={{ marginTop: '8px' }}>
-              This writes to the inventory workbook cash-flow sheet and keeps the database mirror in sync.
-            </p>
-            <form onSubmit={handleSubmitExpense} className="workspace-stack" style={{ marginTop: '12px' }}>
-              <div className="summary-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
-                <label className="workspace-field">
-                  <span className="metric-label">Amount</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={expenseDraft.amount}
-                    onChange={(event) => setExpenseDraft((current) => ({ ...current, amount: event.target.value }))}
-                    placeholder="5000"
-                  />
-                </label>
-                <label className="workspace-field">
-                  <span className="metric-label">Category</span>
-                  <input
-                    type="text"
-                    value={expenseDraft.category}
-                    onChange={(event) => setExpenseDraft((current) => ({ ...current, category: event.target.value }))}
-                    placeholder="Transport, fuel, data..."
-                  />
-                </label>
-                <label className="workspace-field">
-                  <span className="metric-label">Date</span>
-                  <input
-                    type="date"
-                    value={expenseDraft.date}
-                    onChange={(event) => setExpenseDraft((current) => ({ ...current, date: event.target.value }))}
-                  />
-                </label>
-              </div>
-              <label className="workspace-field">
-                <span className="metric-label">Description</span>
-                <input
-                  type="text"
-                  value={expenseDraft.description}
-                  onChange={(event) => setExpenseDraft((current) => ({ ...current, description: event.target.value }))}
-                  placeholder="Short note about the expense"
-                />
-              </label>
-              {expenseErrorText ? (
-                <div className="notice notice-error">{expenseErrorText}</div>
-              ) : null}
-              <div className="button-row">
-                <button type="submit" className="secondary-button" disabled={expenseBusy || loading}>
-                  {expenseBusy ? 'Saving...' : 'Add Expense'}
-                </button>
-              </div>
-            </form>
-          </section>
+      <section className="summary-frame">
+        <h3>Record Expense</h3>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          This writes to the inventory workbook cash-flow sheet and keeps the database mirror in sync.
+        </p>
+        <form onSubmit={handleSubmitExpense} className="workspace-stack" style={{ marginTop: '12px' }}>
+          <div className="summary-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+            <label className="workspace-field">
+              <span className="metric-label">Amount</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={expenseDraft.amount}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, amount: event.target.value }))}
+                placeholder="5000"
+              />
+            </label>
+            <label className="workspace-field">
+              <span className="metric-label">Category</span>
+              <input
+                type="text"
+                value={expenseDraft.category}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, category: event.target.value }))}
+                placeholder="Transport, fuel, data..."
+              />
+            </label>
+            <label className="workspace-field">
+              <span className="metric-label">Date</span>
+              <input
+                type="date"
+                value={expenseDraft.date}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, date: event.target.value }))}
+              />
+            </label>
+          </div>
+          <label className="workspace-field">
+            <span className="metric-label">Description</span>
+            <input
+              type="text"
+              value={expenseDraft.description}
+              onChange={(event) => setExpenseDraft((current) => ({ ...current, description: event.target.value }))}
+              placeholder="Short note about the expense"
+            />
+          </label>
+          {expenseErrorText ? (
+            <div className="notice notice-error">{expenseErrorText}</div>
+          ) : null}
+          <div className="button-row">
+            <button type="submit" className="secondary-button" disabled={expenseBusy || loading}>
+              {expenseBusy ? 'Saving...' : 'Add Expense'}
+            </button>
+          </div>
+        </form>
+      </section>
 
-          <section className="summary-frame">
-            <h3>Change PIN</h3>
-            <p className="metric-note" style={{ marginTop: '8px' }}>
-              Update the four-digit cash-flow PIN from here.
-            </p>
-            <form onSubmit={handleChangePin} className="workspace-stack" style={{ marginTop: '12px' }}>
-              <div className="summary-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
-                <label className="workspace-field">
-                  <span className="metric-label">Current PIN</span>
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={4}
-                    value={changePinDraft.currentPin || cashflowPinValue || ''}
-                    onChange={(event) => setChangePinDraft((current) => ({ ...current, currentPin: event.target.value }))}
-                    placeholder="Current PIN"
-                  />
-                </label>
-                <label className="workspace-field">
-                  <span className="metric-label">New PIN</span>
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={4}
-                    value={changePinDraft.newPin}
-                    onChange={(event) => setChangePinDraft((current) => ({ ...current, newPin: event.target.value }))}
-                    placeholder="New PIN"
-                  />
-                </label>
-                <label className="workspace-field">
-                  <span className="metric-label">Confirm PIN</span>
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={4}
-                    value={changePinDraft.confirmPin}
-                    onChange={(event) => setChangePinDraft((current) => ({ ...current, confirmPin: event.target.value }))}
-                    placeholder="Confirm PIN"
-                  />
-                </label>
-              </div>
-              <div className="button-row">
-                <button type="submit" className="secondary-button" disabled={loading}>
-                  Update PIN
-                </button>
-              </div>
-            </form>
-          </section>
-
-          <section className="summary-frame">
-            <h3>Recent Expenses</h3>
-            <p className="metric-note" style={{ marginTop: '8px' }}>
-              Source: {expenseSource === 'sheet' ? `${expenseSheetTitle || 'CASH FLOW'} tab in the inventory workbook` : 'Database fallback'}.
-            </p>
-            {recentExpenses.length ? (
-              <div className="summary-grid" style={{ marginTop: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
-                {recentExpenses.map((expense, index) => (
-                  <article key={`${expense.row_num || index}-${expense.date || ''}-${expense.amount || ''}`} className="metric-card metric-card--home">
-                    <span className="metric-label">{expense.category || 'Expense'}</span>
-                    <strong className="metric-value">{formatCurrency(expense.amount || 0)}</strong>
-                    <span className="metric-note">
-                      {expense.date || 'No date'}
-                      {expense.description ? ` • ${expense.description}` : ''}
-                    </span>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="notice" style={{ marginTop: '12px' }}>
-                No expenses recorded yet.
-              </div>
-            )}
-          </section>
-        </>
-      ) : null}
+      <section className="summary-frame">
+        <h3>Recent Expenses</h3>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          Source: {expenseSource === 'sheet' ? `${expenseSheetTitle || 'CASH FLOW'} tab in the inventory workbook` : 'Database fallback'}.
+        </p>
+        {recentExpenses.length ? (
+          <div className="summary-grid" style={{ marginTop: '12px', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+            {recentExpenses.map((expense, index) => (
+              <article key={`${expense.row_num || index}-${expense.date || ''}-${expense.amount || ''}`} className="metric-card metric-card--home">
+                <span className="metric-label">{expense.category || 'Expense'}</span>
+                <strong className="metric-value">{formatCurrency(expense.amount || 0)}</strong>
+                <span className="metric-note">
+                  {expense.date || 'No date'}
+                  {expense.description ? ` • ${expense.description}` : ''}
+                </span>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="notice" style={{ marginTop: '12px' }}>
+            No expenses recorded yet.
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -2614,13 +2416,65 @@ function DebtorsView({
   whatsappHistoryByName,
   onApplyPayment,
   onApplyFullPayment,
+  serviceActionBusy,
+  onUpdateServiceRow,
+  onReturnServiceRow,
 }) {
   const rowsPerPage = 10;
   const totalPages = Math.max(1, Math.ceil(debtors.length / rowsPerPage));
   const currentPage = Math.min(debtorPage, totalPages);
   const pagedDebtors = debtors.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage);
+  const [servicePriceDraft, setServicePriceDraft] = useState('');
 
   const selectedSendStats = selectedDebtor ? whatsappHistoryByName?.[selectedDebtor] : null;
+  const selectedServiceItem = useMemo(() => {
+    if (selectedServiceRow === 'automatic') {
+      return null;
+    }
+
+    return (outstandingItems || []).find((item) => String(item.row_idx) === String(selectedServiceRow)) || null;
+  }, [outstandingItems, selectedServiceRow]);
+
+  useEffect(() => {
+    if (selectedServiceItem) {
+      setServicePriceDraft(String(selectedServiceItem.price ?? ''));
+      return;
+    }
+
+    setServicePriceDraft('');
+  }, [selectedServiceItem, selectedDebtor]);
+
+  const servicePricePreview = Number(normalizeDigits(servicePriceDraft));
+  const servicePaidValue = Number(selectedServiceItem?.paid || 0);
+  const serviceBalancePreview = Number.isFinite(servicePricePreview) && servicePricePreview > 0
+    ? Math.max(0, servicePricePreview - servicePaidValue)
+    : Number(selectedServiceItem?.balance || 0);
+
+  async function handleUpdateServicePrice() {
+    if (!selectedDebtor || !selectedServiceItem) {
+      return;
+    }
+
+    const nextPrice = Number(normalizeDigits(servicePriceDraft));
+    if (!Number.isFinite(nextPrice) || nextPrice <= 0) {
+      return;
+    }
+
+    await onUpdateServiceRow?.({
+      rowIdx: selectedServiceItem.row_idx,
+      price: nextPrice,
+    });
+  }
+
+  async function handleReturnService() {
+    if (!selectedDebtor || !selectedServiceItem) {
+      return;
+    }
+
+    await onReturnServiceRow?.({
+      rowIdx: selectedServiceItem.row_idx,
+    });
+  }
 
   return (
     <section className="workspace-row">
@@ -2802,6 +2656,64 @@ function DebtorsView({
               </select>
             </label>
 
+            {selectedServiceItem ? (
+              <div className="preview-card preview-card--bill">
+                <h4>Selected Service</h4>
+                <div className="meta-stack meta-stack--tight">
+                  <div className="meta-row">
+                    <span>Description</span>
+                    <strong>{selectedServiceItem.description || 'UNNAMED SERVICE'}</strong>
+                  </div>
+                  <div className="meta-row">
+                    <span>Date</span>
+                    <strong>{selectedServiceItem.date || 'No date'}</strong>
+                  </div>
+                  <div className="meta-row">
+                    <span>Current Price</span>
+                    <strong>{formatCurrency(selectedServiceItem.price || 0)}</strong>
+                  </div>
+                  <div className="meta-row">
+                    <span>Paid</span>
+                    <strong>{formatCurrency(selectedServiceItem.paid || 0)}</strong>
+                  </div>
+                  <div className="meta-row">
+                    <span>Balance After Edit</span>
+                    <strong>{formatCurrency(serviceBalancePreview)}</strong>
+                  </div>
+                </div>
+
+                <label className="field-block" style={{ marginTop: '12px' }}>
+                  <span className="field-label">Edited Price</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={servicePriceDraft}
+                    onChange={(event) => setServicePriceDraft(normalizeDigits(event.target.value))}
+                    placeholder="Enter new price"
+                  />
+                </label>
+
+                <div className="button-row button-row--end">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={handleReturnService}
+                    disabled={serviceActionBusy}
+                  >
+                    {serviceActionBusy ? 'Working...' : 'Return Service'}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={handleUpdateServicePrice}
+                    disabled={serviceActionBusy}
+                  >
+                    {serviceActionBusy ? 'Working...' : 'Update Price'}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             <button type="button" className="primary-button button-wide" onClick={onApplyPayment} disabled={applyingPayment || !selectedDebtor}>
               {applyingPayment ? 'Applying Payment...' : 'Apply Payment'}
             </button>
@@ -2812,7 +2724,7 @@ function DebtorsView({
 
           <div className="preview-card">
             <h4>Payment Preview</h4>
-            <pre>{buildPaymentPreviewText(selectedDebtor, paymentAmount, paymentPlan, paymentPlanError)}</pre>
+            <pre>{buildPaymentPreviewText(selectedDebtor, paymentAmount, paymentPlan, paymentPlanError, selectedServiceItem, servicePriceDraft)}</pre>
           </div>
         </div>
 
@@ -3515,6 +3427,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [outstandingItems, setOutstandingItems] = useState([]);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [selectedServiceRow, setSelectedServiceRow] = useState('automatic');
+  const [serviceActionBusy, setServiceActionBusy] = useState(false);
   const [paymentPlan, setPaymentPlan] = useState(null);
   const [paymentPlanError, setPaymentPlanError] = useState('');
   const [isDebtorDetailLoading, setIsDebtorDetailLoading] = useState(false);
@@ -3590,8 +3503,6 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [cashflowExpenses, setCashflowExpenses] = useState([]);
   const [cashflowExpenseSource, setCashflowExpenseSource] = useState('database');
   const [cashflowExpenseSheetTitle, setCashflowExpenseSheetTitle] = useState('CASH FLOW');
-  const [cashflowAccessPin, setCashflowAccessPin] = useState('');
-  const [cashflowAccessUnlocked, setCashflowAccessUnlocked] = useState(false);
   const [cashflowLoading, setCashflowLoading] = useState(false);
   const [cashflowError, setCashflowError] = useState('');
   const [cashflowExpenseBusy, setCashflowExpenseBusy] = useState(false);
@@ -3947,7 +3858,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
-  async function loadCashflowDashboard(forceRefresh = false, cashflowPin = cashflowAccessPin) {
+  async function loadCashflowDashboard(forceRefresh = false) {
     if (!isAdmin) {
       return;
     }
@@ -3979,7 +3890,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     setCashflowLoading(true);
     setCashflowError('');
     try {
-      const result = await fetchFoundationCashflowDashboard({ forceRefresh, cashflowPin });
+      const result = await fetchFoundationCashflowDashboard({ forceRefresh });
 
       const nextSummary = result?.summary || defaultSummary;
       const nextAllowance = result?.weekly_allowance || defaultAllowance;
@@ -4012,7 +3923,6 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         category: expenseDraft.category,
         description: expenseDraft.description,
         date: expenseDraft.date,
-        cashflowPin: cashflowAccessPin,
       });
       await loadCashflowDashboard(true);
       return true;
@@ -4023,49 +3933,6 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       return false;
     } finally {
       setCashflowExpenseBusy(false);
-    }
-  }
-
-  async function handleUnlockCashflow(pinInput) {
-    const nextPin = String(pinInput || '').trim();
-    if (!/^\d{4}$/.test(nextPin)) {
-      return false;
-    }
-
-    setCashflowAccessPin(nextPin);
-    setCashflowAccessUnlocked(true);
-    try {
-      await loadCashflowDashboard(false, nextPin);
-      return true;
-    } catch {
-      setCashflowAccessPin('');
-      setCashflowAccessUnlocked(false);
-      return false;
-    }
-  }
-
-  function handleLockCashflow() {
-    setCashflowAccessPin('');
-    setCashflowAccessUnlocked(false);
-    setCashflowSummary(null);
-    setWeeklyAllowance(null);
-    setCashflowExpenses([]);
-    setCashflowExpenseSource('database');
-    setCashflowExpenseSheetTitle('CASH FLOW');
-    setCashflowError('');
-    setCashflowExpenseError('');
-    setCashflowUpdatedAt(null);
-  }
-
-  async function handleChangeCashflowPin({ currentPin, newPin }) {
-    try {
-      await changeCashflowPin({ currentPin, newPin });
-      setCashflowAccessPin(newPin);
-      await loadCashflowDashboard(true, newPin);
-      return true;
-    } catch (error) {
-      setStatusText(error.message || 'Could not update the cash flow PIN.');
-      return false;
     }
   }
 
@@ -4394,16 +4261,11 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
   useEffect(() => {
     if (activeView !== 'cashflow' || !isAdmin) {
-      if (activeView !== 'cashflow') {
-        handleLockCashflow();
-      }
       return;
     }
 
-    if (cashflowAccessUnlocked && cashflowAccessPin) {
-      loadCashflowDashboard(false, cashflowAccessPin);
-    }
-  }, [activeView, isAdmin, cashflowAccessUnlocked, cashflowAccessPin]);
+    loadCashflowDashboard(false);
+  }, [activeView, isAdmin]);
 
   useEffect(() => {
     if (activeView === 'products') {
@@ -4705,6 +4567,55 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     const roundedAmount = Math.round(targetAmount);
     setPaymentAmount(String(roundedAmount));
     await applyDebtorPaymentByAmount(roundedAmount);
+  }
+
+  async function handleUpdateDebtorServiceRow({ rowIdx, price }) {
+    if (!selectedDebtor || !rowIdx) {
+      return;
+    }
+
+    setServiceActionBusy(true);
+    try {
+      await updateDebtorService({
+        nameInput: selectedDebtor,
+        rowIdx,
+        price,
+        forceRefresh: true,
+      });
+      setPaymentPlan(null);
+      setPaymentPlanError('');
+      await loadSelectedDebtorDetails(selectedDebtor, true);
+      await loadCoreWorkspace(true);
+      setStatusText(`Updated ${selectedDebtor}'s service price.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not update the service price.');
+    } finally {
+      setServiceActionBusy(false);
+    }
+  }
+
+  async function handleReturnDebtorServiceRow({ rowIdx }) {
+    if (!selectedDebtor || !rowIdx) {
+      return;
+    }
+
+    setServiceActionBusy(true);
+    try {
+      await returnDebtorService({
+        nameInput: selectedDebtor,
+        rowIdx,
+        forceRefresh: true,
+      });
+      setPaymentPlan(null);
+      setPaymentPlanError('');
+      await loadSelectedDebtorDetails(selectedDebtor, true);
+      await loadCoreWorkspace(true);
+      setStatusText(`Returned the selected service for ${selectedDebtor}.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not return the selected service.');
+    } finally {
+      setServiceActionBusy(false);
+    }
   }
 
   async function handleUndo() {
@@ -5444,11 +5355,6 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           expenseErrorText={cashflowExpenseError}
           expenseBusy={cashflowExpenseBusy}
           lastUpdatedAt={cashflowUpdatedAt}
-          isUnlocked={cashflowAccessUnlocked}
-          cashflowPinValue={cashflowAccessPin}
-          onUnlockCashflow={handleUnlockCashflow}
-          onLockCashflow={handleLockCashflow}
-          onChangeCashflowPin={handleChangeCashflowPin}
           onReload={loadCashflowDashboard}
           onCreateExpense={handleCreateCashflowExpense}
         />
@@ -5563,6 +5469,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           paymentPlanError={paymentPlanError}
           detailLoading={isDebtorDetailLoading}
           applyingPayment={isApplyingPayment}
+          serviceActionBusy={serviceActionBusy}
           onCopyBill={handleCopyBill}
           onQuickCopyBill={handleCopyBillForDebtor}
           onSendWhatsapp={handleSendWhatsapp}
@@ -5573,6 +5480,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           whatsappHistoryByName={whatsappHistoryByName}
           onApplyPayment={handleApplyPayment}
           onApplyFullPayment={handleApplyFullPayment}
+          onUpdateServiceRow={handleUpdateDebtorServiceRow}
+          onReturnServiceRow={handleReturnDebtorServiceRow}
         />
       );
     }

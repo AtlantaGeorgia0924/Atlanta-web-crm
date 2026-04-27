@@ -76,6 +76,21 @@ class ApplyPaymentRequest(BaseModel):
     force_refresh: bool = False
 
 
+class UpdateServiceRequest(BaseModel):
+    name_input: str
+    row_idx: int
+    price: int | None = None
+    amount_paid: int | None = None
+    status: str | None = None
+    force_refresh: bool = False
+
+
+class ReturnServiceRequest(BaseModel):
+    name_input: str
+    row_idx: int
+    force_refresh: bool = False
+
+
 class PaymentHistoryActionRequest(BaseModel):
     force_refresh: bool = False
 
@@ -115,6 +130,25 @@ def _resolve_payment_details(runtime, explicit_value=''):
     except Exception:
         configured = ''
     return configured.replace('\\n', '\n').strip()
+
+
+def _resolve_customer_service_row(runtime, name_input, row_idx, force_refresh=False):
+    records = runtime.get_main_records(force_refresh=force_refresh)
+    try:
+        record_idx = int(row_idx) - 1
+    except Exception:
+        raise HTTPException(status_code=400, detail='Invalid service row.')
+
+    if record_idx < 0 or record_idx >= len(records):
+        raise HTTPException(status_code=400, detail='Selected service row is no longer available.')
+
+    record = records[record_idx] or {}
+    expected_name = str(name_input or '').strip().upper()
+    actual_name = str(record.get('NAME') or '').strip().upper()
+    if not expected_name or actual_name != expected_name:
+        raise HTTPException(status_code=400, detail='Selected service does not belong to this customer.')
+
+    return record_idx + 1, record
 
 
 @router.post('/outstanding-items/from-values')
@@ -239,6 +273,48 @@ def apply_payment_endpoint(payload: ApplyPaymentRequest, runtime=Depends(get_run
             payload.name_input,
             payload.payment_amount,
             manual_service_row_idx=payload.manual_service_row_idx,
+            force_refresh=payload.force_refresh,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if result.get('error'):
+        raise HTTPException(status_code=400, detail=result['error'])
+    return result
+
+
+@router.post('/services/update')
+def update_service_endpoint(payload: UpdateServiceRequest, runtime=Depends(get_runtime)):
+        row_num, _record = _resolve_customer_service_row(runtime, payload.name_input, payload.row_idx, force_refresh=payload.force_refresh)
+    updates = {}
+    if payload.price is not None:
+                updates['PRICE'] = payload.price
+    if payload.amount_paid is not None:
+                updates['Amount paid'] = payload.amount_paid
+    if payload.status is not None and str(payload.status).strip():
+                updates['STATUS'] = payload.status
+
+    try:
+        result = runtime.update_main_record_fields(
+                        row_num - 1,
+            updates,
+            force_refresh=payload.force_refresh,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if result.get('error'):
+        raise HTTPException(status_code=400, detail=result['error'])
+    return result
+
+
+@router.post('/services/return')
+def return_service_endpoint(payload: ReturnServiceRequest, runtime=Depends(get_runtime)):
+    row_num, _record = _resolve_customer_service_row(runtime, payload.name_input, payload.row_idx, force_refresh=payload.force_refresh)
+    try:
+        result = runtime.update_main_record_fields(
+            row_num - 1,
+            {'STATUS': 'RETURNED'},
             force_refresh=payload.force_refresh,
         )
     except RuntimeError as exc:

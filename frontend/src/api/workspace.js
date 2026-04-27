@@ -60,6 +60,31 @@ export function applyPayment({ nameInput, paymentAmount, manualServiceRowIdx = n
   });
 }
 
+export function updateDebtorService({ nameInput, rowIdx, price = null, amountPaid = null, status = '', forceRefresh = false }) {
+  return requestJson('/api/billing/services/update', {
+    method: 'POST',
+    body: {
+      name_input: nameInput,
+      row_idx: rowIdx,
+      price,
+      amount_paid: amountPaid,
+      status,
+      force_refresh: forceRefresh,
+    },
+  });
+}
+
+export function returnDebtorService({ nameInput, rowIdx, forceRefresh = false }) {
+  return requestJson('/api/billing/services/return', {
+    method: 'POST',
+    body: {
+      name_input: nameInput,
+      row_idx: rowIdx,
+      force_refresh: forceRefresh,
+    },
+  });
+}
+
 export function undoPayment() {
   return requestJson('/api/billing/payments/undo', {
     method: 'POST',

@@ -3515,6 +3515,69 @@ class BackendRuntime:
             'redo_available': False,
         }
 
+    def update_main_record_fields(self, record_idx, updates_by_header, force_refresh=False):
+        values = self.get_main_values(force_refresh=force_refresh)
+        if not values:
+            return {'error': 'No data in sheet.'}
+
+        header_row_idx = detect_sheet_header_row(values)
+        if header_row_idx < 0 or header_row_idx >= len(values):
+            return {'error': 'Sheet header row not found.'}
+
+        headers = [str(cell or '').strip() for cell in (values[header_row_idx] if header_row_idx < len(values) else [])]
+        if not headers:
+            return {'error': 'Sheet headers are missing.'}
+
+        try:
+            record_idx = int(record_idx)
+        except Exception:
+            return {'error': 'Invalid record row.'}
+
+        if record_idx <= 0:
+            return {'error': 'Invalid record row.'}
+
+        sheet_row = header_row_idx + 1 + record_idx
+        queue_ids = []
+
+        for header_name, raw_value in (updates_by_header or {}).items():
+            header_text = str(header_name or '').strip()
+            if not header_text:
+                continue
+
+            matched_col = None
+            for index, header in enumerate(headers):
+                if str(header or '').strip().upper() == header_text.upper():
+                    matched_col = index + 1
+                    header_text = header
+                    break
+
+            if matched_col is None:
+                return {'error': f'Column not found: {header_name}.'}
+
+            value = raw_value
+            queue_ids.append(
+                self._enqueue_db_first_operation(
+                    'billing_service_update',
+                    'main_update_cell',
+                    {
+                        'kind': 'main_update_cell',
+                        'row': sheet_row,
+                        'col': matched_col,
+                        'value': value,
+                    },
+                    cache_apply_callable=lambda r=sheet_row, fn=header_text, c=matched_col, nv=value: (
+                        self.postgres_sync_manager.update_cached_main_record_field(r, fn, nv),
+                        self.postgres_sync_manager.update_cached_table_value('main_values', r, c, nv),
+                    ),
+                )
+            )
+
+        return {
+            'queued_operation_ids': queue_ids,
+            'updates_count': len(queue_ids),
+            'row_num': sheet_row,
+        }
+
     def undo_last_payment(self):
         result = self._apply_payment_action_rows(self.last_payment_action, use_new_values=False)
         if result.get('error'):
