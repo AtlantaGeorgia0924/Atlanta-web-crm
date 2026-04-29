@@ -801,18 +801,48 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
             type="button"
             onClick={() => onSecretCashflow?.()}
             aria-label="Open cash flow"
-            title=""
+            title="Open Cash Flow Dashboard"
             style={{
-              width: '14px',
-              height: '14px',
+              width: '28px',
+              height: '28px',
               borderRadius: '999px',
-              border: 'none',
-              background: 'transparent',
-              opacity: 0.06,
+              border: '2px solid #007bff',
+              background: '#e3f0ff',
+              opacity: 1,
               padding: 0,
               cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 0 4px #007bff55',
             }}
-          />
+          >
+            <button
+              type="button"
+              onClick={() => onSecretCashflow?.()}
+              aria-label="Open cash flow"
+              title="Open Cash Flow Dashboard"
+              style={{
+                width: '28px',
+                height: '28px',
+                borderRadius: '999px',
+                border: '2px solid #007bff',
+                background: '#e3f0ff',
+                opacity: 0.85,
+                padding: 0,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: '0 0 4px #007bff55',
+              }}
+            >
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="10" cy="10" r="9" stroke="#007bff" strokeWidth="2" fill="#fff" />
+              <path d="M6 10c0-2.21 1.79-4 4-4s4 1.79 4 4-1.79 4-4 4" stroke="#007bff" strokeWidth="1.5" fill="none" />
+              <text x="10" y="14" textAnchor="middle" fontSize="8" fill="#007bff" fontFamily="Arial">₦</text>
+            </svg>
+          </button>
         </div>
         <div className="summary-grid summary-grid--home">
           {homeSummaryCards.map((card) =>
@@ -2464,6 +2494,11 @@ function DebtorsView({
       rowIdx: selectedServiceItem.row_idx,
       price: nextPrice,
     });
+    // Update the service price
+    // If the payment amount is set, immediately apply the payment to this service
+    if (paymentAmount && Number(paymentAmount) > 0) {
+      await onApplyPayment?.();
+    }
   }
 
   async function handleReturnService() {

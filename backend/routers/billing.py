@@ -283,20 +283,21 @@ def apply_payment_endpoint(payload: ApplyPaymentRequest, runtime=Depends(get_run
     return result
 
 
+
 @router.post('/services/update')
 def update_service_endpoint(payload: UpdateServiceRequest, runtime=Depends(get_runtime)):
-        row_num, _record = _resolve_customer_service_row(runtime, payload.name_input, payload.row_idx, force_refresh=payload.force_refresh)
+    row_num, _record = _resolve_customer_service_row(runtime, payload.name_input, payload.row_idx, force_refresh=payload.force_refresh)
     updates = {}
     if payload.price is not None:
-                updates['PRICE'] = payload.price
+        updates['PRICE'] = payload.price
     if payload.amount_paid is not None:
-                updates['Amount paid'] = payload.amount_paid
+        updates['Amount paid'] = payload.amount_paid
     if payload.status is not None and str(payload.status).strip():
-                updates['STATUS'] = payload.status
+        updates['STATUS'] = payload.status
 
     try:
         result = runtime.update_main_record_fields(
-                        row_num - 1,
+            row_num - 1,
             updates,
             force_refresh=payload.force_refresh,
         )
