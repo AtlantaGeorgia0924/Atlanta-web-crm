@@ -808,7 +808,7 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
               borderRadius: '999px',
               border: '2px solid #007bff',
               background: '#e3f0ff',
-              opacity: 1,
+              opacity: 0.85,
               padding: 0,
               cursor: 'pointer',
               display: 'flex',
@@ -817,26 +817,6 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
               boxShadow: '0 0 4px #007bff55',
             }}
           >
-            <button
-              type="button"
-              onClick={() => onSecretCashflow?.()}
-              aria-label="Open cash flow"
-              title="Open Cash Flow Dashboard"
-              style={{
-                width: '28px',
-                height: '28px',
-                borderRadius: '999px',
-                border: '2px solid #007bff',
-                background: '#e3f0ff',
-                opacity: 0.85,
-                padding: 0,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 0 4px #007bff55',
-              }}
-            >
             <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="10" cy="10" r="9" stroke="#007bff" strokeWidth="2" fill="#fff" />
               <path d="M6 10c0-2.21 1.79-4 4-4s4 1.79 4 4-1.79 4-4 4" stroke="#007bff" strokeWidth="1.5" fill="none" />
