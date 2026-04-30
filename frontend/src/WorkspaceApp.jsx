@@ -1058,7 +1058,7 @@ function CashFlowView({
       key: 'allowance',
       label: 'Next Week Allowance',
       value: formatCurrency(allowance.suggested_allowance || 0),
-      note: 'Allowance is 20% of this week\'s net profit, capped at available cash.',
+      note: 'Allowance is 25% of this week\'s net profit, capped at available cash.',
       className: 'metric-card--allowance',
     },
   ];

@@ -871,7 +871,7 @@ class BackendRuntime:
 
         weekly_realized_profit = round(current_week_phone_profit + current_week_service_profit, 2)
         current_week_net_cash_flow = round(current_week_paid_income - current_week_expenses, 2)
-        allowance_percentage = 0.20
+        allowance_percentage = 0.25
         raw_allowance = max(0.0, current_week_net_cash_flow) * allowance_percentage
         # Allowance must not exceed actual available cash after reserve.
         suggested_allowance = round(min(raw_allowance, max(0.0, available_cash_after_reserve)), 2)
