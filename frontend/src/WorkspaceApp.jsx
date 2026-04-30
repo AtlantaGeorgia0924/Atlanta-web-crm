@@ -938,42 +938,61 @@ function CashFlowView({
     }
   }
 
+  const weekGrossProfit = (summary.current_week_phone_profit || 0) + (summary.current_week_service_profit || 0);
+
   const cards = [
+    // ── Monthly overview ────────────────────────────────────────────────────
     {
       key: 'cash-in',
-      label: 'Total Paid Income',
+      label: 'Total Profit (Month)',
       value: formatCurrency(summary.total_cash_in || 0),
-      note: 'Paid income only — real cash received.',
-      className: '',
-    },
-    {
-      key: 'expected-income',
-      label: 'Expected Income',
-      value: formatCurrency(summary.expected_income || 0),
-      note: 'Owing / not yet paid — not counted in allowance.',
+      note: 'Total paid income received this month.',
       className: '',
     },
     {
       key: 'expenses',
       label: 'Total Expenses',
       value: formatCurrency(summary.total_expenses || 0),
-      note: 'Tracked from the cash flow sheet.',
+      note: 'All tracked expenses from the cash-flow sheet.',
       className: '',
     },
     {
       key: 'profit',
-      label: 'Total Profit',
+      label: 'Net Profit',
       value: formatCurrency(summary.net_profit || 0),
-      note: 'Paid income minus expenses.',
+      note: 'Total paid income minus total expenses.',
       className: 'metric-card--profit',
     },
     {
-      key: 'week-flow',
+      key: 'expected-income',
+      label: 'Expected Income',
+      value: formatCurrency(summary.expected_income || 0),
+      note: 'Owing / not yet paid — not included in profit.',
+      className: '',
+    },
+    // ── This week ───────────────────────────────────────────────────────────
+    {
+      key: 'week-gross',
       label: 'This Week Profit',
+      value: formatCurrency(weekGrossProfit),
+      note: `Phone ${formatCurrency(summary.current_week_phone_profit || 0)} + services ${formatCurrency(summary.current_week_service_profit || 0)}.`,
+      className: '',
+    },
+    {
+      key: 'week-expenses',
+      label: 'This Week Expenses',
+      value: formatCurrency(summary.current_week_expenses || 0),
+      note: 'Expenses recorded during this week.',
+      className: '',
+    },
+    {
+      key: 'week-net',
+      label: 'This Week Net Profit',
       value: formatCurrency(summary.current_week_net_cash_flow || 0),
-      note: `Phone ${formatCurrency(summary.current_week_phone_profit || 0)} + services ${formatCurrency(summary.current_week_service_profit || 0)} - expenses ${formatCurrency(summary.current_week_expenses || 0)}.`,
+      note: 'This week\'s profit after deducting this week\'s expenses.',
       className: 'metric-card--profit',
     },
+    // ── Cash position ────────────────────────────────────────────────────────
     {
       key: 'available-cash',
       label: 'Available Cash',
@@ -992,7 +1011,7 @@ function CashFlowView({
       key: 'allowance',
       label: 'Next Week Allowance',
       value: formatCurrency(allowance.suggested_allowance || 0),
-      note: 'Allowance is 20% of this week\'s profit after expenses, capped at available cash.',
+      note: 'Allowance is 20% of this week\'s net profit, capped at available cash.',
       className: 'metric-card--allowance',
     },
   ];
