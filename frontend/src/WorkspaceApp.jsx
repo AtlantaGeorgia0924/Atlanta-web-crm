@@ -735,31 +735,28 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
   const stockCounts = stockView?.counts || {};
   const homeSummaryCards = [
     {
-      type: 'masked',
-      label: 'Total Outstanding',
-      value: formatCurrency(debtorsData.total_debtors_amount),
-      note: 'Hold to reveal total amount owed by debtors.',
-      revealKey: 'total-outstanding',
-    },
-    {
-      type: 'masked',
-      label: 'Sales Today',
-      value: formatCurrency(salesSnapshot.sales_today),
-      note: 'Hold to reveal today\'s sales total.',
-      revealKey: 'sales-today',
-    },
-    {
       type: 'plain',
       label: 'Customers Owing',
       value: formatCount((debtorsData.sorted_debtors || []).length),
       note: 'Live debtor count.',
     },
     {
-      type: 'masked',
-      label: 'Sales This Month',
-      value: formatCurrency(salesSnapshot.sales_month),
-      note: 'Hold to reveal month-to-date turnover.',
-      revealKey: 'sales-month',
+      type: 'plain',
+      label: 'Products Available',
+      value: formatCount(stockCounts.available),
+      note: 'Current available stock count.',
+    },
+    {
+      type: 'plain',
+      label: 'Pending Deals',
+      value: formatCount(stockCounts.pending),
+      note: 'Deals waiting to close.',
+    },
+    {
+      type: 'plain',
+      label: 'Name Fixes',
+      value: formatCount(nameFixData.count),
+      note: 'Rows waiting for correction.',
     },
   ];
 
@@ -944,7 +941,7 @@ function CashFlowView({
   const cards = [
     {
       key: 'cash-in',
-      label: 'Total Cash In',
+      label: 'Total Paid Income',
       value: formatCurrency(summary.total_cash_in || 0),
       note: 'Paid income only — real cash received.',
       className: '',
@@ -965,14 +962,14 @@ function CashFlowView({
     },
     {
       key: 'profit',
-      label: 'Net Profit',
+      label: 'Total Profit',
       value: formatCurrency(summary.net_profit || 0),
       note: 'Paid income minus expenses.',
       className: 'metric-card--profit',
     },
     {
       key: 'week-flow',
-      label: 'This Week Cash Flow',
+      label: 'This Week Profit',
       value: formatCurrency(summary.current_week_net_cash_flow || 0),
       note: `Phone ${formatCurrency(summary.current_week_phone_profit || 0)} + services ${formatCurrency(summary.current_week_service_profit || 0)} - expenses ${formatCurrency(summary.current_week_expenses || 0)}.`,
       className: 'metric-card--profit',
@@ -993,9 +990,9 @@ function CashFlowView({
     },
     {
       key: 'allowance',
-      label: 'Weekly Allowance',
+      label: 'Next Week Allowance',
       value: formatCurrency(allowance.suggested_allowance || 0),
-      note: 'Allowance is calculated from paid income only — 30% of this week\'s realized profit, capped at available cash.',
+      note: 'Allowance is 20% of this week\'s profit after expenses, capped at available cash.',
       className: 'metric-card--allowance',
     },
   ];
