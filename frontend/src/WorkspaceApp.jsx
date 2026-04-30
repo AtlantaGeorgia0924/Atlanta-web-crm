@@ -4492,7 +4492,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       return;
     }
 
-    loadCashflowDashboard(false);
+    loadCashflowDashboard(true);
   }, [activeView, isAdmin]);
 
   useEffect(() => {
@@ -5436,6 +5436,10 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       });
       setServiceDraft({ name: '', phone: '', description: '', price: '', service_expense: '', amount_paid: '', status: 'UNPAID' });
       await loadCoreWorkspace(false);
+      // Pull latest cashflow sheet values so new service income/expense reflects immediately.
+      if (isAdmin) {
+        await loadCashflowDashboard(true);
+      }
       setStatusText('Service row queued into inventory successfully.');
     } catch (error) {
       setStatusText(error.message || 'Could not add the service row.');

@@ -2248,7 +2248,9 @@ class BackendRuntime:
                 if service_status == 'PAID' and paid_amount <= 0 and price_amount > 0:
                     paid_amount = price_amount
 
-                if paid_amount > 0 and service_status == 'PAID':
+                # Any positive amount paid is realized cash-in and should be reflected
+                # in cashflow immediately, regardless of service row status text.
+                if paid_amount > 0:
                     self.append_cashflow_income_record(
                         amount=paid_amount,
                         category='SERVICE PROFIT',
