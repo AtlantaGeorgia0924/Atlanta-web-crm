@@ -25,9 +25,13 @@ class AppConfigUpsertRequest(BaseModel):
 
 class CashflowPinChangeRequest(BaseModel):
     current_pin: str = Field(min_length=4, max_length=4, pattern=r'^\d{4}$')
+    new_pin: str = Field(min_length=4, max_length=4, pattern=r'^\d{4}$')
+
+
+@router.post('/expenses')
 def create_expense(payload: CreateExpenseRequest, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-@router.post('/expenses')
+        sheet_item = runtime.append_cashflow_expense_record(
             amount=payload.amount,
             category=payload.category,
             description=payload.description,
