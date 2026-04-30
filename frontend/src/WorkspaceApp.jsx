@@ -5571,6 +5571,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         lastLoadedAt={lastLoadedAt}
         revealedMetric={revealedMetric}
         setRevealedMetric={setRevealedMetric}
+        onSecretCashflow={() => {
+          startTransition(() => setActiveView('cashflow'));
+        }}
         onStatisticClick={(label) => {
           switch (label) {
             case 'Customers Today':
