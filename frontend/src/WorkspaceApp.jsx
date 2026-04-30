@@ -947,8 +947,9 @@ function CashFlowView({
   }
 
   const today = new Date();
-  const dayOfWeek = (today.getDay() + 6) % 7; // Mon=0 … Sun=6  (same logic as backend: weekday+1)%7 but backend uses Mon start
-  const weekStart = new Date(today); weekStart.setDate(today.getDate() - ((today.getDay() + 6) % 7)); weekStart.setHours(0,0,0,0);
+  // Backend week starts on Sunday: current_day - (weekday+1)%7
+  // JS getDay(): Sun=0 Mon=1 … Sat=6 → subtract getDay() to land on Sunday
+  const weekStart = new Date(today); weekStart.setDate(today.getDate() - today.getDay()); weekStart.setHours(0,0,0,0);
   const weekEnd = new Date(today); weekEnd.setHours(23,59,59,999);
 
   const [expenseDraft, setExpenseDraft] = useState({
@@ -1139,28 +1140,50 @@ function CashFlowView({
                   <thead>
                     <tr style={{ background: '#f9fafb', position: 'sticky', top: 0 }}>
                       <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Date</th>
-                      <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Category</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Type</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Category / Item</th>
                       <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Description</th>
                       <th style={{ padding: '8px 12px', textAlign: 'right', borderBottom: '1px solid #e5e7eb' }}>Amount</th>
                       <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>By</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {drillDown.rows.map((tx, idx) => (
-                      <tr key={`${tx.row_num ?? idx}`} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                        <td style={{ padding: '7px 12px', whiteSpace: 'nowrap' }}>{tx.payment_date || tx.date || '—'}</td>
-                        <td style={{ padding: '7px 12px' }}>{tx.category || '—'}</td>
-                        <td style={{ padding: '7px 12px' }}>{tx.description || '—'}</td>
-                        <td style={{ padding: '7px 12px', textAlign: 'right', fontWeight: 600 }}>{formatCurrency(Number(String(tx.amount || '0').replace(/[^0-9.\-]/g, '')) || 0)}</td>
-                        <td style={{ padding: '7px 12px', color: '#6b7280' }}>{tx.created_by || '—'}</td>
-                      </tr>
-                    ))}
+                    {drillDown.rows.map((tx, idx) => {
+                      const txType = String(tx.type || '').toLowerCase();
+                      const txSource = String(tx.source || '').toLowerCase();
+                      let typeLabel = '—';
+                      let typeBadgeStyle = { padding: '2px 7px', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 600, background: '#f3f4f6', color: '#374151' };
+                      if (txSource === 'income' && txType === 'phone') {
+                        typeLabel = 'Phone';
+                        typeBadgeStyle = { ...typeBadgeStyle, background: '#dbeafe', color: '#1d4ed8' };
+                      } else if (txSource === 'income' && txType === 'service') {
+                        typeLabel = 'Service';
+                        typeBadgeStyle = { ...typeBadgeStyle, background: '#dcfce7', color: '#15803d' };
+                      } else if (txSource !== 'income') {
+                        typeLabel = 'Expense';
+                        typeBadgeStyle = { ...typeBadgeStyle, background: '#fee2e2', color: '#b91c1c' };
+                      }
+                      const rawAmount = Number(String(tx.amount || '0').replace(/[^0-9.\-]/g, '')) || 0;
+                      return (
+                        <tr key={`${tx.row_num ?? idx}`} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                          <td style={{ padding: '7px 12px', whiteSpace: 'nowrap' }}>{tx.payment_date || tx.date || '—'}</td>
+                          <td style={{ padding: '7px 12px' }}><span style={typeBadgeStyle}>{typeLabel}</span></td>
+                          <td style={{ padding: '7px 12px', fontWeight: 500 }}>{tx.category || '—'}</td>
+                          <td style={{ padding: '7px 12px', color: '#374151' }}>{tx.description || '—'}</td>
+                          <td style={{ padding: '7px 12px', textAlign: 'right', fontWeight: 700 }}>{formatCurrency(rawAmount)}</td>
+                          <td style={{ padding: '7px 12px', color: '#6b7280' }}>{tx.created_by || '—'}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
             )}
-            <div style={{ padding: '10px 20px', borderTop: '1px solid #e5e7eb', textAlign: 'right', color: '#6b7280', fontSize: '0.8rem' }}>
-              {drillDown.rows.length} record{drillDown.rows.length !== 1 ? 's' : ''}
+            <div style={{ padding: '10px 20px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#6b7280', fontSize: '0.8rem' }}>
+              <span>{drillDown.rows.length} record{drillDown.rows.length !== 1 ? 's' : ''}</span>
+              <strong style={{ color: '#111827', fontSize: '0.9rem' }}>
+                Total: {formatCurrency(drillDown.rows.reduce((sum, tx) => sum + (Number(String(tx.amount || '0').replace(/[^0-9.\-]/g, '')) || 0), 0))}
+              </strong>
             </div>
           </div>
         </div>
