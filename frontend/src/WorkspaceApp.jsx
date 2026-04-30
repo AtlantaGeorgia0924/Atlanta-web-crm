@@ -945,28 +945,28 @@ function CashFlowView({
       key: 'cash-in',
       label: 'Total Cash In',
       value: formatCurrency(summary.total_cash_in || 0),
-      note: 'Captured from the cash flow sheet.',
+      note: 'Paid income only — real cash received.',
+      className: '',
+    },
+    {
+      key: 'expected-income',
+      label: 'Expected Income',
+      value: formatCurrency(summary.expected_income || 0),
+      note: 'Owing / not yet paid — not counted in allowance.',
       className: '',
     },
     {
       key: 'expenses',
       label: 'Total Expenses',
       value: formatCurrency(summary.total_expenses || 0),
-      note: summary.expense_source === 'sheet' ? 'Tracked from the cash flow sheet.' : 'Tracked from the cash flow sheet.',
-      className: '',
-    },
-    {
-      key: 'cost',
-      label: 'Total Cost',
-      value: formatCurrency(summary.total_cost || 0),
-      note: 'Cost basis is sheet-derived.',
+      note: 'Tracked from the cash flow sheet.',
       className: '',
     },
     {
       key: 'profit',
       label: 'Net Profit',
       value: formatCurrency(summary.net_profit || 0),
-      note: 'Sales minus cost and expenses.',
+      note: 'Paid income minus expenses.',
       className: 'metric-card--profit',
     },
     {
@@ -994,7 +994,7 @@ function CashFlowView({
       key: 'allowance',
       label: 'Weekly Allowance',
       value: formatCurrency(allowance.suggested_allowance || 0),
-      note: '20% of this week\'s profit.',
+      note: 'Allowance is calculated from paid income only — 20% of this week\'s paid net cashflow, capped at available cash.',
       className: 'metric-card--allowance',
     },
   ];
@@ -3880,6 +3880,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
     const defaultSummary = {
       total_cash_in: 0,
+      expected_income: 0,
       total_expenses: 0,
       total_cost: 0,
       net_profit: 0,

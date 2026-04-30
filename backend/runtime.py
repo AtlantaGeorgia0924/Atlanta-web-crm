@@ -393,18 +393,25 @@ class BackendRuntime:
             if not create_if_missing:
                 return None
 
-            worksheet = self.main_spreadsheet.add_worksheet(title='CASH FLOW', rows='1000', cols='6')
+            worksheet = self.main_spreadsheet.add_worksheet(title='CASH FLOW', rows='1000', cols='7')
             worksheet.update(
-                'A1:F1',
-                [['DATE', 'CATEGORY', 'AMOUNT', 'DESCRIPTION', 'CREATED BY', 'SOURCE']],
+                'A1:G1',
+                [['DATE', 'CATEGORY', 'AMOUNT', 'DESCRIPTION', 'CREATED BY', 'SOURCE', 'PAYMENT_STATUS']],
             )
             return worksheet
 
     @staticmethod
     def _normalize_cashflow_expense_row(row_values, row_num=None):
         row_values = list(row_values or [])
-        if len(row_values) < 6:
-            row_values = row_values + [''] * (6 - len(row_values))
+        if len(row_values) < 7:
+            row_values = row_values + [''] * (7 - len(row_values))
+        raw_payment_status = str(row_values[6] or '').strip().upper()
+        # Backward compat: old income rows without payment_status default to PAID.
+        source = str(row_values[5] or '').strip() or 'expense'
+        if source == 'income' and raw_payment_status not in ('PAID', 'OWING'):
+            raw_payment_status = 'PAID'
+        elif source != 'income':
+            raw_payment_status = ''
         return {
             'row_num': row_num,
             'date': str(row_values[0] or '').strip(),
@@ -412,18 +419,27 @@ class BackendRuntime:
             'amount': str(row_values[2] or '').strip(),
             'description': str(row_values[3] or '').strip(),
             'created_by': str(row_values[4] or '').strip(),
-            'source': str(row_values[5] or '').strip() or 'expense',
+            'source': source,
+            'payment_status': raw_payment_status,
         }
 
-    def _append_cashflow_sheet_record(self, *, amount, category='', description='', date_text='', created_by='', source='expense'):
+    def _append_cashflow_sheet_record(self, *, amount, category='', description='', date_text='', created_by='', source='expense', payment_status=''):
         worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+        resolved_source = str(source or '').strip() or 'expense'
+        if resolved_source == 'income':
+            resolved_payment_status = str(payment_status or '').strip().upper()
+            if resolved_payment_status not in ('PAID', 'OWING'):
+                resolved_payment_status = 'PAID'
+        else:
+            resolved_payment_status = ''
         row_values = [
             str(date_text or datetime.now(timezone.utc).date().isoformat()).strip(),
             str(category or '').strip(),
             str(amount or '').strip(),
             str(description or '').strip(),
             str(created_by or '').strip(),
-            str(source or '').strip() or 'expense',
+            resolved_source,
+            resolved_payment_status,
         ]
         with self._sheet_lock:
             worksheet.append_row(row_values, value_input_option='USER_ENTERED')
@@ -550,7 +566,7 @@ class BackendRuntime:
             source='expense',
         )
 
-    def append_cashflow_income_record(self, amount, category='', description='', date_text='', created_by=''):
+    def append_cashflow_income_record(self, amount, category='', description='', date_text='', created_by='', payment_status='PAID'):
         return self._append_cashflow_sheet_record(
             amount=amount,
             category=category,
@@ -558,6 +574,7 @@ class BackendRuntime:
             date_text=date_text,
             created_by=created_by,
             source='income',
+            payment_status=payment_status,
         )
 
     def get_cashflow_sheet_records(self, force_refresh=False):
@@ -618,17 +635,16 @@ class BackendRuntime:
         payload = self.get_cashflow_sheet_records(force_refresh=force_refresh)
         items = payload.get('items') or []
 
-        total_income = 0.0
+        # PAID income = real cash received
+        # OWING income = expected but not yet received
+        total_paid_income = 0.0
+        total_owing_income = 0.0
         total_expenses = 0.0
-        weekly_profit_by_start = {}
 
-        current_week_end = self._most_recent_saturday()
-        previous_week_end = current_week_end - timedelta(days=7)
-        previous_week_start = current_week_end - timedelta(days=14)
         current_day = datetime.now(timezone.utc).date()
         current_week_start = current_day - timedelta(days=(current_day.weekday() + 1) % 7)
         current_week_end_date = current_day
-        current_week_cash_in = 0.0
+        current_week_paid_income = 0.0
         current_week_expenses = 0.0
         current_week_phone_profit = 0.0
         current_week_service_profit = 0.0
@@ -637,35 +653,35 @@ class BackendRuntime:
             amount = max(0.0, clean_amount(item.get('amount')))
             source = str(item.get('source') or '').strip().lower()
             category = str(item.get('category') or '').strip().lower()
+            payment_status = str(item.get('payment_status') or '').strip().upper()
             try:
                 entry_date = parse_sheet_date(item.get('date'))
             except Exception:
                 entry_date = None
 
             is_income = source == 'income'
+            is_paid = payment_status != 'OWING'  # missing/PAID both count as paid (backward compat)
+
             if is_income:
-                total_income += amount
+                if is_paid:
+                    total_paid_income += amount
+                else:
+                    total_owing_income += amount
             else:
                 total_expenses += amount
 
-            if entry_date is not None:
-                days_since_saturday = (entry_date.weekday() - 5) % 7
-                week_start = entry_date - timedelta(days=days_since_saturday)
-                weekly_profit_by_start.setdefault(week_start, 0.0)
-                weekly_profit_by_start[week_start] += amount if is_income else -amount
-
-                if current_week_start <= entry_date <= current_week_end_date:
-                    if is_income:
-                        current_week_cash_in += amount
-                        if 'service' in category:
-                            current_week_service_profit += amount
-                        else:
-                            current_week_phone_profit += amount
+            if entry_date is not None and current_week_start <= entry_date <= current_week_end_date:
+                if is_income and is_paid:
+                    current_week_paid_income += amount
+                    if 'service' in category:
+                        current_week_service_profit += amount
                     else:
-                        current_week_expenses += amount
+                        current_week_phone_profit += amount
+                elif not is_income:
+                    current_week_expenses += amount
 
-        total_cash_in = round(total_income, 2)
-        total_cost = 0.0
+        total_cash_in = round(total_paid_income, 2)
+        expected_income = round(total_owing_income, 2)
         total_expenses = round(total_expenses, 2)
         net_profit = round(total_cash_in - total_expenses, 2)
 
@@ -674,24 +690,28 @@ class BackendRuntime:
         available_cash_before_reserve = total_cash_in - total_expenses - receivables_excluded
         reserve_amount = max(0.0, available_cash_before_reserve) * reserve_percentage
         available_cash_after_reserve = available_cash_before_reserve - reserve_amount
-        current_week_net_cash_flow = round(current_week_cash_in - current_week_expenses, 2)
+
+        current_week_net_cash_flow = round(current_week_paid_income - current_week_expenses, 2)
         allowance_percentage = 0.20
-        suggested_allowance = round(max(0.0, current_week_net_cash_flow) * allowance_percentage, 2)
+        raw_allowance = max(0.0, current_week_net_cash_flow) * allowance_percentage
+        # Allowance must not exceed actual available cash after reserve.
+        suggested_allowance = round(min(raw_allowance, max(0.0, available_cash_after_reserve)), 2)
 
         return {
             'total_cash_in': total_cash_in,
+            'expected_income': expected_income,
             'total_expenses': total_expenses,
             'database_expenses_total': 0.0,
             'sheet_expenses_total': total_expenses,
             'expense_source': 'sheet',
-            'total_cost': total_cost,
+            'total_cost': 0.0,
             'net_profit': net_profit,
             'receivables_excluded': receivables_excluded,
             'reserve_percentage': reserve_percentage,
             'reserve_amount': reserve_amount,
             'available_cash': available_cash_after_reserve,
             'available_cash_before_reserve': available_cash_before_reserve,
-            'current_week_cash_in': round(current_week_cash_in, 2),
+            'current_week_cash_in': round(current_week_paid_income, 2),
             'current_week_expenses': round(current_week_expenses, 2),
             'current_week_phone_profit': round(current_week_phone_profit, 2),
             'current_week_service_profit': round(current_week_service_profit, 2),
@@ -788,6 +808,7 @@ class BackendRuntime:
                     'description': description,
                     'created_by': seller_or_buyer,
                     'source': 'income',
+                    'payment_status': 'PAID',
                 })
                 continue
 
@@ -800,6 +821,7 @@ class BackendRuntime:
                     'description': description,
                     'created_by': seller_or_buyer,
                     'source': 'income',
+                    'payment_status': 'PAID',
                 })
 
         sheet_rows = sorted(expense_rows + income_rows, key=lambda row: (row.get('date') or '', row.get('category') or '', row.get('description') or ''))
@@ -810,24 +832,28 @@ class BackendRuntime:
             'DESCRIPTION',
             'CREATED BY',
             'SOURCE',
+            'PAYMENT_STATUS',
         ]]
         for row in sheet_rows:
+            source = row.get('source', 'expense')
+            payment_status = row.get('payment_status', 'PAID') if source == 'income' else ''
             sheet_values.append([
                 row.get('date', ''),
                 row.get('category', ''),
                 str(row.get('amount', 0)),
                 row.get('description', ''),
                 row.get('created_by', ''),
-                row.get('source', 'expense'),
+                source,
+                payment_status,
             ])
 
         worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
         with self._sheet_lock:
             worksheet.clear()
             if len(sheet_values) == 1:
-                worksheet.update('A1:F1', sheet_values)
+                worksheet.update('A1:G1', sheet_values)
             else:
-                end_letter = column_index_to_letter(5)
+                end_letter = column_index_to_letter(6)
                 worksheet.update(f'A1:{end_letter}{len(sheet_values)}', sheet_values, value_input_option='USER_ENTERED')
             if self.postgres_ready:
                 try:
@@ -835,14 +861,18 @@ class BackendRuntime:
                 except Exception as exc:
                     self.logger.warning('Failed to refresh cashflow cache after weekly rebuild: %s', exc)
 
-        allowance = round(max(0.0, phone_profit_total + service_profit_total - sum(row.get('amount', 0) for row in expense_rows)) * 0.20, 2)
+        paid_income_total = phone_profit_total + service_profit_total
+        expense_total = round(sum(row.get('amount', 0) for row in expense_rows), 2)
+        weekly_net = paid_income_total - expense_total
+        raw_allowance = max(0.0, weekly_net) * 0.20
+        allowance = round(raw_allowance, 2)
         return {
             'week_start': week_start.isoformat(),
             'week_end': today.isoformat(),
             'phone_profit_total': round(phone_profit_total, 2),
             'service_profit_total': round(service_profit_total, 2),
-            'expense_total': round(sum(row.get('amount', 0) for row in expense_rows), 2),
-            'net_profit': round(phone_profit_total + service_profit_total - sum(row.get('amount', 0) for row in expense_rows), 2),
+            'expense_total': expense_total,
+            'net_profit': round(weekly_net, 2),
             'weekly_allowance': allowance,
             'rows_written': max(0, len(sheet_values) - 1),
             'source': 'sheet',
