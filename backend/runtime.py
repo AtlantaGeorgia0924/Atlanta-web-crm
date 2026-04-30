@@ -1032,6 +1032,25 @@ class BackendRuntime:
                 'payment_date': payment_date.isoformat(),
             })
 
+            # Rebuild service-related expense rows from the main sheet so
+            # expense totals remain accurate even after full rebuilds.
+            service_expense = clean_amount(
+                self._record_value(record, 'SERVICE EXPENSE', 'EXPENSE', 'SERVICE COST')
+            )
+            if service_expense > 0:
+                expense_rows.append({
+                    'date': payment_date.isoformat(),
+                    'category': 'SERVICE EXPENSE',
+                    'amount': round(service_expense, 2),
+                    'description': description,
+                    'created_by': actor,
+                    'source': 'expense',
+                    'type': 'expense',
+                    'payment_status': '',
+                    'cost_price': '',
+                    'payment_date': '',
+                })
+
         sheet_rows = sorted(expense_rows + income_rows, key=lambda row: (row.get('date') or '', row.get('category') or '', row.get('description') or ''))
         sheet_values = [[
             'DATE',
