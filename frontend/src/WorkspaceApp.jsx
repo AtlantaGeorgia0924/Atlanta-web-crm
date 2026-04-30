@@ -648,11 +648,11 @@ class ViewErrorBoundary extends React.Component {
   }
 }
 
-function MaskedMetricCard({ label, value, note, revealKey, revealedMetric, setRevealedMetric }) {
+function MaskedMetricCard({ label, value, note, revealKey, revealedMetric, setRevealedMetric, className = '' }) {
   const visible = revealedMetric === revealKey;
 
   return (
-    <article className="metric-card metric-card--home">
+    <article className={`metric-card metric-card--home ${className}`.trim()}>
       <div className="metric-card__top">
         <span className="metric-label">{label}</span>
         <button
@@ -912,6 +912,7 @@ function CashFlowView({
 }) {
   const summary = cashflowSummary || {};
   const allowance = weeklyAllowance || {};
+  const [revealedMetric, setRevealedMetric] = useState('');
   const [expenseDraft, setExpenseDraft] = useState({
     amount: '',
     category: '',
@@ -1017,13 +1018,30 @@ function CashFlowView({
           </div>
         ) : null}
         <div className="summary-grid summary-grid--home">
-          {cards.map((card) => (
-            <article key={card.key} className={`metric-card metric-card--home ${card.className}`.trim()}>
-              <span className="metric-label">{card.label}</span>
-              <strong className="metric-value">{loading ? 'Loading...' : card.value}</strong>
-              <span className="metric-note">{card.note}</span>
-            </article>
-          ))}
+          {cards.map((card) => {
+            if (loading) {
+              return (
+                <article key={card.key} className={`metric-card metric-card--home ${card.className}`.trim()}>
+                  <span className="metric-label">{card.label}</span>
+                  <strong className="metric-value">Loading...</strong>
+                  <span className="metric-note">{card.note}</span>
+                </article>
+              );
+            }
+
+            return (
+              <MaskedMetricCard
+                key={card.key}
+                label={card.label}
+                value={card.value}
+                note={card.note}
+                revealKey={`cashflow-${card.key}`}
+                revealedMetric={revealedMetric}
+                setRevealedMetric={setRevealedMetric}
+                className={card.className}
+              />
+            );
+          })}
         </div>
       </section>
 
