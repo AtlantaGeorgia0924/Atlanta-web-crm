@@ -277,12 +277,18 @@ class BackendRuntime:
         try:
             profit = (selling_price - cost_price_at_sale) * quantity
             if profit > 0:
+                paid_amount = selling_price * quantity
+                total_cost = cost_price_at_sale * quantity
                 self.append_cashflow_income_record(
-                    amount=profit,
+                    amount=paid_amount,
                     category='PHONE PROFIT',
                     description=f'Item record_id: {stock_record_key}, sale: {selling_price:.2f}, cost: {cost_price_at_sale:.2f}',
                     date_text=datetime.now(timezone.utc).date().isoformat(),
                     created_by=str(sold_by or '').strip(),
+                    payment_status='PAID',
+                    entry_type='phone',
+                    cost_price=total_cost,
+                    payment_date_text=datetime.now(timezone.utc).date().isoformat(),
                 )
         except Exception as cashflow_exc:
             self.logger.warning('Failed to write phone profit to cashflow sheet: %s', cashflow_exc)
@@ -393,25 +399,51 @@ class BackendRuntime:
             if not create_if_missing:
                 return None
 
-            worksheet = self.main_spreadsheet.add_worksheet(title='CASH FLOW', rows='1000', cols='7')
+            worksheet = self.main_spreadsheet.add_worksheet(title='CASH FLOW', rows='1000', cols='10')
             worksheet.update(
-                'A1:G1',
-                [['DATE', 'CATEGORY', 'AMOUNT', 'DESCRIPTION', 'CREATED BY', 'SOURCE', 'PAYMENT_STATUS']],
+                'A1:J1',
+                [[
+                    'DATE',
+                    'CATEGORY',
+                    'AMOUNT',
+                    'DESCRIPTION',
+                    'CREATED BY',
+                    'SOURCE',
+                    'PAYMENT_STATUS',
+                    'TYPE',
+                    'COST_PRICE',
+                    'PAYMENT_DATE',
+                ]],
             )
             return worksheet
 
     @staticmethod
     def _normalize_cashflow_expense_row(row_values, row_num=None):
         row_values = list(row_values or [])
-        if len(row_values) < 7:
-            row_values = row_values + [''] * (7 - len(row_values))
+        if len(row_values) < 10:
+            row_values = row_values + [''] * (10 - len(row_values))
         raw_payment_status = str(row_values[6] or '').strip().upper()
         # Backward compat: old income rows without payment_status default to PAID.
         source = str(row_values[5] or '').strip() or 'expense'
+        raw_type = str(row_values[7] or '').strip().lower()
+        raw_cost_price = str(row_values[8] or '').strip()
+        raw_payment_date = str(row_values[9] or '').strip()
+
         if source == 'income' and raw_payment_status not in ('PAID', 'OWING'):
             raw_payment_status = 'PAID'
         elif source != 'income':
             raw_payment_status = ''
+
+        if source == 'income':
+            if raw_type not in ('phone', 'service'):
+                category = str(row_values[1] or '').strip().lower()
+                raw_type = 'service' if 'service' in category else 'phone'
+            if raw_payment_status == 'PAID' and not raw_payment_date:
+                raw_payment_date = str(row_values[0] or '').strip()
+        else:
+            raw_type = 'expense'
+            raw_payment_date = ''
+
         return {
             'row_num': row_num,
             'date': str(row_values[0] or '').strip(),
@@ -421,17 +453,31 @@ class BackendRuntime:
             'created_by': str(row_values[4] or '').strip(),
             'source': source,
             'payment_status': raw_payment_status,
+            'type': raw_type,
+            'cost_price': raw_cost_price,
+            'payment_date': raw_payment_date,
         }
 
-    def _append_cashflow_sheet_record(self, *, amount, category='', description='', date_text='', created_by='', source='expense', payment_status=''):
+    def _append_cashflow_sheet_record(self, *, amount, category='', description='', date_text='', created_by='', source='expense', payment_status='', entry_type='', cost_price='', payment_date_text=''):
         worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
         resolved_source = str(source or '').strip() or 'expense'
         if resolved_source == 'income':
             resolved_payment_status = str(payment_status or '').strip().upper()
             if resolved_payment_status not in ('PAID', 'OWING'):
                 resolved_payment_status = 'PAID'
+            resolved_type = str(entry_type or '').strip().lower()
+            if resolved_type not in ('phone', 'service'):
+                category_text = str(category or '').strip().lower()
+                resolved_type = 'service' if 'service' in category_text else 'phone'
+            resolved_cost_price = str(cost_price or '').strip()
+            resolved_payment_date = str(payment_date_text or '').strip()
+            if resolved_payment_status == 'PAID' and not resolved_payment_date:
+                resolved_payment_date = str(date_text or datetime.now(timezone.utc).date().isoformat()).strip()
         else:
             resolved_payment_status = ''
+            resolved_type = 'expense'
+            resolved_cost_price = ''
+            resolved_payment_date = ''
         row_values = [
             str(date_text or datetime.now(timezone.utc).date().isoformat()).strip(),
             str(category or '').strip(),
@@ -440,6 +486,9 @@ class BackendRuntime:
             str(created_by or '').strip(),
             resolved_source,
             resolved_payment_status,
+            resolved_type,
+            resolved_cost_price,
+            resolved_payment_date,
         ]
         with self._sheet_lock:
             worksheet.append_row(row_values, value_input_option='USER_ENTERED')
@@ -564,9 +613,10 @@ class BackendRuntime:
             date_text=date_text,
             created_by=created_by,
             source='expense',
+            entry_type='expense',
         )
 
-    def append_cashflow_income_record(self, amount, category='', description='', date_text='', created_by='', payment_status='PAID'):
+    def append_cashflow_income_record(self, amount, category='', description='', date_text='', created_by='', payment_status='PAID', entry_type='service', cost_price='', payment_date_text=''):
         return self._append_cashflow_sheet_record(
             amount=amount,
             category=category,
@@ -575,7 +625,84 @@ class BackendRuntime:
             created_by=created_by,
             source='income',
             payment_status=payment_status,
+            entry_type=entry_type,
+            cost_price=cost_price,
+            payment_date_text=payment_date_text,
         )
+
+    @staticmethod
+    def _cashflow_row_match(left, right):
+        return str(left or '').strip().upper() == str(right or '').strip().upper()
+
+    def mark_cashflow_income_paid(self, *, entry_type, description='', created_by='', payment_date_text='', amount=None, cost_price=None):
+        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+        target_payment_date = str(payment_date_text or datetime.now(timezone.utc).date().isoformat()).strip()
+        target_type = str(entry_type or '').strip().lower() or 'service'
+        with self._sheet_lock:
+            values = worksheet.get_all_values()
+            target_row_num = None
+            target_values = None
+            for row_num in range(len(values), 1, -1):
+                row_values = values[row_num - 1] if row_num - 1 < len(values) else []
+                normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+                if str(normalized.get('source') or '').strip().lower() != 'income':
+                    continue
+                if str(normalized.get('payment_status') or '').strip().upper() != 'OWING':
+                    continue
+                if str(normalized.get('type') or '').strip().lower() != target_type:
+                    continue
+                if description and not self._cashflow_row_match(normalized.get('description'), description):
+                    continue
+                if created_by and not self._cashflow_row_match(normalized.get('created_by'), created_by):
+                    continue
+                target_row_num = row_num
+                target_values = list(row_values or [])
+                break
+
+            if target_row_num is None:
+                return None
+
+            if len(target_values) < 10:
+                target_values = target_values + [''] * (10 - len(target_values))
+            target_values[0] = target_payment_date
+            target_values[6] = 'PAID'
+            target_values[7] = target_type
+            target_values[9] = target_payment_date
+            if amount is not None:
+                target_values[2] = str(amount)
+            if cost_price is not None:
+                target_values[8] = str(cost_price)
+
+            worksheet.update(f'A{target_row_num}:J{target_row_num}', [target_values], value_input_option='USER_ENTERED')
+
+            if self.postgres_ready:
+                try:
+                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', worksheet.get_all_values())
+                except Exception as exc:
+                    self.logger.warning('Failed to refresh cashflow sheet cache after payment status update: %s', exc)
+
+        return self._normalize_cashflow_expense_row(target_values, row_num=target_row_num)
+
+    def has_cashflow_income_owing_record(self, *, entry_type, description='', created_by=''):
+        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+        target_type = str(entry_type or '').strip().lower() or 'service'
+        with self._sheet_lock:
+            values = worksheet.get_all_values()
+            for row_num in range(len(values), 1, -1):
+                row_values = values[row_num - 1] if row_num - 1 < len(values) else []
+                normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+                if str(normalized.get('source') or '').strip().lower() != 'income':
+                    continue
+                if str(normalized.get('payment_status') or '').strip().upper() != 'OWING':
+                    continue
+                if str(normalized.get('type') or '').strip().lower() != target_type:
+                    continue
+                if description and not self._cashflow_row_match(normalized.get('description'), description):
+                    continue
+                if created_by and not self._cashflow_row_match(normalized.get('created_by'), created_by):
+                    continue
+                return True
+        return False
 
     def get_cashflow_sheet_records(self, force_refresh=False):
         sheet_title = 'CASH FLOW'
@@ -635,11 +762,11 @@ class BackendRuntime:
         payload = self.get_cashflow_sheet_records(force_refresh=force_refresh)
         items = payload.get('items') or []
 
-        # PAID income = real cash received
-        # OWING income = expected but not yet received
         total_paid_income = 0.0
         total_owing_income = 0.0
         total_expenses = 0.0
+        total_phone_realized_profit = 0.0
+        total_service_realized_profit = 0.0
 
         current_day = datetime.now(timezone.utc).date()
         current_week_start = current_day - timedelta(days=(current_day.weekday() + 1) % 7)
@@ -653,9 +780,11 @@ class BackendRuntime:
             amount = max(0.0, clean_amount(item.get('amount')))
             source = str(item.get('source') or '').strip().lower()
             category = str(item.get('category') or '').strip().lower()
+            entry_type = str(item.get('type') or '').strip().lower()
+            cost_price = max(0.0, clean_amount(item.get('cost_price')))
             payment_status = str(item.get('payment_status') or '').strip().upper()
             try:
-                entry_date = parse_sheet_date(item.get('date'))
+                entry_date = parse_sheet_date(item.get('payment_date') or item.get('date'))
             except Exception:
                 entry_date = None
 
@@ -665,6 +794,16 @@ class BackendRuntime:
             if is_income:
                 if is_paid:
                     total_paid_income += amount
+                    if entry_type == 'service':
+                        realized_profit = amount
+                        total_service_realized_profit += realized_profit
+                    else:
+                        # Backward compat for legacy phone rows where AMOUNT already stored profit.
+                        if cost_price > 0:
+                            realized_profit = max(0.0, amount - cost_price)
+                        else:
+                            realized_profit = amount
+                        total_phone_realized_profit += realized_profit
                 else:
                     total_owing_income += amount
             else:
@@ -673,17 +812,21 @@ class BackendRuntime:
             if entry_date is not None and current_week_start <= entry_date <= current_week_end_date:
                 if is_income and is_paid:
                     current_week_paid_income += amount
-                    if 'service' in category:
+                    if entry_type == 'service' or ('service' in category and entry_type not in ('phone', 'service')):
                         current_week_service_profit += amount
                     else:
-                        current_week_phone_profit += amount
+                        if cost_price > 0:
+                            current_week_phone_profit += max(0.0, amount - cost_price)
+                        else:
+                            current_week_phone_profit += amount
                 elif not is_income:
                     current_week_expenses += amount
 
         total_cash_in = round(total_paid_income, 2)
         expected_income = round(total_owing_income, 2)
         total_expenses = round(total_expenses, 2)
-        net_profit = round(total_cash_in - total_expenses, 2)
+        total_realized_profit = round(total_phone_realized_profit + total_service_realized_profit, 2)
+        net_profit = round(total_realized_profit - total_expenses, 2)
 
         receivables_excluded = max(0.0, self._read_numeric_config('receivables_amount', default=0.0))
         reserve_percentage = self._normalized_reserve_percentage()
@@ -691,9 +834,10 @@ class BackendRuntime:
         reserve_amount = max(0.0, available_cash_before_reserve) * reserve_percentage
         available_cash_after_reserve = available_cash_before_reserve - reserve_amount
 
+        weekly_realized_profit = round(current_week_phone_profit + current_week_service_profit, 2)
         current_week_net_cash_flow = round(current_week_paid_income - current_week_expenses, 2)
-        allowance_percentage = 0.20
-        raw_allowance = max(0.0, current_week_net_cash_flow) * allowance_percentage
+        allowance_percentage = 0.30
+        raw_allowance = max(0.0, weekly_realized_profit) * allowance_percentage
         # Allowance must not exceed actual available cash after reserve.
         suggested_allowance = round(min(raw_allowance, max(0.0, available_cash_after_reserve)), 2)
 
@@ -715,13 +859,14 @@ class BackendRuntime:
             'current_week_expenses': round(current_week_expenses, 2),
             'current_week_phone_profit': round(current_week_phone_profit, 2),
             'current_week_service_profit': round(current_week_service_profit, 2),
+            'weekly_realized_profit': weekly_realized_profit,
             'current_week_net_cash_flow': current_week_net_cash_flow,
             'current_week_start': current_week_start.isoformat(),
             'current_week_end': current_week_end_date.isoformat(),
             'weekly_allowance': {
                 'suggested_allowance': suggested_allowance,
                 'calculation_date': current_day.isoformat(),
-                'previous_week_profit': current_week_net_cash_flow,
+                'previous_week_profit': weekly_realized_profit,
                 'allowance_percentage': allowance_percentage,
             },
             'expense_sheet_title': payload.get('sheet_title', 'CASH FLOW'),
@@ -771,6 +916,9 @@ class BackendRuntime:
                 'description': str(expense.get('description') or '').strip(),
                 'created_by': str(expense.get('created_by') or '').strip(),
                 'source': 'expense',
+                'type': 'expense',
+                'cost_price': '',
+                'payment_date': '',
             })
 
         income_rows = []
@@ -804,11 +952,14 @@ class BackendRuntime:
                 income_rows.append({
                     'date': record_date.isoformat(),
                     'category': 'PHONE PROFIT',
-                    'amount': profit,
+                    'amount': round(price, 2),
                     'description': description,
                     'created_by': seller_or_buyer,
                     'source': 'income',
                     'payment_status': 'PAID',
+                    'type': 'phone',
+                    'cost_price': round(cost_price, 2),
+                    'payment_date': record_date.isoformat(),
                 })
                 continue
 
@@ -822,6 +973,9 @@ class BackendRuntime:
                     'created_by': seller_or_buyer,
                     'source': 'income',
                     'payment_status': 'PAID',
+                    'type': 'service',
+                    'cost_price': '',
+                    'payment_date': record_date.isoformat(),
                 })
 
         sheet_rows = sorted(expense_rows + income_rows, key=lambda row: (row.get('date') or '', row.get('category') or '', row.get('description') or ''))
@@ -833,10 +987,16 @@ class BackendRuntime:
             'CREATED BY',
             'SOURCE',
             'PAYMENT_STATUS',
+            'TYPE',
+            'COST_PRICE',
+            'PAYMENT_DATE',
         ]]
         for row in sheet_rows:
             source = row.get('source', 'expense')
             payment_status = row.get('payment_status', 'PAID') if source == 'income' else ''
+            entry_type = row.get('type', 'service' if source == 'income' else 'expense')
+            row_cost_price = row.get('cost_price', '')
+            payment_date = row.get('payment_date', row.get('date', '') if payment_status == 'PAID' else '')
             sheet_values.append([
                 row.get('date', ''),
                 row.get('category', ''),
@@ -845,15 +1005,18 @@ class BackendRuntime:
                 row.get('created_by', ''),
                 source,
                 payment_status,
+                entry_type,
+                str(row_cost_price or ''),
+                payment_date,
             ])
 
         worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
         with self._sheet_lock:
             worksheet.clear()
             if len(sheet_values) == 1:
-                worksheet.update('A1:G1', sheet_values)
+                worksheet.update('A1:J1', sheet_values)
             else:
-                end_letter = column_index_to_letter(6)
+                end_letter = column_index_to_letter(9)
                 worksheet.update(f'A1:{end_letter}{len(sheet_values)}', sheet_values, value_input_option='USER_ENTERED')
             if self.postgres_ready:
                 try:
@@ -864,8 +1027,13 @@ class BackendRuntime:
         paid_income_total = phone_profit_total + service_profit_total
         expense_total = round(sum(row.get('amount', 0) for row in expense_rows), 2)
         weekly_net = paid_income_total - expense_total
-        raw_allowance = max(0.0, weekly_net) * 0.20
+        raw_allowance = max(0.0, paid_income_total) * 0.30
         allowance = round(raw_allowance, 2)
+        try:
+            latest_summary = self.get_cashflow_summary_from_sheet(force_refresh=True)
+            allowance = round(min(allowance, max(0.0, clean_amount(latest_summary.get('available_cash')))), 2)
+        except Exception:
+            allowance = round(max(0.0, allowance), 2)
         return {
             'week_start': week_start.isoformat(),
             'week_end': today.isoformat(),
@@ -2011,14 +2179,38 @@ class BackendRuntime:
         # appear in Google Sheets quickly without blocking API response time.
         try:
             try:
-                cash_amount = clean_amount(merged_values.get('AMOUNT PAID') or merged_values.get('PRICE') or 0)
-                if cash_amount > 0:
+                price_amount = clean_amount(merged_values.get('PRICE') or 0)
+                paid_amount = clean_amount(merged_values.get('AMOUNT PAID') or 0)
+                service_status = str(merged_values.get('STATUS') or '').strip().upper()
+                payment_date = str(merged_values.get('DATE') or now.date().isoformat()).strip()
+                service_description = str(merged_values.get('DESCRIPTION') or merged_values.get('MODEL') or merged_values.get('DEVICE') or '').strip()
+
+                if service_status == 'PAID' and paid_amount <= 0 and price_amount > 0:
+                    paid_amount = price_amount
+
+                if paid_amount > 0 and service_status == 'PAID':
                     self.append_cashflow_income_record(
-                        amount=cash_amount,
+                        amount=paid_amount,
                         category='SERVICE PROFIT',
-                        description=str(merged_values.get('DESCRIPTION') or merged_values.get('MODEL') or merged_values.get('DEVICE') or '').strip(),
-                        date_text=str(merged_values.get('DATE') or now.date().isoformat()),
+                        description=service_description,
+                        date_text=payment_date,
                         created_by='service',
+                        payment_status='PAID',
+                        entry_type='service',
+                        payment_date_text=payment_date,
+                    )
+
+                remaining_owing = max(0.0, price_amount - paid_amount)
+                if remaining_owing > 0:
+                    self.append_cashflow_income_record(
+                        amount=remaining_owing,
+                        category='SERVICE PROFIT',
+                        description=service_description,
+                        date_text=payment_date,
+                        created_by='service',
+                        payment_status='OWING',
+                        entry_type='service',
+                        payment_date_text='',
                     )
             except Exception as cashflow_exc:
                 self.logger.warning('Failed to write service income to cashflow sheet: %s', cashflow_exc)
@@ -2521,11 +2713,13 @@ class BackendRuntime:
         product_status_col = svc_stock_header_index(stock_headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS')
         availability_col = svc_stock_header_index(stock_headers_upper, 'AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE')
         description_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
+        cost_price_col = svc_stock_header_index(stock_headers_upper, 'COST PRICE', 'COST', 'COST_PRICE')
 
         buyer_name = str(padded_stock_row[buyer_col] if buyer_col is not None and buyer_col < len(padded_stock_row) else '').strip().upper()
         buyer_phone = normalize_phone_number(padded_stock_row[buyer_phone_col] if buyer_phone_col is not None and buyer_phone_col < len(padded_stock_row) else '')
         imei_value = str(padded_stock_row[imei_col] if imei_col is not None and imei_col < len(padded_stock_row) else '').strip()
         description_value = str(padded_stock_row[description_col] if description_col is not None and description_col < len(padded_stock_row) else '').strip().upper()
+        cost_price_value = clean_amount(padded_stock_row[cost_price_col]) if cost_price_col is not None and cost_price_col < len(padded_stock_row) else 0.0
 
         # Pre-scan inventory to find the matching row and price so status can be
         # auto-promoted to PAID when the entered amount covers the full price.
@@ -2707,6 +2901,54 @@ class BackendRuntime:
             self.replay_pending_queue_now(limit=120)
         except Exception:
             pass
+
+        # Keep payment-based profit rows aligned: OWING rows become PAID on payment date.
+        try:
+            payment_date_iso = datetime.now(timezone.utc).date().isoformat()
+            cashflow_description = description_value or imei_value
+            cashflow_created_by = buyer_name or buyer_phone or 'stock'
+
+            if status_text == 'PAID' and comparison_price > 0:
+                updated_row = self.mark_cashflow_income_paid(
+                    entry_type='phone',
+                    description=cashflow_description,
+                    created_by=cashflow_created_by,
+                    payment_date_text=payment_date_iso,
+                    amount=comparison_price,
+                    cost_price=cost_price_value if cost_price_value > 0 else None,
+                )
+                if updated_row is None:
+                    self.append_cashflow_income_record(
+                        amount=comparison_price,
+                        category='PHONE PROFIT',
+                        description=cashflow_description,
+                        date_text=payment_date_iso,
+                        created_by=cashflow_created_by,
+                        payment_status='PAID',
+                        entry_type='phone',
+                        cost_price=cost_price_value if cost_price_value > 0 else '',
+                        payment_date_text=payment_date_iso,
+                    )
+            elif status_text != 'PAID' and comparison_price > 0:
+                has_owing_row = self.has_cashflow_income_owing_record(
+                    entry_type='phone',
+                    description=cashflow_description,
+                    created_by=cashflow_created_by,
+                )
+                if not has_owing_row:
+                    self.append_cashflow_income_record(
+                        amount=comparison_price,
+                        category='PHONE PROFIT',
+                        description=cashflow_description,
+                        date_text=payment_date_iso,
+                        created_by=cashflow_created_by,
+                        payment_status='OWING',
+                        entry_type='phone',
+                        cost_price=cost_price_value if cost_price_value > 0 else '',
+                        payment_date_text='',
+                    )
+        except Exception as cashflow_exc:
+            self.logger.warning('Failed to sync pending-deal payment to cashflow rows: %s', cashflow_exc)
 
         return {
             'row_num': row_num,
@@ -3494,6 +3736,11 @@ class BackendRuntime:
 
         paid_col = plan['columns']['paid_col']
         status_col = plan['columns']['status_col']
+        headers_upper = [str(cell or '').strip().upper() for cell in (values[0] if values else [])]
+        name_col = svc_stock_header_index(headers_upper, 'NAME', 'CLIENT NAME', 'CUSTOMER NAME')
+        description_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
+        imei_col = svc_stock_header_index(headers_upper, 'IMEI')
+        price_col = svc_stock_header_index(headers_upper, 'PRICE', 'AMOUNT SOLD', 'SELLING PRICE')
         paid_field_name = values[0][paid_col] if paid_col < len(values[0]) else 'Amount paid'
         status_field_name = values[0][status_col] if status_col < len(values[0]) else 'STATUS'
         queue_ids = []
@@ -3529,6 +3776,46 @@ class BackendRuntime:
             self.replay_pending_queue_now(limit=120)
         except Exception:
             pass
+
+        # Mirror payment recognition to cashflow sheet using payment date (today).
+        try:
+            payment_date_iso = datetime.now(timezone.utc).date().isoformat()
+            for item in plan.get('updates', []):
+                if str(item.get('new_status') or '').strip().upper() != 'PAID':
+                    continue
+
+                row_idx = int(item.get('row_idx'))
+                if row_idx < 0 or row_idx >= len(values):
+                    continue
+
+                row_values = values[row_idx] if row_idx < len(values) else []
+                customer_name = str(row_values[name_col] if name_col is not None and name_col < len(row_values) else name_input or '').strip().upper()
+                description_text = str(row_values[description_col] if description_col is not None and description_col < len(row_values) else '').strip().upper()
+                imei_value = str(row_values[imei_col] if imei_col is not None and imei_col < len(row_values) else '').strip()
+                sale_amount = clean_amount(row_values[price_col]) if price_col is not None and price_col < len(row_values) else clean_amount(item.get('new_paid'))
+
+                entry_type = 'phone' if imei_value else 'service'
+                cashflow_description = description_text or imei_value
+                updated_row = self.mark_cashflow_income_paid(
+                    entry_type=entry_type,
+                    description=cashflow_description,
+                    created_by=customer_name,
+                    payment_date_text=payment_date_iso,
+                    amount=sale_amount if sale_amount > 0 else None,
+                )
+                if updated_row is None and sale_amount > 0:
+                    self.append_cashflow_income_record(
+                        amount=sale_amount,
+                        category='PHONE PROFIT' if entry_type == 'phone' else 'SERVICE PROFIT',
+                        description=cashflow_description,
+                        date_text=payment_date_iso,
+                        created_by=customer_name or 'payment',
+                        payment_status='PAID',
+                        entry_type=entry_type,
+                        payment_date_text=payment_date_iso,
+                    )
+        except Exception as cashflow_exc:
+            self.logger.warning('Failed to sync apply_payment to cashflow rows: %s', cashflow_exc)
 
         self.last_payment_action = self._clone_payment_action({
             'customer': plan.get('name_input', ''),

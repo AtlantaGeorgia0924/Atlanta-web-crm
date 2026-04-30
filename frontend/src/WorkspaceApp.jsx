@@ -994,7 +994,7 @@ function CashFlowView({
       key: 'allowance',
       label: 'Weekly Allowance',
       value: formatCurrency(allowance.suggested_allowance || 0),
-      note: 'Allowance is calculated from paid income only — 20% of this week\'s paid net cashflow, capped at available cash.',
+      note: 'Allowance is calculated from paid income only — 30% of this week\'s realized profit, capped at available cash.',
       className: 'metric-card--allowance',
     },
   ];
