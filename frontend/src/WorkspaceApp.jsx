@@ -52,8 +52,6 @@ const CART_FILTERS = [
   { value: 'sold', label: 'Sold Items' },
 ];
 
-const CART_PAYMENT_STATUS_OPTIONS = ['PAID', 'UNPAID', 'PART PAYMENT'];
-
 const PRODUCT_SUMMARY_COLUMNS = [
   { key: 'description', label: 'Description', aliases: ['DESCRIPTION', 'MODEL', 'DEVICE'] },
   { key: 'colour', label: 'Colour', aliases: ['COLOUR', 'COLOR'] },
@@ -554,7 +552,9 @@ function buildCartItemFromProductRow(row, headers) {
     buyer_name: getProductCellValue(row, headers, ['NAME OF BUYER']),
     buyer_phone: getProductCellValue(row, headers, ['PHONE NUMBER OF BUYER']),
     sale_price: '',
-    payment_status: row.label === 'PENDING DEAL' ? 'UNPAID' : 'PAID',
+    amount_paid: '',
+    phone_expense: '',
+    payment_status: 'UNPAID',
     availability_choice: 'AUTO',
     availability_custom: '',
   };
@@ -1225,36 +1225,54 @@ function ProductComposerModal({
     }
 
     if (key === 'DEVICE') {
+      const deviceOptions = Array.from(new Set([
+        ...(dropdownOptions?.device || []),
+        value,
+      ].map((option) => String(option || '').trim()).filter(Boolean)));
       return (
-        <select
-          value={value}
-          onChange={(event) => setDraftValues((current) => ({
-            ...current,
-            [header]: event.target.value,
-          }))}
-        >
-          <option value="">Select device</option>
-          {(dropdownOptions?.device || []).map((option) => (
-            <option key={option} value={option}>{option}</option>
-          ))}
-        </select>
+        <>
+          <input
+            type="text"
+            list="device-options"
+            value={value}
+            onChange={(event) => setDraftValues((current) => ({
+              ...current,
+              [header]: event.target.value,
+            }))}
+            placeholder="Type or pick device"
+          />
+          <datalist id="device-options">
+            {deviceOptions.map((option) => (
+              <option key={option} value={option} />
+            ))}
+          </datalist>
+        </>
       );
     }
 
     if (key === 'STORAGE') {
+      const storageOptions = Array.from(new Set([
+        ...(dropdownOptions?.storage || []),
+        value,
+      ].map((option) => String(option || '').trim()).filter(Boolean)));
       return (
-        <select
-          value={value}
-          onChange={(event) => setDraftValues((current) => ({
-            ...current,
-            [header]: event.target.value,
-          }))}
-        >
-          <option value="">Select storage</option>
-          {(dropdownOptions?.storage || []).map((option) => (
-            <option key={option} value={option}>{option}</option>
-          ))}
-        </select>
+        <>
+          <input
+            type="text"
+            list="storage-options"
+            value={value}
+            onChange={(event) => setDraftValues((current) => ({
+              ...current,
+              [header]: event.target.value,
+            }))}
+            placeholder="Type or pick storage"
+          />
+          <datalist id="storage-options">
+            {storageOptions.map((option) => (
+              <option key={option} value={option} />
+            ))}
+          </datalist>
+        </>
       );
     }
 
@@ -2017,13 +2035,31 @@ function CartView({
                         />
                       </label>
 
+                      <label className="field-block">
+                        <span className="field-label">Amount Paid</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={item.amount_paid}
+                          onChange={(event) => onUpdateCartItem(item.stock_row_num, 'amount_paid', normalizeDigits(event.target.value))}
+                          placeholder="Amount received"
+                        />
+                      </label>
+
+                      <label className="field-block">
+                        <span className="field-label">Phone Expense (Optional)</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={item.phone_expense}
+                          onChange={(event) => onUpdateCartItem(item.stock_row_num, 'phone_expense', normalizeDigits(event.target.value))}
+                          placeholder="Cost incurred for this sale"
+                        />
+                      </label>
+
                       <label className="field-block field-block--wide">
-                        <span className="field-label">Status State</span>
-                        <select value={item.payment_status} onChange={(event) => onUpdateCartItem(item.stock_row_num, 'payment_status', event.target.value)}>
-                          {CART_PAYMENT_STATUS_OPTIONS.map((option) => (
-                            <option key={option} value={option}>{option}</option>
-                          ))}
-                        </select>
+                        <span className="field-label">Payment Status (Auto)</span>
+                        <input type="text" value={item.payment_status || 'UNPAID'} readOnly />
                       </label>
 
                       <label className="field-block">
@@ -4991,7 +5027,20 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         };
       }
 
-      return { ...item, [field]: value };
+      const nextItem = { ...item, [field]: value };
+      if (field === 'sale_price' || field === 'amount_paid') {
+        const saleValue = parseAmountLike(nextItem.sale_price);
+        const paidValue = parseAmountLike(nextItem.amount_paid);
+        if (paidValue <= 0) {
+          nextItem.payment_status = 'UNPAID';
+        } else if (saleValue > 0 && paidValue < saleValue) {
+          nextItem.payment_status = 'PART PAYMENT';
+        } else if (saleValue > 0 && paidValue >= saleValue) {
+          nextItem.payment_status = 'PAID';
+        }
+      }
+
+      return nextItem;
     }));
   }
 
@@ -5179,6 +5228,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           buyer_name: item.buyer_name,
           buyer_phone: item.buyer_phone,
           sale_price: item.sale_price,
+          amount_paid: item.amount_paid,
+          phone_expense: item.phone_expense,
           stock_status: item.payment_status === 'PAID' ? 'Sold' : 'Pending Deal',
           inventory_status: item.payment_status,
         })),

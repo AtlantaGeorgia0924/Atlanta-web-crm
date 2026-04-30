@@ -3424,6 +3424,8 @@ class BackendRuntime:
             buyer_name = str(item.get('buyer_name') or '').strip().upper()
             buyer_phone = normalize_phone_number(item.get('buyer_phone') or '')
             sale_price = clean_amount(item.get('sale_price'))
+            raw_amount_paid = clean_amount(item.get('amount_paid'))
+            phone_expense = clean_amount(item.get('phone_expense'))
             stock_status_choice = str(item.get('stock_status') or 'sold').strip()
             inventory_status = str(item.get('inventory_status') or 'UNPAID').strip().upper()
             availability_override = str(item.get('availability_value') or '').strip()
@@ -3434,6 +3436,20 @@ class BackendRuntime:
                 return {'error': f'Enter a valid sale price for stock row {row_num}.'}
             if not description:
                 return {'error': f'Stock row {row_num} is missing a description.'}
+
+            # Payment status is derived automatically from paid amount vs sold amount.
+            if raw_amount_paid < 0:
+                raw_amount_paid = 0
+            if raw_amount_paid > sale_price:
+                return {'error': f'Amount paid cannot be greater than amount sold for stock row {row_num}.'}
+            if raw_amount_paid <= 0:
+                inventory_status = 'UNPAID'
+            elif raw_amount_paid < sale_price:
+                inventory_status = 'PART PAYMENT'
+            else:
+                inventory_status = 'PAID'
+
+            stock_status_choice = 'Sold' if inventory_status == 'PAID' else 'Pending Deal'
 
             if inventory_status not in {'PAID', 'UNPAID', 'PART PAYMENT', 'RETURNED'}:
                 inventory_status = 'UNPAID'
@@ -3556,9 +3572,9 @@ class BackendRuntime:
                         'kind': 'main_update_cell',
                         'row': updated_existing_row,
                         'col': main_paid_col + 1,
-                        'value': sale_price,
+                        'value': raw_amount_paid,
                     },
-                    cache_apply_callable=lambda rn=updated_existing_row, cn=main_paid_col + 1, nv=sale_price: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                    cache_apply_callable=lambda rn=updated_existing_row, cn=main_paid_col + 1, nv=raw_amount_paid: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
                 )
                 queued_operation_ids.append(queue_paid)
 
@@ -3602,7 +3618,7 @@ class BackendRuntime:
                         sold_by=sold_by_text,
                     )
             else:
-                amount_paid = sale_price if inventory_status == 'PAID' else 0
+                amount_paid = raw_amount_paid
                 record_id = uuid.uuid4().hex
                 values_by_header = {
                     'DATE': today_text,
@@ -3658,6 +3674,18 @@ class BackendRuntime:
                         date=datetime.now(timezone.utc),
                         sold_by=sold_by_text,
                     )
+
+            if phone_expense > 0:
+                try:
+                    self.append_cashflow_expense_record(
+                        amount=phone_expense,
+                        category='PHONE SALE EXPENSE',
+                        description=str(description or '').strip(),
+                        date_text=today_text,
+                        created_by=buyer_name,
+                    )
+                except Exception as cashflow_exc:
+                    self.logger.warning('Failed to write phone sale expense to cashflow sheet: %s', cashflow_exc)
 
                 next_main_row += 1
                 next_sun_serial += 1

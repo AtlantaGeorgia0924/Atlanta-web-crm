@@ -256,6 +256,8 @@ class StockCartItem(BaseModel):
     buyer_name: str = ''
     buyer_phone: str = ''
     sale_price: Any = None
+    amount_paid: Any = None
+    phone_expense: Any = None
     stock_status: str = 'sold'
     inventory_status: str = 'UNPAID'
     availability_value: str = ''
