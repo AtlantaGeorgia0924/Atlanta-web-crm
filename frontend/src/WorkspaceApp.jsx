@@ -648,18 +648,22 @@ class ViewErrorBoundary extends React.Component {
   }
 }
 
-function MaskedMetricCard({ label, value, note, revealKey, revealedMetric, setRevealedMetric, className = '' }) {
+function MaskedMetricCard({ label, value, note, revealKey, revealedMetric, setRevealedMetric, className = '', onClick }) {
   const visible = revealedMetric === revealKey;
 
   return (
-    <article className={`metric-card metric-card--home ${className}`.trim()}>
+    <article
+      className={`metric-card metric-card--home ${className}`.trim()}
+      style={onClick ? { cursor: 'pointer' } : undefined}
+      onClick={onClick}
+    >
       <div className="metric-card__top">
         <span className="metric-label">{label}</span>
         <button
           type="button"
           className="hold-button"
-          onPointerDown={() => setRevealedMetric(revealKey)}
-          onPointerUp={() => setRevealedMetric('')}
+          onPointerDown={(e) => { e.stopPropagation(); setRevealedMetric(revealKey); }}
+          onPointerUp={(e) => { e.stopPropagation(); setRevealedMetric(''); }}
           onPointerLeave={() => setRevealedMetric('')}
           onPointerCancel={() => setRevealedMetric('')}
         >
@@ -897,6 +901,7 @@ function CashFlowView({
   cashflowSummary,
   weeklyAllowance,
   expenses,
+  transactions,
   expenseSource,
   expenseSheetTitle,
   loading,
@@ -910,6 +915,42 @@ function CashFlowView({
   const summary = cashflowSummary || {};
   const allowance = weeklyAllowance || {};
   const [revealedMetric, setRevealedMetric] = useState('');
+  const [drillDown, setDrillDown] = useState(null); // { title, rows }
+  const allTx = Array.isArray(transactions) ? transactions : [];
+
+  function openDrillDown(title, filterFn) {
+    setDrillDown({ title, rows: allTx.filter(filterFn) });
+  }
+
+  function closeDrillDown() {
+    setDrillDown(null);
+  }
+
+  function txIsThisWeek(tx, weekStart, weekEnd) {
+    try {
+      const d = parse_date_approx(tx.date || tx.payment_date || '');
+      return d !== null && d >= weekStart && d <= weekEnd;
+    } catch {
+      return false;
+    }
+  }
+
+  function parse_date_approx(raw) {
+    if (!raw) return null;
+    // Try formats dd/mm/yyyy, yyyy-mm-dd, d/m/yyyy, dd-mm-yyyy
+    const clean = String(raw).trim();
+    let m = clean.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (m) return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+    m = clean.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return null;
+  }
+
+  const today = new Date();
+  const dayOfWeek = (today.getDay() + 6) % 7; // Mon=0 … Sun=6  (same logic as backend: weekday+1)%7 but backend uses Mon start
+  const weekStart = new Date(today); weekStart.setDate(today.getDate() - ((today.getDay() + 6) % 7)); weekStart.setHours(0,0,0,0);
+  const weekEnd = new Date(today); weekEnd.setHours(23,59,59,999);
+
   const [expenseDraft, setExpenseDraft] = useState({
     amount: '',
     category: '',
@@ -946,15 +987,17 @@ function CashFlowView({
       key: 'cash-in',
       label: 'Total Profit (Month)',
       value: formatCurrency(summary.total_cash_in || 0),
-      note: 'Total paid income received this month.',
+      note: 'Total paid income received this month. Click to view.',
       className: '',
+      onClick: () => openDrillDown('Total Profit (Month) — All Paid Income', (tx) => tx.source === 'income' && tx.payment_status !== 'OWING'),
     },
     {
       key: 'expenses',
       label: 'Total Expenses',
       value: formatCurrency(summary.total_expenses || 0),
-      note: 'All tracked expenses from the cash-flow sheet.',
+      note: 'All tracked expenses from the cash-flow sheet. Click to view.',
       className: '',
+      onClick: () => openDrillDown('Total Expenses — All Recorded Expenses', (tx) => tx.source !== 'income'),
     },
     {
       key: 'profit',
@@ -967,23 +1010,26 @@ function CashFlowView({
       key: 'expected-income',
       label: 'Expected Income',
       value: formatCurrency(summary.expected_income || 0),
-      note: 'Owing / not yet paid — not included in profit.',
+      note: 'Owing / not yet paid — not included in profit. Click to view.',
       className: '',
+      onClick: () => openDrillDown('Expected Income — Unpaid / Owing', (tx) => tx.source === 'income' && tx.payment_status === 'OWING'),
     },
     // ── This week ───────────────────────────────────────────────────────────
     {
       key: 'week-gross',
       label: 'This Week Profit',
       value: formatCurrency(weekGrossProfit),
-      note: `Phone ${formatCurrency(summary.current_week_phone_profit || 0)} + services ${formatCurrency(summary.current_week_service_profit || 0)}.`,
+      note: `Phone ${formatCurrency(summary.current_week_phone_profit || 0)} + services ${formatCurrency(summary.current_week_service_profit || 0)}. Click to view.`,
       className: '',
+      onClick: () => openDrillDown('This Week Profit — Phones & Services', (tx) => tx.source === 'income' && tx.payment_status !== 'OWING' && txIsThisWeek(tx, weekStart, weekEnd)),
     },
     {
       key: 'week-expenses',
       label: 'This Week Expenses',
       value: formatCurrency(summary.current_week_expenses || 0),
-      note: 'Expenses recorded during this week.',
+      note: 'Expenses recorded during this week. Click to view.',
       className: '',
+      onClick: () => openDrillDown('This Week Expenses', (tx) => tx.source !== 'income' && txIsThisWeek(tx, weekStart, weekEnd)),
     },
     {
       key: 'week-net',
@@ -1055,11 +1101,70 @@ function CashFlowView({
                 revealedMetric={revealedMetric}
                 setRevealedMetric={setRevealedMetric}
                 className={card.className}
+                onClick={card.onClick}
               />
             );
           })}
         </div>
       </section>
+
+      {drillDown && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={drillDown.title}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9999,
+            background: 'rgba(0,0,0,0.55)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '16px',
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) closeDrillDown(); }}
+        >
+          <div style={{
+            background: '#fff', borderRadius: '12px',
+            width: '100%', maxWidth: '720px',
+            maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.22)',
+          }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0, fontSize: '1rem' }}>{drillDown.title}</h3>
+              <button type="button" onClick={closeDrillDown} style={{ background: 'none', border: 'none', fontSize: '1.4rem', cursor: 'pointer', lineHeight: 1 }}>×</button>
+            </div>
+            {drillDown.rows.length === 0 ? (
+              <p style={{ padding: '24px 20px', color: '#6b7280', textAlign: 'center' }}>No records found.</p>
+            ) : (
+              <div style={{ overflowY: 'auto', flex: 1 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                  <thead>
+                    <tr style={{ background: '#f9fafb', position: 'sticky', top: 0 }}>
+                      <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Date</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Category</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Description</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'right', borderBottom: '1px solid #e5e7eb' }}>Amount</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>By</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {drillDown.rows.map((tx, idx) => (
+                      <tr key={`${tx.row_num ?? idx}`} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                        <td style={{ padding: '7px 12px', whiteSpace: 'nowrap' }}>{tx.payment_date || tx.date || '—'}</td>
+                        <td style={{ padding: '7px 12px' }}>{tx.category || '—'}</td>
+                        <td style={{ padding: '7px 12px' }}>{tx.description || '—'}</td>
+                        <td style={{ padding: '7px 12px', textAlign: 'right', fontWeight: 600 }}>{formatCurrency(Number(String(tx.amount || '0').replace(/[^0-9.\-]/g, '')) || 0)}</td>
+                        <td style={{ padding: '7px 12px', color: '#6b7280' }}>{tx.created_by || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div style={{ padding: '10px 20px', borderTop: '1px solid #e5e7eb', textAlign: 'right', color: '#6b7280', fontSize: '0.8rem' }}>
+              {drillDown.rows.length} record{drillDown.rows.length !== 1 ? 's' : ''}
+            </div>
+          </div>
+        </div>
+      )}
 
       <section className="summary-frame">
         <h3>Record Expense</h3>
@@ -3598,6 +3703,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [cashflowSummary, setCashflowSummary] = useState(null);
   const [weeklyAllowance, setWeeklyAllowance] = useState(null);
   const [cashflowExpenses, setCashflowExpenses] = useState([]);
+  const [cashflowTransactions, setCashflowTransactions] = useState([]);
   const [cashflowExpenseSource, setCashflowExpenseSource] = useState('database');
   const [cashflowExpenseSheetTitle, setCashflowExpenseSheetTitle] = useState('CASH FLOW');
   const [cashflowLoading, setCashflowLoading] = useState(false);
@@ -3996,6 +4102,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setCashflowSummary(nextSummary);
       setWeeklyAllowance(nextAllowance);
       setCashflowExpenses(Array.isArray(result?.expenses) ? result.expenses : []);
+      setCashflowTransactions(Array.isArray(result?.transactions) ? result.transactions : []);
       setCashflowExpenseSource(result?.expense_source || nextSummary.expense_source || 'database');
       setCashflowExpenseSheetTitle(result?.expense_sheet_title || 'CASH FLOW');
       setCashflowExpenseError('');
@@ -5463,6 +5570,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           cashflowSummary={cashflowSummary}
           weeklyAllowance={weeklyAllowance}
           expenses={cashflowExpenses}
+          transactions={cashflowTransactions}
           expenseSource={cashflowExpenseSource}
           expenseSheetTitle={cashflowExpenseSheetTitle}
           loading={cashflowLoading}

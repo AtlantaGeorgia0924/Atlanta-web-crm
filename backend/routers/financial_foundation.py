@@ -155,12 +155,15 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
+    transactions = runtime.get_cashflow_sheet_records(force_refresh=force_refresh).get('items', [])
+
     return {
         'summary': summary,
         'weekly_allowance': weekly_allowance,
         'expenses': expense_summary.get('items', []),
         'expense_source': expense_summary.get('source', 'database'),
         'expense_sheet_title': expense_summary.get('sheet_title', 'CASH FLOW'),
+        'transactions': transactions,
     }
 
 
@@ -182,6 +185,18 @@ def get_weekly_allowance(runtime=Depends(get_runtime), current_user=Depends(get_
 def rebuild_cashflow_week(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
         result = runtime.rebuild_cashflow_sheet_for_current_week(force_refresh=force_refresh)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    return result
+
+
+@router.post('/cashflow/rebuild', dependencies=[Depends(require_admin)])
+def rebuild_cashflow(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
+    try:
+        result = runtime.rebuild_cashflow_sheet(force_refresh=force_refresh, current_week_only=False)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
