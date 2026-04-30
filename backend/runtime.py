@@ -277,10 +277,9 @@ class BackendRuntime:
         try:
             profit = (selling_price - cost_price_at_sale) * quantity
             if profit > 0:
-                paid_amount = selling_price * quantity
                 total_cost = cost_price_at_sale * quantity
                 self.append_cashflow_income_record(
-                    amount=paid_amount,
+                    amount=profit,
                     category='PHONE PROFIT',
                     description=f'Item record_id: {stock_record_key}, sale: {selling_price:.2f}, cost: {cost_price_at_sale:.2f}',
                     date_text=datetime.now(timezone.utc).date().isoformat(),
@@ -634,6 +633,17 @@ class BackendRuntime:
     def _cashflow_row_match(left, right):
         return str(left or '').strip().upper() == str(right or '').strip().upper()
 
+    @staticmethod
+    def _record_value(record, *aliases):
+        payload = record or {}
+        for key in aliases:
+            if key in payload:
+                return payload.get(key)
+            upper_key = str(key or '').strip().upper()
+            if upper_key in payload:
+                return payload.get(upper_key)
+        return None
+
     def mark_cashflow_income_paid(self, *, entry_type, description='', created_by='', payment_date_text='', amount=None, cost_price=None):
         worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
         target_payment_date = str(payment_date_text or datetime.now(timezone.utc).date().isoformat()).strip()
@@ -700,6 +710,30 @@ class BackendRuntime:
                 if description and not self._cashflow_row_match(normalized.get('description'), description):
                     continue
                 if created_by and not self._cashflow_row_match(normalized.get('created_by'), created_by):
+                    continue
+                return True
+        return False
+
+    def has_cashflow_income_paid_record(self, *, entry_type, description='', created_by='', payment_date_text=''):
+        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+        target_type = str(entry_type or '').strip().lower() or 'service'
+        target_payment_date = str(payment_date_text or '').strip()
+        with self._sheet_lock:
+            values = worksheet.get_all_values()
+            for row_num in range(len(values), 1, -1):
+                row_values = values[row_num - 1] if row_num - 1 < len(values) else []
+                normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+                if str(normalized.get('source') or '').strip().lower() != 'income':
+                    continue
+                if str(normalized.get('payment_status') or '').strip().upper() != 'PAID':
+                    continue
+                if str(normalized.get('type') or '').strip().lower() != target_type:
+                    continue
+                if description and not self._cashflow_row_match(normalized.get('description'), description):
+                    continue
+                if created_by and not self._cashflow_row_match(normalized.get('created_by'), created_by):
+                    continue
+                if target_payment_date and not self._cashflow_row_match(normalized.get('payment_date'), target_payment_date):
                     continue
                 return True
         return False
@@ -798,11 +832,8 @@ class BackendRuntime:
                         realized_profit = amount
                         total_service_realized_profit += realized_profit
                     else:
-                        # Backward compat for legacy phone rows where AMOUNT already stored profit.
-                        if cost_price > 0:
-                            realized_profit = max(0.0, amount - cost_price)
-                        else:
-                            realized_profit = amount
+                        # Phone rows in cashflow store realized profit in amount.
+                        realized_profit = amount
                         total_phone_realized_profit += realized_profit
                 else:
                     total_owing_income += amount
@@ -815,10 +846,7 @@ class BackendRuntime:
                     if entry_type == 'service' or ('service' in category and entry_type not in ('phone', 'service')):
                         current_week_service_profit += amount
                     else:
-                        if cost_price > 0:
-                            current_week_phone_profit += max(0.0, amount - cost_price)
-                        else:
-                            current_week_phone_profit += amount
+                        current_week_phone_profit += amount
                 elif not is_income:
                     current_week_expenses += amount
 
@@ -889,7 +917,7 @@ class BackendRuntime:
             text = text.replace(token, ' ')
         return ' '.join(text.split())
 
-    def rebuild_cashflow_sheet_for_current_week(self, force_refresh=False):
+    def rebuild_cashflow_sheet(self, force_refresh=False, current_week_only=False):
         today = datetime.now(timezone.utc).date()
         week_start = today - timedelta(days=today.weekday())
 
@@ -897,26 +925,40 @@ class BackendRuntime:
         stock_values = self.get_stock_values(force_refresh=force_refresh)
 
         stock_cost_by_desc = {}
-        for row_values in stock_values[3:]:
+        stock_cost_by_imei = {}
+        stock_header_row_idx, _, stock_headers_upper = detect_stock_headers(stock_values)
+        stock_desc_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DEVICE', 'DESC')
+        stock_imei_col = svc_stock_header_index(stock_headers_upper, 'IMEI')
+        stock_cost_col = svc_stock_header_index(stock_headers_upper, 'COST PRICE', 'COST')
+        for row_values in stock_values[stock_header_row_idx + 1:]:
             row = list(row_values or [])
-            description = self._normalize_cashflow_lookup_text(row[3] if len(row) > 3 else '')
-            cost_price = clean_amount(row[7] if len(row) > 7 else '')
-            if description and cost_price and description not in stock_cost_by_desc:
+            description = self._normalize_cashflow_lookup_text(row[stock_desc_col] if stock_desc_col is not None and stock_desc_col < len(row) else '')
+            imei_text = str(row[stock_imei_col] if stock_imei_col is not None and stock_imei_col < len(row) else '').strip()
+            cost_price = clean_amount(row[stock_cost_col] if stock_cost_col is not None and stock_cost_col < len(row) else '')
+            if not cost_price:
+                continue
+            if imei_text and imei_text not in stock_cost_by_imei:
+                stock_cost_by_imei[imei_text] = cost_price
+            if description and description not in stock_cost_by_desc:
                 stock_cost_by_desc[description] = cost_price
 
         expense_rows = []
-        for expense in self.get_cashflow_expense_records(force_refresh=force_refresh).get('items', []):
+        existing_expenses = self.get_cashflow_expense_records(force_refresh=force_refresh).get('items', [])
+        for expense in existing_expenses:
             expense_date = parse_sheet_date(expense.get('date'))
-            if expense_date is None or expense_date < week_start or expense_date > today:
+            if expense_date is None:
+                continue
+            if current_week_only and (expense_date < week_start or expense_date > today):
                 continue
             expense_rows.append({
                 'date': expense_date.isoformat(),
                 'category': str(expense.get('category') or 'EXPENSE').strip() or 'EXPENSE',
-                'amount': round(clean_amount(expense.get('amount')), 2),
+                'amount': round(max(0.0, clean_amount(expense.get('amount'))), 2),
                 'description': str(expense.get('description') or '').strip(),
                 'created_by': str(expense.get('created_by') or '').strip(),
                 'source': 'expense',
                 'type': 'expense',
+                'payment_status': '',
                 'cost_price': '',
                 'payment_date': '',
             })
@@ -926,57 +968,69 @@ class BackendRuntime:
         service_profit_total = 0.0
 
         for record in main_records:
-            record_date = parse_sheet_date(record.get('DATE'))
-            if record_date is None or record_date < week_start or record_date > today:
-                continue
-
-            status = str(record.get('STATUS') or '').strip().upper()
+            status = str(self._record_value(record, 'STATUS') or '').strip().upper()
             if status != 'PAID':
                 continue
 
-            price = clean_amount(record.get('PRICE'))
+            payment_date_raw = self._record_value(record, 'PAYMENT DATE', 'PAID DATE', 'DATE')
+            payment_date = parse_sheet_date(payment_date_raw)
+            if payment_date is None:
+                continue
+            if current_week_only and (payment_date < week_start or payment_date > today):
+                continue
+
+            price = clean_amount(self._record_value(record, 'PRICE', 'AMOUNT SOLD', 'SELLING PRICE'))
             if price <= 0:
                 continue
 
-            description = str(record.get('DESCRIPTION') or '').strip()
+            description = str(self._record_value(record, 'DESCRIPTION', 'MODEL', 'DEVICE') or '').strip()
             normalized_description = self._normalize_cashflow_lookup_text(description)
-            imei = str(record.get('IMEI') or '').strip()
-            seller_or_buyer = str(record.get('NAME') or '').strip()
+            imei = str(self._record_value(record, 'IMEI') or '').strip()
+            actor = str(self._record_value(record, 'NAME', 'NAME OF BUYER', 'CLIENT NAME') or '').strip()
 
-            if imei and 'IPHONE' in normalized_description:
-                cost_price = stock_cost_by_desc.get(normalized_description)
-                if cost_price is None:
+            if imei:
+                cost_price = clean_amount(self._record_value(record, 'COST PRICE', 'COST'))
+                if cost_price <= 0:
+                    cost_price = stock_cost_by_imei.get(imei, 0)
+                if cost_price <= 0:
+                    cost_price = stock_cost_by_desc.get(normalized_description, 0)
+                if cost_price <= 0:
                     continue
-                profit = round(price - cost_price, 2)
+                profit = round(max(0.0, price - cost_price), 2)
+                if profit <= 0:
+                    continue
                 phone_profit_total += profit
                 income_rows.append({
-                    'date': record_date.isoformat(),
+                    'date': payment_date.isoformat(),
                     'category': 'PHONE PROFIT',
-                    'amount': round(price, 2),
+                    'amount': profit,
                     'description': description,
-                    'created_by': seller_or_buyer,
+                    'created_by': actor,
                     'source': 'income',
                     'payment_status': 'PAID',
                     'type': 'phone',
                     'cost_price': round(cost_price, 2),
-                    'payment_date': record_date.isoformat(),
+                    'payment_date': payment_date.isoformat(),
                 })
                 continue
 
-            if not imei:
-                service_profit_total += price
-                income_rows.append({
-                    'date': record_date.isoformat(),
-                    'category': 'SERVICE PROFIT',
-                    'amount': price,
-                    'description': description,
-                    'created_by': seller_or_buyer,
-                    'source': 'income',
-                    'payment_status': 'PAID',
-                    'type': 'service',
-                    'cost_price': '',
-                    'payment_date': record_date.isoformat(),
-                })
+            # Non-IMEI rows are treated as service transactions.
+            service_profit = round(max(0.0, price), 2)
+            if service_profit <= 0:
+                continue
+            service_profit_total += service_profit
+            income_rows.append({
+                'date': payment_date.isoformat(),
+                'category': 'SERVICE PROFIT',
+                'amount': service_profit,
+                'description': description,
+                'created_by': actor,
+                'source': 'income',
+                'payment_status': 'PAID',
+                'type': 'service',
+                'cost_price': '',
+                'payment_date': payment_date.isoformat(),
+            })
 
         sheet_rows = sorted(expense_rows + income_rows, key=lambda row: (row.get('date') or '', row.get('category') or '', row.get('description') or ''))
         sheet_values = [[
@@ -1022,30 +1076,26 @@ class BackendRuntime:
                 try:
                     self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', worksheet.get_all_values())
                 except Exception as exc:
-                    self.logger.warning('Failed to refresh cashflow cache after weekly rebuild: %s', exc)
+                    self.logger.warning('Failed to refresh cashflow cache after rebuild: %s', exc)
 
-        paid_income_total = phone_profit_total + service_profit_total
-        expense_total = round(sum(row.get('amount', 0) for row in expense_rows), 2)
-        weekly_net = paid_income_total - expense_total
-        raw_allowance = max(0.0, paid_income_total) * 0.30
-        allowance = round(raw_allowance, 2)
-        try:
-            latest_summary = self.get_cashflow_summary_from_sheet(force_refresh=True)
-            allowance = round(min(allowance, max(0.0, clean_amount(latest_summary.get('available_cash')))), 2)
-        except Exception:
-            allowance = round(max(0.0, allowance), 2)
+        period_expenses = round(sum(row.get('amount', 0) for row in expense_rows), 2)
+        period_profit = round(phone_profit_total + service_profit_total - period_expenses, 2)
+
         return {
+            'mode': 'current_week' if current_week_only else 'full',
             'week_start': week_start.isoformat(),
             'week_end': today.isoformat(),
             'phone_profit_total': round(phone_profit_total, 2),
             'service_profit_total': round(service_profit_total, 2),
-            'expense_total': expense_total,
-            'net_profit': round(weekly_net, 2),
-            'weekly_allowance': allowance,
+            'expense_total': period_expenses,
+            'net_profit': period_profit,
             'rows_written': max(0, len(sheet_values) - 1),
             'source': 'sheet',
             'sheet_title': 'CASH FLOW',
         }
+
+    def rebuild_cashflow_sheet_for_current_week(self, force_refresh=False):
+        return self.rebuild_cashflow_sheet(force_refresh=force_refresh, current_week_only=True)
 
     @staticmethod
     def _build_sheet_row_values(headers, values_by_header):
@@ -2199,19 +2249,6 @@ class BackendRuntime:
                         entry_type='service',
                         payment_date_text=payment_date,
                     )
-
-                remaining_owing = max(0.0, price_amount - paid_amount)
-                if remaining_owing > 0:
-                    self.append_cashflow_income_record(
-                        amount=remaining_owing,
-                        category='SERVICE PROFIT',
-                        description=service_description,
-                        date_text=payment_date,
-                        created_by='service',
-                        payment_status='OWING',
-                        entry_type='service',
-                        payment_date_text='',
-                    )
             except Exception as cashflow_exc:
                 self.logger.warning('Failed to write service income to cashflow sheet: %s', cashflow_exc)
 
@@ -2909,17 +2946,23 @@ class BackendRuntime:
             cashflow_created_by = buyer_name or buyer_phone or 'stock'
 
             if status_text == 'PAID' and comparison_price > 0:
+                phone_profit_amount = max(0.0, comparison_price - max(0.0, cost_price_value))
                 updated_row = self.mark_cashflow_income_paid(
                     entry_type='phone',
                     description=cashflow_description,
                     created_by=cashflow_created_by,
                     payment_date_text=payment_date_iso,
-                    amount=comparison_price,
+                    amount=phone_profit_amount,
                     cost_price=cost_price_value if cost_price_value > 0 else None,
                 )
-                if updated_row is None:
+                if updated_row is None and not self.has_cashflow_income_paid_record(
+                    entry_type='phone',
+                    description=cashflow_description,
+                    created_by=cashflow_created_by,
+                    payment_date_text=payment_date_iso,
+                ):
                     self.append_cashflow_income_record(
-                        amount=comparison_price,
+                        amount=phone_profit_amount,
                         category='PHONE PROFIT',
                         description=cashflow_description,
                         date_text=payment_date_iso,
@@ -2928,24 +2971,6 @@ class BackendRuntime:
                         entry_type='phone',
                         cost_price=cost_price_value if cost_price_value > 0 else '',
                         payment_date_text=payment_date_iso,
-                    )
-            elif status_text != 'PAID' and comparison_price > 0:
-                has_owing_row = self.has_cashflow_income_owing_record(
-                    entry_type='phone',
-                    description=cashflow_description,
-                    created_by=cashflow_created_by,
-                )
-                if not has_owing_row:
-                    self.append_cashflow_income_record(
-                        amount=comparison_price,
-                        category='PHONE PROFIT',
-                        description=cashflow_description,
-                        date_text=payment_date_iso,
-                        created_by=cashflow_created_by,
-                        payment_status='OWING',
-                        entry_type='phone',
-                        cost_price=cost_price_value if cost_price_value > 0 else '',
-                        payment_date_text='',
                     )
         except Exception as cashflow_exc:
             self.logger.warning('Failed to sync pending-deal payment to cashflow rows: %s', cashflow_exc)
@@ -3741,6 +3766,7 @@ class BackendRuntime:
         description_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
         imei_col = svc_stock_header_index(headers_upper, 'IMEI')
         price_col = svc_stock_header_index(headers_upper, 'PRICE', 'AMOUNT SOLD', 'SELLING PRICE')
+        cost_col = svc_stock_header_index(headers_upper, 'COST PRICE', 'COST')
         paid_field_name = values[0][paid_col] if paid_col < len(values[0]) else 'Amount paid'
         status_field_name = values[0][status_col] if status_col < len(values[0]) else 'STATUS'
         queue_ids = []
@@ -3793,25 +3819,34 @@ class BackendRuntime:
                 description_text = str(row_values[description_col] if description_col is not None and description_col < len(row_values) else '').strip().upper()
                 imei_value = str(row_values[imei_col] if imei_col is not None and imei_col < len(row_values) else '').strip()
                 sale_amount = clean_amount(row_values[price_col]) if price_col is not None and price_col < len(row_values) else clean_amount(item.get('new_paid'))
+                cost_amount = clean_amount(row_values[cost_col]) if cost_col is not None and cost_col < len(row_values) else 0
 
                 entry_type = 'phone' if imei_value else 'service'
                 cashflow_description = description_text or imei_value
+                realized_amount = sale_amount if entry_type == 'service' else max(0.0, sale_amount - max(0.0, cost_amount))
                 updated_row = self.mark_cashflow_income_paid(
                     entry_type=entry_type,
                     description=cashflow_description,
                     created_by=customer_name,
                     payment_date_text=payment_date_iso,
-                    amount=sale_amount if sale_amount > 0 else None,
+                    amount=realized_amount if realized_amount > 0 else None,
+                    cost_price=cost_amount if entry_type == 'phone' and cost_amount > 0 else None,
                 )
-                if updated_row is None and sale_amount > 0:
+                if updated_row is None and realized_amount > 0 and not self.has_cashflow_income_paid_record(
+                    entry_type=entry_type,
+                    description=cashflow_description,
+                    created_by=customer_name,
+                    payment_date_text=payment_date_iso,
+                ):
                     self.append_cashflow_income_record(
-                        amount=sale_amount,
+                        amount=realized_amount,
                         category='PHONE PROFIT' if entry_type == 'phone' else 'SERVICE PROFIT',
                         description=cashflow_description,
                         date_text=payment_date_iso,
                         created_by=customer_name or 'payment',
                         payment_status='PAID',
                         entry_type=entry_type,
+                        cost_price=cost_amount if entry_type == 'phone' and cost_amount > 0 else '',
                         payment_date_text=payment_date_iso,
                     )
         except Exception as cashflow_exc:
