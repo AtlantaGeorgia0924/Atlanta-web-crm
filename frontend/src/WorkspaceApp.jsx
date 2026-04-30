@@ -737,6 +737,35 @@ function ActionSidebar({ activeView, undoEnabled, redoEnabled, onTrigger, action
 
 function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStatus, lastLoadedAt, revealedMetric, setRevealedMetric, onStatisticClick, onSecretCashflow }) {
   const stockCounts = stockView?.counts || {};
+  const [secretTapCount, setSecretTapCount] = useState(0);
+  const secretTapResetRef = useRef(null);
+
+  useEffect(() => () => {
+    if (secretTapResetRef.current) {
+      clearTimeout(secretTapResetRef.current);
+    }
+  }, []);
+
+  function handleSecretCashflowTap() {
+    setSecretTapCount((current) => {
+      const next = current + 1;
+      if (secretTapResetRef.current) {
+        clearTimeout(secretTapResetRef.current);
+      }
+      secretTapResetRef.current = setTimeout(() => {
+        setSecretTapCount(0);
+      }, 2500);
+
+      if (next >= 7) {
+        clearTimeout(secretTapResetRef.current);
+        secretTapResetRef.current = null;
+        onSecretCashflow?.();
+        return 0;
+      }
+
+      return next;
+    });
+  }
   const homeSummaryCards = [
     {
       type: 'plain',
@@ -800,9 +829,9 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
           <h2>Live Summary</h2>
           <button
             type="button"
-            onClick={() => onSecretCashflow?.()}
+            onClick={handleSecretCashflowTap}
             aria-label="Open cash flow"
-            title="Open Cash Flow Dashboard"
+            title={`Open Cash Flow Dashboard (${Math.max(0, 7 - secretTapCount)} taps left)`}
             style={{
               width: '28px',
               height: '28px',
@@ -902,6 +931,9 @@ function CashFlowView({
   weeklyAllowance,
   expenses,
   transactions,
+  debtorsData,
+  stockView,
+  nameFixData,
   expenseSource,
   expenseSheetTitle,
   loading,
@@ -914,6 +946,29 @@ function CashFlowView({
 }) {
   const summary = cashflowSummary || {};
   const allowance = weeklyAllowance || {};
+  const stockCounts = stockView?.counts || {};
+  const liveSummaryCards = [
+    {
+      label: 'Customers Owing',
+      value: formatCount((debtorsData?.sorted_debtors || []).length),
+      note: 'Live debtor count.',
+    },
+    {
+      label: 'Products Available',
+      value: formatCount(stockCounts.available),
+      note: 'Current available stock count.',
+    },
+    {
+      label: 'Pending Deals',
+      value: formatCount(stockCounts.pending),
+      note: 'Deals waiting to close.',
+    },
+    {
+      label: 'Name Fixes',
+      value: formatCount(nameFixData?.count),
+      note: 'Rows waiting for correction.',
+    },
+  ];
   const [revealedMetric, setRevealedMetric] = useState('');
   const [drillDown, setDrillDown] = useState(null); // { title, rows }
   const allTx = Array.isArray(transactions) ? transactions : [];
@@ -1065,6 +1120,19 @@ function CashFlowView({
 
   return (
     <div className="workspace-stack">
+      <section className="summary-frame">
+        <h2>Live Summary</h2>
+        <div className="summary-grid summary-grid--home" style={{ marginTop: '10px' }}>
+          {liveSummaryCards.map((card) => (
+            <article key={card.label} className="metric-card metric-card--home">
+              <span className="metric-label">{card.label}</span>
+              <strong className="metric-value">{card.value}</strong>
+              <span className="metric-note">{card.note}</span>
+            </article>
+          ))}
+        </div>
+      </section>
+
       <section className="summary-frame">
         <h2>Cashflow Dashboard</h2>
         <p className="metric-note" style={{ marginTop: '8px' }}>
@@ -5598,6 +5666,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           weeklyAllowance={weeklyAllowance}
           expenses={cashflowExpenses}
           transactions={cashflowTransactions}
+          debtorsData={debtorsData}
+          stockView={stockView}
+          nameFixData={nameFixData}
           expenseSource={cashflowExpenseSource}
           expenseSheetTitle={cashflowExpenseSheetTitle}
           loading={cashflowLoading}
