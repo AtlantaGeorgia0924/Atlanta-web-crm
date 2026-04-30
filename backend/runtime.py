@@ -803,6 +803,7 @@ class BackendRuntime:
         total_service_realized_profit = 0.0
 
         current_day = datetime.now(timezone.utc).date()
+        current_month_start = current_day.replace(day=1)
         current_week_start = current_day - timedelta(days=(current_day.weekday() + 1) % 7)
         current_week_end_date = current_day
         current_week_paid_income = 0.0
@@ -824,21 +825,27 @@ class BackendRuntime:
 
             is_income = source == 'income'
             is_paid = payment_status != 'OWING'  # missing/PAID both count as paid (backward compat)
+            in_current_month = entry_date is not None and entry_date >= current_month_start and entry_date <= current_day
+            has_phone_cost = cost_price > 0
+            allow_phone_profit = entry_type != 'phone' or has_phone_cost
 
-            if is_income:
-                if is_paid:
-                    total_paid_income += amount
-                    if entry_type == 'service':
-                        realized_profit = amount
-                        total_service_realized_profit += realized_profit
+            if in_current_month:
+                if is_income:
+                    if is_paid:
+                        if allow_phone_profit:
+                            total_paid_income += amount
+                            if entry_type == 'service':
+                                realized_profit = amount
+                                total_service_realized_profit += realized_profit
+                            else:
+                                # Phone rows in cashflow store realized profit in amount.
+                                realized_profit = amount
+                                total_phone_realized_profit += realized_profit
                     else:
-                        # Phone rows in cashflow store realized profit in amount.
-                        realized_profit = amount
-                        total_phone_realized_profit += realized_profit
+                        if allow_phone_profit:
+                            total_owing_income += amount
                 else:
-                    total_owing_income += amount
-            else:
-                total_expenses += amount
+                    total_expenses += amount
 
             if entry_date is not None and current_week_start <= entry_date <= current_week_end_date:
                 if is_income and is_paid:
