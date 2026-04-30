@@ -2122,6 +2122,17 @@ function CartView({
               </label>
 
               <label className="field-block">
+                <span className="field-label">Service Expense</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={serviceDraft.service_expense}
+                  onChange={(event) => setServiceDraft((current) => ({ ...current, service_expense: normalizeDigits(event.target.value) }))}
+                  placeholder="Cost incurred for this service"
+                />
+              </label>
+
+              <label className="field-block">
                 <span className="field-label">Amount Paid</span>
                 <input
                   type="text"
@@ -3497,6 +3508,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     phone: '',
     description: '',
     price: '',
+    service_expense: '',
     amount_paid: '',
     status: 'UNPAID',
   });
@@ -5188,6 +5200,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     const phone = normalizeWhatsappPhone(serviceDraft.phone || '');
     const description = String(serviceDraft.description || '').trim();
     const price = normalizeDigits(serviceDraft.price || '');
+    const serviceExpense = normalizeDigits(serviceDraft.service_expense || '');
     let amountPaid = normalizeDigits(serviceDraft.amount_paid || '');
     let status = String(serviceDraft.status || 'UNPAID').trim().toUpperCase();
 
@@ -5218,12 +5231,13 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           'PHONE NUMBER': phone,
           DESCRIPTION: description,
           PRICE: price,
+          'SERVICE EXPENSE': serviceExpense || '0',
           'AMOUNT PAID': amountPaid,
           STATUS: status,
         },
         forceRefresh: true,
       });
-      setServiceDraft({ name: '', phone: '', description: '', price: '', amount_paid: '', status: 'UNPAID' });
+      setServiceDraft({ name: '', phone: '', description: '', price: '', service_expense: '', amount_paid: '', status: 'UNPAID' });
       await loadCoreWorkspace(false);
       setStatusText('Service row queued into inventory successfully.');
     } catch (error) {

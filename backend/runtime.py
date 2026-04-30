@@ -2204,6 +2204,15 @@ class BackendRuntime:
         for key, value in (values_by_header or {}).items():
             merged_values[str(key or '').strip().upper()] = '' if value is None else str(value)
 
+        # Service-specific cost incurred while delivering this service.
+        # This is recorded into cashflow expenses, not inventory profit columns.
+        service_expense_amount = clean_amount(
+            merged_values.get('SERVICE EXPENSE')
+            or merged_values.get('EXPENSE')
+            or merged_values.get('SERVICE COST')
+            or 0
+        )
+
         row_values = self._build_sheet_row_values(headers, merged_values)
         if not any(str(value or '').strip() for value in row_values):
             return {'error': 'Fill at least one service field before saving.'}
@@ -2234,6 +2243,7 @@ class BackendRuntime:
                 service_status = str(merged_values.get('STATUS') or '').strip().upper()
                 payment_date = str(merged_values.get('DATE') or now.date().isoformat()).strip()
                 service_description = str(merged_values.get('DESCRIPTION') or merged_values.get('MODEL') or merged_values.get('DEVICE') or '').strip()
+                service_actor = str(merged_values.get('NAME') or merged_values.get('CLIENT NAME') or 'service').strip().upper() or 'service'
 
                 if service_status == 'PAID' and paid_amount <= 0 and price_amount > 0:
                     paid_amount = price_amount
@@ -2244,10 +2254,20 @@ class BackendRuntime:
                         category='SERVICE PROFIT',
                         description=service_description,
                         date_text=payment_date,
-                        created_by='service',
+                        created_by=service_actor,
                         payment_status='PAID',
                         entry_type='service',
                         payment_date_text=payment_date,
+                    )
+
+                # Record expense incurred for this specific service into weekly cashflow expenses.
+                if service_expense_amount > 0:
+                    self.append_cashflow_expense_record(
+                        amount=service_expense_amount,
+                        category='SERVICE EXPENSE',
+                        description=service_description,
+                        date_text=payment_date,
+                        created_by=service_actor,
                     )
             except Exception as cashflow_exc:
                 self.logger.warning('Failed to write service income to cashflow sheet: %s', cashflow_exc)
@@ -2355,6 +2375,7 @@ class BackendRuntime:
         paid_col = svc_stock_header_index(headers_upper, 'AMOUNT PAID', 'AMOUNT PAID ')
         price_col = svc_stock_header_index(headers_upper, 'PRICE')
         imei_col = svc_stock_header_index(headers_upper, 'IMEI')
+        description_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'MODEL', 'DEVICE', 'DESC')
         if status_col is None:
             return {'error': 'STATUS column is missing in the inventory sheet.'}
 
@@ -2432,6 +2453,30 @@ class BackendRuntime:
             self.replay_pending_queue_now(limit=120)
         except Exception:
             pass
+
+        # When a pending service becomes PAID, reflect realized service income in cashflow immediately.
+        try:
+            if status_text == 'PAID' and resolved_amount > 0:
+                payment_date_iso = datetime.now(timezone.utc).date().isoformat()
+                service_description = str(row[description_col] if description_col is not None and description_col < len(row) else '').strip()
+                if not self.has_cashflow_income_paid_record(
+                    entry_type='service',
+                    description=service_description,
+                    created_by=customer_name,
+                    payment_date_text=payment_date_iso,
+                ):
+                    self.append_cashflow_income_record(
+                        amount=resolved_amount,
+                        category='SERVICE PROFIT',
+                        description=service_description,
+                        date_text=payment_date_iso,
+                        created_by=customer_name or 'service',
+                        payment_status='PAID',
+                        entry_type='service',
+                        payment_date_text=payment_date_iso,
+                    )
+        except Exception as cashflow_exc:
+            self.logger.warning('Failed to sync service pending payment to cashflow rows: %s', cashflow_exc)
 
         return {
             'row_num': row_num,
