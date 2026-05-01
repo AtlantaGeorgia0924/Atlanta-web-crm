@@ -960,6 +960,7 @@ function CashFlowView({
 }) {
   const summary = cashflowSummary || {};
   const allowance = weeklyAllowance || {};
+  const capital = capitalFlow || { month_total: 0, week_total: 0, entries: [] };
   const stockCounts = stockView?.counts || {};
   const liveSummaryCards = [
     {
@@ -986,6 +987,7 @@ function CashFlowView({
   const [revealedMetric, setRevealedMetric] = useState('');
   const [drillDown, setDrillDown] = useState(null); // { title, rows }
   const allTx = Array.isArray(transactions) ? transactions : [];
+  const capitalRows = Array.isArray(capital.entries) ? capital.entries : [];
 
   function openDrillDown(title, filterFn) {
     setDrillDown({ title, rows: allTx.filter(filterFn) });
@@ -993,6 +995,10 @@ function CashFlowView({
 
   function closeDrillDown() {
     setDrillDown(null);
+  }
+
+  function openCapitalDrillDown(title, filterFn) {
+    setDrillDown({ title, rows: capitalRows.filter(filterFn) });
   }
 
   function txIsThisWeek(tx, weekStart, weekEnd) {
@@ -1154,6 +1160,23 @@ function CashFlowView({
     ? (summary.month_remainder_profit_after_paid_allowance || 0)
     : (summary.month_remainder_profit_after_provision || 0);
 
+  const capitalCards = [
+    {
+      key: 'capital-month',
+      label: 'Business Capital Outflow (Month)',
+      value: formatCurrency(capital.month_total || 0),
+      note: 'Phone restocking cost this month. Kept separate from operating profit. Click to view.',
+      onClick: () => openCapitalDrillDown('Business Capital Outflow (Month)', () => true),
+    },
+    {
+      key: 'capital-week',
+      label: 'Business Capital Outflow (This Week)',
+      value: formatCurrency(capital.week_total || 0),
+      note: 'Phone restocking cost this week. Kept separate from allowance and operating profit. Click to view.',
+      onClick: () => openCapitalDrillDown('Business Capital Outflow (This Week)', (row) => txIsThisWeek(row, weekStart, weekEnd)),
+    },
+  ];
+
   const governanceCards = [
     {
       key: 'monthly-fixed-overhead',
@@ -1188,6 +1211,27 @@ function CashFlowView({
               <strong className="metric-value">{card.value}</strong>
               <span className="metric-note">{card.note}</span>
             </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="summary-frame">
+        <h2>Business Capital</h2>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          Capital tracking is back for visibility, but kept separate from operating profit, expenses, allowance, and health metrics.
+        </p>
+        <div className="summary-grid summary-grid--home" style={{ marginTop: '10px' }}>
+          {capitalCards.map((card) => (
+            <MaskedMetricCard
+              key={card.key}
+              label={card.label}
+              value={card.value}
+              note={card.note}
+              revealKey={`cashflow-${card.key}`}
+              revealedMetric={revealedMetric}
+              setRevealedMetric={setRevealedMetric}
+              onClick={card.onClick}
+            />
           ))}
         </div>
       </section>
