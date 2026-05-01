@@ -2158,6 +2158,19 @@ function CartView({
     }));
   }
 
+  function isPaidPhoneMissingCost(item) {
+    if (!item || !item.imei) {
+      return false;
+    }
+    const statusText = String(item.payment_status || '').trim().toUpperCase();
+    if (statusText !== 'PAID') {
+      return false;
+    }
+    return parseAmountLike(item.cost_price) <= 0;
+  }
+
+  const hasPaidPhoneWithoutCost = (cartItems || []).some((item) => isPaidPhoneMissingCost(item));
+
   function derivePendingStatusFromAmount(row, amountText, fallbackStatus = 'UNPAID') {
     const normalizedText = String(amountText || '').trim();
     if (!normalizedText) {
@@ -2339,12 +2352,19 @@ function CartView({
 
             <div className="cart-items">
               {cartItems.length ? (
-                cartItems.map((item) => (
+                cartItems.map((item) => {
+                  const paidPhoneMissingCost = isPaidPhoneMissingCost(item);
+                  return (
                   <article key={item.stock_row_num} className="cart-item">
                     <div className="cart-item__header">
                       <div>
                         <strong>#{item.stock_row_num} {item.description || 'Selected phone'}</strong>
                         <span className="cart-item__meta">IMEI: {item.imei || '—'} | Selling Price: {item.sale_price || item.cost_price || '—'} | Amount Paid: {item.amount_paid || '—'}</span>
+                        {paidPhoneMissingCost ? (
+                          <p className="notice compact notice-error" style={{ marginTop: '8px' }}>
+                            COST PRICE is missing. This phone cannot be sold as PAID until cost price is added.
+                          </p>
+                        ) : null}
                       </div>
 
                       <button type="button" className="secondary-button" onClick={() => onRemoveCartItem(item.stock_row_num)} disabled={cartBusy}>
@@ -2459,17 +2479,23 @@ function CartView({
                       ) : null}
                     </div>
                   </article>
-                ))
+                );
+                })
               ) : (
                 <div className="notice">Add phones from the stock list to start the cart.</div>
               )}
             </div>
 
             <div className="button-row button-row--end">
-              <button type="button" className="primary-button" onClick={onCheckoutCart} disabled={cartBusy || !cartItems.length}>
+              <button type="button" className="primary-button" onClick={onCheckoutCart} disabled={cartBusy || !cartItems.length || hasPaidPhoneWithoutCost}>
                 {cartBusy ? 'Selling Phones...' : 'Sell Out Cart'}
               </button>
             </div>
+            {hasPaidPhoneWithoutCost ? (
+              <p className="notice compact notice-error" style={{ margin: '10px 0 0' }}>
+                Add COST PRICE to every PAID phone in cart before checkout.
+              </p>
+            ) : null}
           </section>
         </div>
       ) : null}
