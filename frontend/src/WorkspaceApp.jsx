@@ -1057,7 +1057,7 @@ function CashFlowView({
 
   const drillDownDisplay = useMemo(() => {
     if (!drillDown) {
-      return { rows: [], total: 0, amountHeader: 'Amount' };
+      return { rows: [], total: 0, amountHeader: 'Amount', amountHelpText: '' };
     }
 
     const titleText = String(drillDown.title || '').toLowerCase();
@@ -1116,6 +1116,9 @@ function CashFlowView({
       rows,
       total,
       amountHeader: isProfitView ? 'Realized Profit' : 'Amount',
+      amountHelpText: isProfitView
+        ? 'Phone: realized profit = sale minus cost price. Service: realized profit = service income minus linked service expense.'
+        : 'Raw transaction amount.',
     };
   }, [drillDown, allTx]);
 
@@ -1430,7 +1433,29 @@ function CashFlowView({
                       <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Type</th>
                       <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Category / Item</th>
                       <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Description</th>
-                      <th style={{ padding: '8px 12px', textAlign: 'right', borderBottom: '1px solid #e5e7eb' }}>{drillDownDisplay.amountHeader}</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'right', borderBottom: '1px solid #e5e7eb' }}>
+                        <span>{drillDownDisplay.amountHeader}</span>
+                        <span
+                          title={drillDownDisplay.amountHelpText}
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            marginLeft: '6px',
+                            width: '15px',
+                            height: '15px',
+                            borderRadius: '999px',
+                            border: '1px solid #9ca3af',
+                            color: '#6b7280',
+                            fontSize: '10px',
+                            fontWeight: 700,
+                            cursor: 'help',
+                            lineHeight: 1,
+                          }}
+                        >
+                          i
+                        </span>
+                      </th>
                       <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>By</th>
                     </tr>
                   </thead>
