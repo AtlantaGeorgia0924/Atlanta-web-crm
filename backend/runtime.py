@@ -941,7 +941,7 @@ class BackendRuntime:
             'entries': entries,
         }
 
-    def get_cashflow_summary_from_sheet(self, force_refresh=False):
+    def get_cashflow_summary_from_sheet(self, force_refresh=False, _rebuild_attempted=False):
         payload = self.get_cashflow_sheet_records(force_refresh=force_refresh)
         items = payload.get('items') or []
         capital = self.get_phone_capital_outflow(force_refresh=force_refresh)
@@ -1194,6 +1194,33 @@ class BackendRuntime:
             cash_health_status = 'yellow'
         else:
             cash_health_status = 'red'
+
+        # Self-heal: if month shows expenses but zero paid income while main sheet
+        # clearly has PAID rows in this month, cashflow mirror likely drifted.
+        if (not _rebuild_attempted) and total_cash_in <= 0 and total_expenses > 0:
+            try:
+                today_local = datetime.now(timezone.utc).date()
+                month_start_local = today_local.replace(day=1)
+                paid_rows_this_month = 0
+                for record in self.get_main_records(force_refresh=force_refresh):
+                    status = str(self._record_value(record, 'STATUS') or '').strip().upper()
+                    if status != 'PAID':
+                        continue
+                    payment_date = parse_sheet_date(
+                        self._record_value(record, 'PAYMENT DATE', 'PAID DATE', 'DATE')
+                    )
+                    if payment_date is None:
+                        continue
+                    if month_start_local <= payment_date <= today_local:
+                        paid_rows_this_month += 1
+                        if paid_rows_this_month >= 1:
+                            break
+
+                if paid_rows_this_month > 0:
+                    self.rebuild_cashflow_sheet(force_refresh=True)
+                    return self.get_cashflow_summary_from_sheet(force_refresh=True, _rebuild_attempted=True)
+            except Exception as rebuild_exc:
+                self.logger.warning('Cashflow self-heal rebuild skipped: %s', rebuild_exc)
 
         return {
             'total_cash_in': total_cash_in,
