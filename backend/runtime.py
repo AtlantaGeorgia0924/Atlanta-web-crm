@@ -638,6 +638,74 @@ class BackendRuntime:
             payment_date_text=payment_date_text,
         )
 
+    def _find_latest_cashflow_row(self, *, source, category='', description='', created_by='', entry_type=''):
+        items = self.get_cashflow_sheet_records(force_refresh=False).get('items') or []
+        target_source = str(source or '').strip().lower()
+        target_category = str(category or '').strip().upper()
+        target_description = str(description or '').strip().upper()
+        target_created_by = str(created_by or '').strip().upper()
+        target_type = str(entry_type or '').strip().lower()
+
+        for item in items:
+            if str(item.get('source') or '').strip().lower() != target_source:
+                continue
+            if target_category and str(item.get('category') or '').strip().upper() != target_category:
+                continue
+            if target_description and str(item.get('description') or '').strip().upper() != target_description:
+                continue
+            if target_created_by and str(item.get('created_by') or '').strip().upper() != target_created_by:
+                continue
+            if target_type and str(item.get('type') or '').strip().lower() != target_type:
+                continue
+            amount = clean_amount(item.get('amount'))
+            if amount <= 0:
+                continue
+            return item
+        return None
+
+    def _append_cashflow_reversal_from_latest(self, *, source, base_category, description='', created_by='', entry_type=''):
+        latest = self._find_latest_cashflow_row(
+            source=source,
+            category=base_category,
+            description=description,
+            created_by=created_by,
+            entry_type=entry_type,
+        )
+        if not latest:
+            return None
+
+        amount = clean_amount(latest.get('amount'))
+        if amount <= 0:
+            return None
+
+        reversal_amount = -abs(amount)
+        reversal_category = f'RETURN REVERSAL: {base_category}'
+        reversal_note = f"Return reversal for {base_category}".strip()
+        reversal_description = str(description or latest.get('description') or '').strip()
+        reversal_actor = str(created_by or latest.get('created_by') or '').strip()
+        reversal_date = datetime.now(timezone.utc).date().isoformat()
+
+        if source == 'income':
+            entry_kind = str(entry_type or latest.get('type') or 'service').strip().lower() or 'service'
+            return self.append_cashflow_income_record(
+                amount=reversal_amount,
+                category=reversal_category,
+                description=f"{reversal_description} | {reversal_note}".strip(' |'),
+                date_text=reversal_date,
+                created_by=reversal_actor,
+                payment_status='PAID',
+                entry_type=entry_kind,
+                payment_date_text=reversal_date,
+            )
+
+        return self.append_cashflow_expense_record(
+            amount=reversal_amount,
+            category=reversal_category,
+            description=f"{reversal_description} | {reversal_note}".strip(' |'),
+            date_text=reversal_date,
+            created_by=reversal_actor,
+        )
+
     @staticmethod
     def _cashflow_row_match(left, right):
         return str(left or '').strip().upper() == str(right or '').strip().upper()
@@ -889,7 +957,7 @@ class BackendRuntime:
         weekly_month_buckets = {}
 
         for item in items:
-            amount = max(0.0, clean_amount(item.get('amount')))
+            amount = clean_amount(item.get('amount'))
             source = str(item.get('source') or '').strip().lower()
             category = str(item.get('category') or '').strip().lower()
             entry_type = str(item.get('type') or '').strip().lower()
@@ -926,7 +994,7 @@ class BackendRuntime:
                     total_expenses += amount
 
                     if 'allowance' in category:
-                        monthly_allowance_paid += amount
+                        monthly_allowance_paid += max(0.0, amount)
 
                     if any(token in category for token in ('monthly', 'internet', 'rent', 'subscription', 'utility', 'salary', 'wages')):
                         monthly_fixed_overhead += amount
@@ -2694,6 +2762,11 @@ class BackendRuntime:
         if imei_value:
             return {'error': 'This pending row is a stock sale, not a service deal.'}
 
+        description_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'MODEL', 'DEVICE', 'DESC')
+        name_col = svc_stock_header_index(headers_upper, 'NAME', 'CLIENT NAME', 'CUSTOMER NAME', 'NAME OF BUYER')
+        service_description = str(row[description_col] if description_col is not None and description_col < len(row) else '').strip()
+        service_actor = str(row[name_col] if name_col is not None and name_col < len(row) else '').strip()
+
         queued_operation_ids = []
         queue_id = self._enqueue_db_first_operation(
             'service_return',
@@ -2726,6 +2799,24 @@ class BackendRuntime:
             self.replay_pending_queue_now(limit=120)
         except Exception:
             pass
+
+        # Reverse related cashflow rows so return/refund is reflected immediately.
+        try:
+            self._append_cashflow_reversal_from_latest(
+                source='income',
+                base_category='SERVICE PROFIT',
+                description=service_description,
+                created_by=service_actor,
+                entry_type='service',
+            )
+            self._append_cashflow_reversal_from_latest(
+                source='expense',
+                base_category='SERVICE EXPENSE',
+                description=service_description,
+                created_by=service_actor,
+            )
+        except Exception as cashflow_exc:
+            self.logger.warning('Failed to append service return cashflow reversals: %s', cashflow_exc)
 
         return {
             'row_num': row_num,
@@ -2949,6 +3040,24 @@ class BackendRuntime:
             return {
                 'error': 'Return was queued but could not be written to spreadsheet right now. Please retry in a moment.',
             }
+
+        # Reverse related cashflow rows (phone profit and phone sale expense) on return.
+        try:
+            self._append_cashflow_reversal_from_latest(
+                source='income',
+                base_category='PHONE PROFIT',
+                description=str(description_value or '').strip(),
+                created_by=str(buyer_name_value or '').strip(),
+                entry_type='phone',
+            )
+            self._append_cashflow_reversal_from_latest(
+                source='expense',
+                base_category='PHONE SALE EXPENSE',
+                description=str(description_value or '').strip(),
+                created_by=str(buyer_name_value or '').strip(),
+            )
+        except Exception as cashflow_exc:
+            self.logger.warning('Failed to append stock return cashflow reversals: %s', cashflow_exc)
 
         return {
             'queued_operation_ids': queue_ids,
