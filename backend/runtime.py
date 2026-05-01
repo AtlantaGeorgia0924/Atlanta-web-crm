@@ -150,6 +150,10 @@ class BackendRuntime:
 
         return config
 
+    def _save_config_to_disk(self):
+        with open(self.config_path, 'w') as config_file:
+            json.dump(self.config, config_file, indent=4)
+
     def _resolve_contacts_oauth_file(self):
         configured_path = str(self.config.get('contacts_oauth_file', '')).strip()
         if configured_path and os.path.exists(configured_path):
@@ -799,7 +803,16 @@ class BackendRuntime:
 
     def get_phone_capital_outflow(self, force_refresh=False):
         current_day = datetime.now(timezone.utc).date()
-        current_month_start = current_day.replace(day=1)
+        start_date = parse_sheet_date(self.config.get('capital_tracking_start_date'))
+        if start_date is None:
+            # One-time baseline: start capital tracking from today so old stock is ignored.
+            start_date = current_day
+            self.config['capital_tracking_start_date'] = current_day.isoformat()
+            try:
+                self._save_config_to_disk()
+            except Exception as exc:
+                self.logger.warning('Failed to persist capital_tracking_start_date: %s', exc)
+
         current_week_start = current_day - timedelta(days=(current_day.weekday() + 1) % 7)
 
         month_total = 0.0
@@ -819,7 +832,7 @@ class BackendRuntime:
             stocked_date = parse_sheet_date(self._record_value(record, 'DATE BOUGHT'))
             if stocked_date is None:
                 continue
-            if stocked_date < current_month_start or stocked_date > current_day:
+            if stocked_date < start_date or stocked_date > current_day:
                 continue
 
             amount = round(cost_price, 2)
@@ -842,6 +855,7 @@ class BackendRuntime:
 
         entries.sort(key=lambda row: (row.get('date') or '', row.get('description') or ''), reverse=True)
         return {
+            'start_date': start_date.isoformat(),
             'month_total': round(month_total, 2),
             'week_total': round(week_total, 2),
             'entries': entries,
