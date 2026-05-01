@@ -931,6 +931,7 @@ function CashFlowView({
   weeklyAllowance,
   expenses,
   transactions,
+  capitalFlow,
   debtorsData,
   stockView,
   nameFixData,
@@ -946,6 +947,7 @@ function CashFlowView({
 }) {
   const summary = cashflowSummary || {};
   const allowance = weeklyAllowance || {};
+  const capital = capitalFlow || { month_total: 0, week_total: 0, entries: [] };
   const stockCounts = stockView?.counts || {};
   const liveSummaryCards = [
     {
@@ -972,6 +974,7 @@ function CashFlowView({
   const [revealedMetric, setRevealedMetric] = useState('');
   const [drillDown, setDrillDown] = useState(null); // { title, rows }
   const allTx = Array.isArray(transactions) ? transactions : [];
+  const capitalRows = Array.isArray(capital.entries) ? capital.entries : [];
 
   function openDrillDown(title, filterFn) {
     setDrillDown({ title, rows: allTx.filter(filterFn) });
@@ -979,6 +982,10 @@ function CashFlowView({
 
   function closeDrillDown() {
     setDrillDown(null);
+  }
+
+  function openCapitalDrillDown(title, filterFn) {
+    setDrillDown({ title, rows: capitalRows.filter(filterFn) });
   }
 
   function txIsThisWeek(tx, weekStart, weekEnd) {
@@ -1059,7 +1066,7 @@ function CashFlowView({
       key: 'profit',
       label: 'Net Profit',
       value: formatCurrency(summary.net_profit || 0),
-      note: 'Total paid income minus total expenses.',
+      note: 'Operating profit only (capital outflow tracked separately below).',
       className: 'metric-card--profit',
     },
     {
@@ -1115,6 +1122,23 @@ function CashFlowView({
       value: formatCurrency(allowance.suggested_allowance || 0),
       note: 'Allowance is 25% of this week\'s net profit, capped at available cash.',
       className: 'metric-card--allowance',
+    },
+  ];
+
+  const capitalCards = [
+    {
+      key: 'capital-month',
+      label: 'Business Capital Outflow (Month)',
+      value: formatCurrency(capital.month_total || 0),
+      note: 'Stocking cost for phones this month. Excluded from allowance. Click to view.',
+      onClick: () => openCapitalDrillDown('Business Capital Outflow (Month)', () => true),
+    },
+    {
+      key: 'capital-week',
+      label: 'Business Capital Outflow (This Week)',
+      value: formatCurrency(capital.week_total || 0),
+      note: 'Stocking cost for phones this week. Excluded from allowance. Click to view.',
+      onClick: () => openCapitalDrillDown('Business Capital Outflow (This Week)', (row) => txIsThisWeek(row, weekStart, weekEnd)),
     },
   ];
 
@@ -1177,6 +1201,27 @@ function CashFlowView({
         </div>
       </section>
 
+      <section className="summary-frame">
+        <h2>Business Capital</h2>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          These are phone restocking outflows funded from business capital, shown for visibility and excluded from weekly allowance.
+        </p>
+        <div className="summary-grid summary-grid--home" style={{ marginTop: '10px' }}>
+          {capitalCards.map((card) => (
+            <MaskedMetricCard
+              key={card.key}
+              label={card.label}
+              value={card.value}
+              note={card.note}
+              revealKey={`cashflow-${card.key}`}
+              revealedMetric={revealedMetric}
+              setRevealedMetric={setRevealedMetric}
+              onClick={card.onClick}
+            />
+          ))}
+        </div>
+      </section>
+
       {drillDown && (
         <div
           role="dialog"
@@ -1227,6 +1272,9 @@ function CashFlowView({
                       } else if (txSource === 'income' && txType === 'service') {
                         typeLabel = 'Service';
                         typeBadgeStyle = { ...typeBadgeStyle, background: '#dcfce7', color: '#15803d' };
+                      } else if (txSource === 'capital') {
+                        typeLabel = 'Capital';
+                        typeBadgeStyle = { ...typeBadgeStyle, background: '#fef3c7', color: '#92400e' };
                       } else if (txSource !== 'income') {
                         typeLabel = 'Expense';
                         typeBadgeStyle = { ...typeBadgeStyle, background: '#fee2e2', color: '#b91c1c' };
@@ -3795,6 +3843,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [weeklyAllowance, setWeeklyAllowance] = useState(null);
   const [cashflowExpenses, setCashflowExpenses] = useState([]);
   const [cashflowTransactions, setCashflowTransactions] = useState([]);
+  const [cashflowCapital, setCashflowCapital] = useState({ month_total: 0, week_total: 0, entries: [] });
   const [cashflowExpenseSource, setCashflowExpenseSource] = useState('database');
   const [cashflowExpenseSheetTitle, setCashflowExpenseSheetTitle] = useState('CASH FLOW');
   const [cashflowLoading, setCashflowLoading] = useState(false);
@@ -4173,6 +4222,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       current_week_phone_profit: 0,
       current_week_service_profit: 0,
       current_week_net_cash_flow: 0,
+      capital_outflow_month: 0,
+      capital_outflow_week: 0,
       current_week_start: '',
       current_week_end: '',
     };
@@ -4194,6 +4245,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setWeeklyAllowance(nextAllowance);
       setCashflowExpenses(Array.isArray(result?.expenses) ? result.expenses : []);
       setCashflowTransactions(Array.isArray(result?.transactions) ? result.transactions : []);
+      setCashflowCapital(result?.capital || { month_total: 0, week_total: 0, entries: [] });
       setCashflowExpenseSource(result?.expense_source || nextSummary.expense_source || 'database');
       setCashflowExpenseSheetTitle(result?.expense_sheet_title || 'CASH FLOW');
       setCashflowExpenseError('');
@@ -5666,6 +5718,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           weeklyAllowance={weeklyAllowance}
           expenses={cashflowExpenses}
           transactions={cashflowTransactions}
+          capitalFlow={cashflowCapital}
           debtorsData={debtorsData}
           stockView={stockView}
           nameFixData={nameFixData}

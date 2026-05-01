@@ -792,9 +792,61 @@ class BackendRuntime:
             'sheet_title': sheet_title,
         }
 
+    def get_phone_capital_outflow(self, force_refresh=False):
+        current_day = datetime.now(timezone.utc).date()
+        current_month_start = current_day.replace(day=1)
+        current_week_start = current_day - timedelta(days=(current_day.weekday() + 1) % 7)
+
+        month_total = 0.0
+        week_total = 0.0
+        entries = []
+
+        for record in self.get_main_records(force_refresh=force_refresh):
+            imei = str(self._record_value(record, 'IMEI') or '').strip()
+            if not imei:
+                continue
+
+            cost_price = max(0.0, clean_amount(self._record_value(record, 'COST PRICE', 'COST')))
+            if cost_price <= 0:
+                continue
+
+            stocked_date = parse_sheet_date(
+                self._record_value(record, 'DATE BOUGHT', 'PURCHASE DATE', 'DATE', 'AVAILABILITY/DATE SOLD')
+            )
+            if stocked_date is None:
+                continue
+            if stocked_date < current_month_start or stocked_date > current_day:
+                continue
+
+            amount = round(cost_price, 2)
+            month_total += amount
+            if current_week_start <= stocked_date <= current_day:
+                week_total += amount
+
+            entries.append({
+                'date': stocked_date.isoformat(),
+                'category': 'PHONE CAPITAL OUTFLOW',
+                'amount': amount,
+                'description': str(self._record_value(record, 'DESCRIPTION', 'MODEL', 'DEVICE') or '').strip(),
+                'created_by': str(self._record_value(record, 'SELLER NAME', 'NAME OF SELLER', 'NAME') or '').strip(),
+                'source': 'capital',
+                'payment_status': '',
+                'type': 'phone_capital',
+                'cost_price': amount,
+                'payment_date': '',
+            })
+
+        entries.sort(key=lambda row: (row.get('date') or '', row.get('description') or ''), reverse=True)
+        return {
+            'month_total': round(month_total, 2),
+            'week_total': round(week_total, 2),
+            'entries': entries,
+        }
+
     def get_cashflow_summary_from_sheet(self, force_refresh=False):
         payload = self.get_cashflow_sheet_records(force_refresh=force_refresh)
         items = payload.get('items') or []
+        capital = self.get_phone_capital_outflow(force_refresh=force_refresh)
 
         total_paid_income = 0.0
         total_owing_income = 0.0
@@ -896,6 +948,8 @@ class BackendRuntime:
             'current_week_service_profit': round(current_week_service_profit, 2),
             'weekly_realized_profit': weekly_realized_profit,
             'current_week_net_cash_flow': current_week_net_cash_flow,
+            'capital_outflow_month': capital.get('month_total', 0.0),
+            'capital_outflow_week': capital.get('week_total', 0.0),
             'current_week_start': current_week_start.isoformat(),
             'current_week_end': current_week_end_date.isoformat(),
             'weekly_allowance': {

@@ -149,6 +149,7 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
     try:
         summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh)
         expense_summary = runtime.get_cashflow_expense_records(force_refresh=force_refresh)
+        capital = runtime.get_phone_capital_outflow(force_refresh=force_refresh)
         weekly_allowance = summary.get('weekly_allowance') or runtime.get_weekly_allowance_from_sheet(force_refresh=force_refresh)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
@@ -164,6 +165,7 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
         'expense_source': expense_summary.get('source', 'database'),
         'expense_sheet_title': expense_summary.get('sheet_title', 'CASH FLOW'),
         'transactions': transactions,
+        'capital': capital,
     }
 
 
