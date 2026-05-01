@@ -883,6 +883,11 @@ class BackendRuntime:
         current_week_phone_profit = 0.0
         current_week_service_profit = 0.0
 
+        # Month-level support metrics.
+        monthly_allowance_paid = 0.0
+        monthly_fixed_overhead = 0.0
+        weekly_month_buckets = {}
+
         for item in items:
             amount = max(0.0, clean_amount(item.get('amount')))
             source = str(item.get('source') or '').strip().lower()
@@ -919,6 +924,24 @@ class BackendRuntime:
                             total_owing_income += amount
                 else:
                     total_expenses += amount
+
+                    if 'allowance' in category:
+                        monthly_allowance_paid += amount
+
+                    if any(token in category for token in ('monthly', 'internet', 'rent', 'subscription', 'utility', 'salary', 'wages')):
+                        monthly_fixed_overhead += amount
+
+                    if entry_date is not None:
+                        bucket_week_start = entry_date - timedelta(days=(entry_date.weekday() + 1) % 7)
+                        week_key = bucket_week_start.isoformat()
+                        bucket = weekly_month_buckets.setdefault(week_key, {'paid_income': 0.0, 'allowance_expenses': 0.0})
+                        bucket['allowance_expenses'] += amount if not is_business_only_expense else 0.0
+
+                if is_income and is_paid and entry_date is not None:
+                    bucket_week_start = entry_date - timedelta(days=(entry_date.weekday() + 1) % 7)
+                    week_key = bucket_week_start.isoformat()
+                    bucket = weekly_month_buckets.setdefault(week_key, {'paid_income': 0.0, 'allowance_expenses': 0.0})
+                    bucket['paid_income'] += amount
 
             if entry_date is not None and current_week_start <= entry_date <= current_week_end_date:
                 if is_income and is_paid:
@@ -961,7 +984,34 @@ class BackendRuntime:
         # Allowance must not exceed usable cash after reserve.
         # Use the stronger of month-to-date and week-to-date cash bases.
         allowance_cash_cap = max(0.0, max(available_cash_after_reserve, weekly_available_after_reserve))
-        suggested_allowance = round(min(raw_allowance, allowance_cash_cap), 2)
+
+        # Guardrail: allowance pauses if cash buffer is below policy threshold.
+        # Default threshold is 4 weeks of fixed overhead.
+        buffer_weeks_threshold = max(0.0, self._read_numeric_config('allowance_min_buffer_weeks', default=4.0))
+        fixed_overhead_weekly = round(max(0.0, monthly_fixed_overhead) / 4.0, 2)
+        required_cash_buffer = round(fixed_overhead_weekly * buffer_weeks_threshold, 2)
+        cash_buffer_ok = allowance_cash_cap >= required_cash_buffer
+
+        suggested_allowance = round(min(raw_allowance, allowance_cash_cap), 2) if cash_buffer_ok else 0.0
+
+        # Monthly allowance provision based on each week's allowance base inside this month.
+        monthly_allowance_provision = 0.0
+        for bucket in weekly_month_buckets.values():
+            week_base = max(0.0, (bucket.get('paid_income', 0.0) - bucket.get('allowance_expenses', 0.0)))
+            monthly_allowance_provision += week_base * allowance_percentage
+        monthly_allowance_provision = round(monthly_allowance_provision, 2)
+
+        month_remainder_profit_after_paid_allowance = round(net_profit - monthly_allowance_paid, 2)
+        month_remainder_profit_after_provision = round(net_profit - monthly_allowance_provision, 2)
+
+        weekly_burn = current_week_expenses if current_week_expenses > 0 else max(0.0, total_expenses / 4.0)
+        cash_runway_weeks = round((allowance_cash_cap / weekly_burn), 2) if weekly_burn > 0 else 0.0
+        if cash_runway_weeks >= 8 and cash_buffer_ok:
+            cash_health_status = 'green'
+        elif cash_runway_weeks >= 4:
+            cash_health_status = 'yellow'
+        else:
+            cash_health_status = 'red'
 
         return {
             'total_cash_in': total_cash_in,
@@ -988,6 +1038,13 @@ class BackendRuntime:
             'allowance_base_net_profit': allowance_base_net_profit,
             'current_week_allowance_expenses': round(current_week_allowance_expenses, 2),
             'current_week_business_only_expenses': round(current_week_business_only_expenses, 2),
+            'monthly_fixed_overhead': round(monthly_fixed_overhead, 2),
+            'monthly_allowance_paid': round(monthly_allowance_paid, 2),
+            'monthly_allowance_provision': monthly_allowance_provision,
+            'month_remainder_profit_after_paid_allowance': month_remainder_profit_after_paid_allowance,
+            'month_remainder_profit_after_provision': month_remainder_profit_after_provision,
+            'cash_runway_weeks': cash_runway_weeks,
+            'cash_health_status': cash_health_status,
             'capital_outflow_month': capital.get('month_total', 0.0),
             'capital_outflow_week': capital.get('week_total', 0.0),
             'current_week_start': current_week_start.isoformat(),
@@ -1000,6 +1057,9 @@ class BackendRuntime:
                 'allowance_expenses': round(current_week_allowance_expenses, 2),
                 'business_only_expenses': round(current_week_business_only_expenses, 2),
                 'allowance_cash_cap': round(allowance_cash_cap, 2),
+                'required_cash_buffer': required_cash_buffer,
+                'cash_buffer_ok': cash_buffer_ok,
+                'buffer_weeks_threshold': buffer_weeks_threshold,
                 'allowance_percentage': allowance_percentage,
             },
             'expense_sheet_title': payload.get('sheet_title', 'CASH FLOW'),

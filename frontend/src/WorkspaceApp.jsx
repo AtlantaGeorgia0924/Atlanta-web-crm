@@ -1137,7 +1137,7 @@ function CashFlowView({
       key: 'allowance',
       label: 'Next Week Allowance',
       value: formatCurrency(allowance.suggested_allowance || 0),
-      note: 'Allowance is 25% of this week\'s net profit, capped at available cash.',
+      note: `Allowance is 25% of allowance-base net profit, capped by usable cash and a ${allowance.buffer_weeks_threshold || 4}-week buffer policy.`,
       className: 'metric-card--allowance',
     },
   ];
@@ -1156,6 +1156,34 @@ function CashFlowView({
       value: formatCurrency(capital.week_total || 0),
       note: 'Stocking cost for phones this week. Excluded from allowance. Click to view.',
       onClick: () => openCapitalDrillDown('Business Capital Outflow (This Week)', (row) => txIsThisWeek(row, weekStart, weekEnd)),
+    },
+  ];
+
+  const cashHealthLabel = String(summary.cash_health_status || 'red').toUpperCase();
+  const monthlyRemainder = (summary.monthly_allowance_paid || 0) > 0
+    ? (summary.month_remainder_profit_after_paid_allowance || 0)
+    : (summary.month_remainder_profit_after_provision || 0);
+
+  const governanceCards = [
+    {
+      key: 'monthly-fixed-overhead',
+      label: 'Fixed Monthly Overhead',
+      value: formatCurrency(summary.monthly_fixed_overhead || 0),
+      note: 'Estimated recurring expenses (internet, rent, subscription, wages, etc.).',
+    },
+    {
+      key: 'cash-health',
+      label: 'Cash Health Score',
+      value: `${cashHealthLabel} (${summary.cash_runway_weeks || 0}w runway)`,
+      note: `Buffer check: ${(allowance.cash_buffer_ok ? 'OK' : 'LOW')} (required ${formatCurrency(allowance.required_cash_buffer || 0)}).`,
+    },
+    {
+      key: 'month-remainder',
+      label: 'Month Remainder Profit',
+      value: formatCurrency(monthlyRemainder),
+      note: (summary.monthly_allowance_paid || 0) > 0
+        ? `Net profit after recorded weekly allowance payouts (${formatCurrency(summary.monthly_allowance_paid || 0)}).`
+        : `Net profit after weekly allowance provision (${formatCurrency(summary.monthly_allowance_provision || 0)}).`,
     },
   ];
 
@@ -1235,6 +1263,22 @@ function CashFlowView({
               setRevealedMetric={setRevealedMetric}
               onClick={card.onClick}
             />
+          ))}
+        </div>
+      </section>
+
+      <section className="summary-frame">
+        <h2>Governance & Health</h2>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          Controls to keep allowance healthy: buffer guardrail, overhead visibility, and month remainder after expenses and weekly allowance.
+        </p>
+        <div className="summary-grid summary-grid--home" style={{ marginTop: '10px' }}>
+          {governanceCards.map((card) => (
+            <article key={card.key} className="metric-card metric-card--home">
+              <span className="metric-label">{card.label}</span>
+              <strong className="metric-value">{card.value}</strong>
+              <span className="metric-note">{card.note}</span>
+            </article>
           ))}
         </div>
       </section>
@@ -4252,6 +4296,13 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       allowance_base_net_profit: 0,
       current_week_allowance_expenses: 0,
       current_week_business_only_expenses: 0,
+      monthly_fixed_overhead: 0,
+      monthly_allowance_paid: 0,
+      monthly_allowance_provision: 0,
+      month_remainder_profit_after_paid_allowance: 0,
+      month_remainder_profit_after_provision: 0,
+      cash_runway_weeks: 0,
+      cash_health_status: 'red',
       capital_outflow_month: 0,
       capital_outflow_week: 0,
       current_week_start: '',
