@@ -1114,14 +1114,15 @@ class BackendRuntime:
                     if entry_date is not None:
                         bucket_week_start = entry_date - timedelta(days=(entry_date.weekday() + 1) % 7)
                         week_key = bucket_week_start.isoformat()
-                        bucket = weekly_month_buckets.setdefault(week_key, {'paid_income': 0.0, 'allowance_expenses': 0.0})
+                        bucket = weekly_month_buckets.setdefault(week_key, {'realized_income': 0.0, 'allowance_expenses': 0.0})
                         bucket['allowance_expenses'] += amount if not is_business_only_expense else 0.0
 
                 if is_income and is_paid and entry_date is not None:
                     bucket_week_start = entry_date - timedelta(days=(entry_date.weekday() + 1) % 7)
                     week_key = bucket_week_start.isoformat()
-                    bucket = weekly_month_buckets.setdefault(week_key, {'paid_income': 0.0, 'allowance_expenses': 0.0})
-                    bucket['paid_income'] += amount
+                    bucket = weekly_month_buckets.setdefault(week_key, {'realized_income': 0.0, 'allowance_expenses': 0.0})
+                    realized_income_for_allowance = amount if entry_type != 'phone' else phone_realized_amount
+                    bucket['realized_income'] += realized_income_for_allowance
 
             if entry_date is not None and current_week_start <= entry_date <= current_week_end_date:
                 if is_income and is_paid:
@@ -1178,7 +1179,7 @@ class BackendRuntime:
         # Monthly allowance provision based on each week's allowance base inside this month.
         monthly_allowance_provision = 0.0
         for bucket in weekly_month_buckets.values():
-            week_base = max(0.0, (bucket.get('paid_income', 0.0) - bucket.get('allowance_expenses', 0.0)))
+            week_base = max(0.0, (bucket.get('realized_income', 0.0) - bucket.get('allowance_expenses', 0.0)))
             monthly_allowance_provision += week_base * allowance_percentage
         monthly_allowance_provision = round(monthly_allowance_provision, 2)
 
