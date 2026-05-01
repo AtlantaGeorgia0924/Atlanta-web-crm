@@ -1119,7 +1119,7 @@ function CashFlowView({
     },
     {
       key: 'allowance-base',
-      label: 'Allowance Base Net Profit',
+      label: 'Allowance Profit Base',
       value: formatCurrency(summary.allowance_base_net_profit || 0),
       note: `Used for allowance only. Starts from realized weekly profit and excludes business-only expenses (${formatCurrency(summary.current_week_business_only_expenses || 0)} this week).`,
       className: 'metric-card--profit',
