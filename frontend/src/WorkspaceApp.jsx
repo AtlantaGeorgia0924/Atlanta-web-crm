@@ -1113,15 +1113,15 @@ function CashFlowView({
     {
       key: 'week-net',
       label: 'This Week Net Profit',
-      value: formatCurrency(summary.current_week_net_cash_flow || 0),
-      note: 'This week\'s profit after deducting this week\'s expenses.',
+      value: formatCurrency(summary.current_week_net_profit || 0),
+      note: 'Real weekly profit after deducting this week\'s expenses.',
       className: 'metric-card--profit',
     },
     {
       key: 'allowance-base',
       label: 'Allowance Base Net Profit',
       value: formatCurrency(summary.allowance_base_net_profit || 0),
-      note: `Used for allowance only. Excludes business-only expenses (${formatCurrency(summary.current_week_business_only_expenses || 0)} this week).`,
+      note: `Used for allowance only. Starts from realized weekly profit and excludes business-only expenses (${formatCurrency(summary.current_week_business_only_expenses || 0)} this week).`,
       className: 'metric-card--profit',
     },
     {
@@ -4400,6 +4400,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       current_week_phone_profit: 0,
       current_week_service_profit: 0,
       current_week_net_cash_flow: 0,
+      current_week_net_profit: 0,
       allowance_base_net_profit: 0,
       current_week_allowance_expenses: 0,
       current_week_business_only_expenses: 0,

@@ -1139,7 +1139,8 @@ class BackendRuntime:
 
         weekly_realized_profit = round(current_week_phone_profit + current_week_service_profit, 2)
         current_week_net_cash_flow = round(current_week_paid_income - current_week_expenses, 2)
-        allowance_base_net_profit = round(current_week_paid_income - current_week_allowance_expenses, 2)
+        current_week_net_profit = round(weekly_realized_profit - current_week_expenses, 2)
+        allowance_base_net_profit = round(weekly_realized_profit - current_week_allowance_expenses, 2)
 
         # Month-to-date cash can dip at month boundaries (e.g., new month with early expense),
         # so allowance cap should also consider current week cash position.
@@ -1201,6 +1202,7 @@ class BackendRuntime:
             'current_week_service_profit': round(current_week_service_profit, 2),
             'weekly_realized_profit': weekly_realized_profit,
             'current_week_net_cash_flow': current_week_net_cash_flow,
+            'current_week_net_profit': current_week_net_profit,
             'current_week_available_cash_before_reserve': round(weekly_available_before_reserve, 2),
             'current_week_available_cash_after_reserve': round(weekly_available_after_reserve, 2),
             'allowance_base_net_profit': allowance_base_net_profit,
