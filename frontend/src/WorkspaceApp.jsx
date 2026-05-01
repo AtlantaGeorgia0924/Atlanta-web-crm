@@ -654,27 +654,53 @@ class ViewErrorBoundary extends React.Component {
   }
 }
 
-function MaskedMetricCard({ label, value, note, revealKey, revealedMetric, setRevealedMetric, className = '', onClick }) {
+function MaskedMetricCard({
+  label,
+  value,
+  note,
+  revealKey,
+  revealedMetric,
+  setRevealedMetric,
+  className = '',
+  onClick,
+  onClickMode = 'card',
+}) {
   const visible = revealedMetric === revealKey;
+  const canViewDetails = typeof onClick === 'function';
+  const cardClickable = canViewDetails && onClickMode === 'card';
 
   return (
     <article
       className={`metric-card metric-card--home ${className}`.trim()}
-      style={onClick ? { cursor: 'pointer' } : undefined}
-      onClick={onClick}
+      style={cardClickable ? { cursor: 'pointer' } : undefined}
+      onClick={cardClickable ? onClick : undefined}
     >
       <div className="metric-card__top">
         <span className="metric-label">{label}</span>
-        <button
-          type="button"
-          className="hold-button"
-          onPointerDown={(e) => { e.stopPropagation(); setRevealedMetric(revealKey); }}
-          onPointerUp={(e) => { e.stopPropagation(); setRevealedMetric(''); }}
-          onPointerLeave={() => setRevealedMetric('')}
-          onPointerCancel={() => setRevealedMetric('')}
-        >
-          Hold to unhide
-        </button>
+        <div className="metric-card__actions">
+          {canViewDetails && onClickMode === 'button' ? (
+            <button
+              type="button"
+              className="hold-button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onClick();
+              }}
+            >
+              View
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="hold-button"
+            onPointerDown={(e) => { e.stopPropagation(); setRevealedMetric(revealKey); }}
+            onPointerUp={(e) => { e.stopPropagation(); setRevealedMetric(''); }}
+            onPointerLeave={() => setRevealedMetric('')}
+            onPointerCancel={() => setRevealedMetric('')}
+          >
+            Hold to unhide
+          </button>
+        </div>
       </div>
       <strong className="metric-value">{visible ? value : '***'}</strong>
       <span className="metric-note">{note}</span>
@@ -1230,6 +1256,7 @@ function CashFlowView({
               revealKey={`cashflow-${card.key}`}
               revealedMetric={revealedMetric}
               setRevealedMetric={setRevealedMetric}
+              onClickMode="button"
               onClick={card.onClick}
             />
           ))}
@@ -1273,6 +1300,7 @@ function CashFlowView({
                 revealedMetric={revealedMetric}
                 setRevealedMetric={setRevealedMetric}
                 className={card.className}
+                onClickMode="button"
                 onClick={card.onClick}
               />
             );
