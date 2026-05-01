@@ -960,7 +960,6 @@ function CashFlowView({
 }) {
   const summary = cashflowSummary || {};
   const allowance = weeklyAllowance || {};
-  const capital = capitalFlow || { month_total: 0, week_total: 0, entries: [] };
   const stockCounts = stockView?.counts || {};
   const liveSummaryCards = [
     {
@@ -987,7 +986,6 @@ function CashFlowView({
   const [revealedMetric, setRevealedMetric] = useState('');
   const [drillDown, setDrillDown] = useState(null); // { title, rows }
   const allTx = Array.isArray(transactions) ? transactions : [];
-  const capitalRows = Array.isArray(capital.entries) ? capital.entries : [];
 
   function openDrillDown(title, filterFn) {
     setDrillDown({ title, rows: allTx.filter(filterFn) });
@@ -995,10 +993,6 @@ function CashFlowView({
 
   function closeDrillDown() {
     setDrillDown(null);
-  }
-
-  function openCapitalDrillDown(title, filterFn) {
-    setDrillDown({ title, rows: capitalRows.filter(filterFn) });
   }
 
   function txIsThisWeek(tx, weekStart, weekEnd) {
@@ -1064,11 +1058,11 @@ function CashFlowView({
     // ── Monthly overview ────────────────────────────────────────────────────
     {
       key: 'cash-in',
-      label: 'Total Profit (Month)',
+      label: 'Total Cash In (Month)',
       value: formatCurrency(summary.total_cash_in || 0),
-      note: 'Total paid income received this month. Click to view.',
+      note: 'All paid income received this month (not net profit). Click to view.',
       className: '',
-      onClick: () => openDrillDown('Total Profit (Month) — All Paid Income', (tx) => tx.source === 'income' && tx.payment_status !== 'OWING'),
+      onClick: () => openDrillDown('Total Cash In (Month) — All Paid Income', (tx) => tx.source === 'income' && tx.payment_status !== 'OWING'),
     },
     {
       key: 'expenses',
@@ -1082,7 +1076,7 @@ function CashFlowView({
       key: 'profit',
       label: 'Net Profit',
       value: formatCurrency(summary.net_profit || 0),
-      note: 'Operating profit only (capital outflow tracked separately below).',
+      note: 'Operating profit after expenses.',
       className: 'metric-card--profit',
     },
     {
@@ -1152,23 +1146,6 @@ function CashFlowView({
       value: formatCurrency(allowance.suggested_allowance || 0),
       note: `Allowance is 25% of allowance-base net profit, capped by usable cash and a ${allowance.buffer_weeks_threshold || 4}-week buffer policy.`,
       className: 'metric-card--allowance',
-    },
-  ];
-
-  const capitalCards = [
-    {
-      key: 'capital-month',
-      label: 'Business Capital Outflow (Month)',
-      value: formatCurrency(capital.month_total || 0),
-      note: 'Stocking cost for phones this month. Excluded from allowance. Click to view.',
-      onClick: () => openCapitalDrillDown('Business Capital Outflow (Month)', () => true),
-    },
-    {
-      key: 'capital-week',
-      label: 'Business Capital Outflow (This Week)',
-      value: formatCurrency(capital.week_total || 0),
-      note: 'Stocking cost for phones this week. Excluded from allowance. Click to view.',
-      onClick: () => openCapitalDrillDown('Business Capital Outflow (This Week)', (row) => txIsThisWeek(row, weekStart, weekEnd)),
     },
   ];
 
@@ -1256,27 +1233,6 @@ function CashFlowView({
               />
             );
           })}
-        </div>
-      </section>
-
-      <section className="summary-frame">
-        <h2>Business Capital</h2>
-        <p className="metric-note" style={{ marginTop: '8px' }}>
-          These are phone restocking outflows funded from business capital, shown for visibility and excluded from weekly allowance.
-        </p>
-        <div className="summary-grid summary-grid--home" style={{ marginTop: '10px' }}>
-          {capitalCards.map((card) => (
-            <MaskedMetricCard
-              key={card.key}
-              label={card.label}
-              value={card.value}
-              note={card.note}
-              revealKey={`cashflow-${card.key}`}
-              revealedMetric={revealedMetric}
-              setRevealedMetric={setRevealedMetric}
-              onClick={card.onClick}
-            />
-          ))}
         </div>
       </section>
 
