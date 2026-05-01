@@ -935,10 +935,19 @@ class BackendRuntime:
         weekly_realized_profit = round(current_week_phone_profit + current_week_service_profit, 2)
         current_week_net_cash_flow = round(current_week_paid_income - current_week_expenses, 2)
         allowance_base_net_profit = round(current_week_paid_income - current_week_allowance_expenses, 2)
+
+        # Month-to-date cash can dip at month boundaries (e.g., new month with early expense),
+        # so allowance cap should also consider current week cash position.
+        weekly_available_before_reserve = current_week_paid_income - current_week_expenses
+        weekly_reserve_amount = max(0.0, weekly_available_before_reserve) * reserve_percentage
+        weekly_available_after_reserve = weekly_available_before_reserve - weekly_reserve_amount
+
         allowance_percentage = 0.25
         raw_allowance = max(0.0, allowance_base_net_profit) * allowance_percentage
-        # Allowance must not exceed actual available cash after reserve.
-        suggested_allowance = round(min(raw_allowance, max(0.0, available_cash_after_reserve)), 2)
+        # Allowance must not exceed usable cash after reserve.
+        # Use the stronger of month-to-date and week-to-date cash bases.
+        allowance_cash_cap = max(0.0, max(available_cash_after_reserve, weekly_available_after_reserve))
+        suggested_allowance = round(min(raw_allowance, allowance_cash_cap), 2)
 
         return {
             'total_cash_in': total_cash_in,
@@ -960,6 +969,8 @@ class BackendRuntime:
             'current_week_service_profit': round(current_week_service_profit, 2),
             'weekly_realized_profit': weekly_realized_profit,
             'current_week_net_cash_flow': current_week_net_cash_flow,
+            'current_week_available_cash_before_reserve': round(weekly_available_before_reserve, 2),
+            'current_week_available_cash_after_reserve': round(weekly_available_after_reserve, 2),
             'allowance_base_net_profit': allowance_base_net_profit,
             'current_week_allowance_expenses': round(current_week_allowance_expenses, 2),
             'current_week_business_only_expenses': round(current_week_business_only_expenses, 2),
@@ -974,6 +985,7 @@ class BackendRuntime:
                 'allowance_base_net_profit': allowance_base_net_profit,
                 'allowance_expenses': round(current_week_allowance_expenses, 2),
                 'business_only_expenses': round(current_week_business_only_expenses, 2),
+                'allowance_cash_cap': round(allowance_cash_cap, 2),
                 'allowance_percentage': allowance_percentage,
             },
             'expense_sheet_title': payload.get('sheet_title', 'CASH FLOW'),
