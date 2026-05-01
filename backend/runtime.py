@@ -934,6 +934,84 @@ class BackendRuntime:
         items = payload.get('items') or []
         capital = self.get_phone_capital_outflow(force_refresh=force_refresh)
 
+        # Some older phone income rows were posted before COST_PRICE was filled.
+        # Build a fallback lookup from main records so later cost updates still
+        # count in month summary without forcing a full cashflow rebuild.
+        phone_cost_lookup = {}
+        for record in self.get_main_records(force_refresh=force_refresh):
+            imei_value = str(self._record_value(record, 'IMEI') or '').strip()
+            if not imei_value:
+                continue
+
+            record_cost = max(0.0, clean_amount(self._record_value(record, 'COST PRICE', 'COST')))
+            if record_cost <= 0:
+                continue
+
+            record_description = self._normalize_cashflow_lookup_text(
+                self._record_value(record, 'DESCRIPTION', 'MODEL', 'DEVICE')
+            )
+            if not record_description:
+                continue
+
+            record_actor = self._normalize_cashflow_lookup_text(
+                self._record_value(record, 'NAME', 'NAME OF BUYER', 'CLIENT NAME')
+            )
+            record_payment_date = parse_sheet_date(
+                self._record_value(record, 'PAYMENT DATE', 'PAID DATE', 'DATE')
+            )
+            record_date_key = record_payment_date.isoformat() if record_payment_date else ''
+
+            candidate_keys = [
+                (record_description, record_actor, record_date_key),
+                (record_description, record_actor, ''),
+                (record_description, '', record_date_key),
+                (record_description, '', ''),
+            ]
+            for key in candidate_keys:
+                if key not in phone_cost_lookup:
+                    phone_cost_lookup[key] = record_cost
+
+        # Stock can contain the authoritative cost for phone deals that were
+        # created through pending/sold stock flows.
+        stock_values = self.get_stock_values(force_refresh=force_refresh)
+        stock_header_row_idx, _, stock_headers_upper = detect_stock_headers(stock_values)
+        stock_desc_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DEVICE', 'DESC')
+        stock_name_col = svc_stock_header_index(stock_headers_upper, 'NAME', 'CLIENT NAME', 'NAME OF BUYER')
+        stock_cost_col = svc_stock_header_index(stock_headers_upper, 'COST PRICE', 'COST', 'BUYING PRICE')
+        stock_payment_date_col = svc_stock_header_index(stock_headers_upper, 'PAYMENT DATE', 'PAID DATE', 'DATE')
+
+        for row_values in stock_values[stock_header_row_idx + 1:]:
+            row = list(row_values or [])
+            stock_cost = max(0.0, clean_amount(
+                row[stock_cost_col] if stock_cost_col is not None and stock_cost_col < len(row) else ''
+            ))
+            if stock_cost <= 0:
+                continue
+
+            stock_description = self._normalize_cashflow_lookup_text(
+                row[stock_desc_col] if stock_desc_col is not None and stock_desc_col < len(row) else ''
+            )
+            if not stock_description:
+                continue
+
+            stock_actor = self._normalize_cashflow_lookup_text(
+                row[stock_name_col] if stock_name_col is not None and stock_name_col < len(row) else ''
+            )
+            stock_payment_date = parse_sheet_date(
+                row[stock_payment_date_col] if stock_payment_date_col is not None and stock_payment_date_col < len(row) else ''
+            )
+            stock_date_key = stock_payment_date.isoformat() if stock_payment_date else ''
+
+            stock_keys = [
+                (stock_description, stock_actor, stock_date_key),
+                (stock_description, stock_actor, ''),
+                (stock_description, '', stock_date_key),
+                (stock_description, '', ''),
+            ]
+            for key in stock_keys:
+                if key not in phone_cost_lookup:
+                    phone_cost_lookup[key] = stock_cost
+
         total_paid_income = 0.0
         total_owing_income = 0.0
         total_expenses = 0.0
@@ -968,6 +1046,29 @@ class BackendRuntime:
             except Exception:
                 entry_date = None
 
+            if entry_type == 'phone' and cost_price <= 0:
+                item_description = self._normalize_cashflow_lookup_text(item.get('description'))
+                item_actor = self._normalize_cashflow_lookup_text(item.get('created_by'))
+                item_date_key = entry_date.isoformat() if entry_date is not None else ''
+                fallback_keys = [
+                    (item_description, item_actor, item_date_key),
+                    (item_description, item_actor, ''),
+                    (item_description, '', item_date_key),
+                    (item_description, '', ''),
+                ]
+                for key in fallback_keys:
+                    resolved_cost = phone_cost_lookup.get(key)
+                    if resolved_cost and resolved_cost > 0:
+                        cost_price = resolved_cost
+                        break
+
+            # Legacy phone rows may store sale price in AMOUNT when cost was
+            # unknown at posting time. If cost exists and amount exceeds cost,
+            # derive realized phone profit as sale - cost.
+            phone_realized_amount = amount
+            if entry_type == 'phone' and cost_price > 0 and amount > cost_price:
+                phone_realized_amount = round(max(0.0, amount - cost_price), 2)
+
             is_income = source == 'income'
             is_paid = payment_status != 'OWING'  # missing/PAID both count as paid (backward compat)
             is_business_only_expense = (not is_income) and self._is_business_only_expense_category(category)
@@ -984,8 +1085,7 @@ class BackendRuntime:
                                 realized_profit = amount
                                 total_service_realized_profit += realized_profit
                             else:
-                                # Phone rows in cashflow store realized profit in amount.
-                                realized_profit = amount
+                                realized_profit = phone_realized_amount
                                 total_phone_realized_profit += realized_profit
                     else:
                         if allow_phone_profit:
@@ -1017,7 +1117,7 @@ class BackendRuntime:
                     if entry_type == 'service' or ('service' in category and entry_type not in ('phone', 'service')):
                         current_week_service_profit += amount
                     else:
-                        current_week_phone_profit += amount
+                        current_week_phone_profit += phone_realized_amount
                 elif not is_income:
                     current_week_expenses += amount
                     if is_business_only_expense:
