@@ -721,6 +721,18 @@ class BackendRuntime:
                 return payload.get(upper_key)
         return None
 
+    @staticmethod
+    def _missing_phone_cost_error(*, row_num=None, description='', context='sale'):
+        row_ref = f' for stock row {row_num}' if row_num else ''
+        device_text = str(description or '').strip()
+        item_ref = f' ({device_text})' if device_text else ''
+        return {
+            'error': f'Add COST PRICE before marking this phone as PAID{row_ref}{item_ref}.',
+            'error_code': 'MISSING_COST_PRICE',
+            'requires_cost_price': True,
+            'context': context,
+        }
+
     def mark_cashflow_income_paid(self, *, entry_type, description='', created_by='', payment_date_text='', amount=None, cost_price=None):
         worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
         target_payment_date = str(payment_date_text or datetime.now(timezone.utc).date().isoformat()).strip()
@@ -3274,6 +3286,13 @@ class BackendRuntime:
             else:
                 status_text = 'PAID'
 
+        if status_text == 'PAID' and imei_value and cost_price_value <= 0:
+            return self._missing_phone_cost_error(
+                row_num=row_num,
+                description=description_value,
+                context='pending_deal_payment',
+            )
+
         stock_status_choice = 'Sold' if status_text == 'PAID' else 'Pending Deal'
         stock_status_key, fill_color = map_sale_status(stock_status_choice)
         availability_value = datetime.now().strftime('%m/%d/%Y') if status_text == 'PAID' else 'PENDING DEAL'
@@ -3845,6 +3864,13 @@ class BackendRuntime:
                 inventory_status = 'PART PAYMENT'
             else:
                 inventory_status = 'PAID'
+
+            if inventory_status == 'PAID' and imei and cost_price_at_sale <= 0:
+                return self._missing_phone_cost_error(
+                    row_num=row_num,
+                    description=description,
+                    context='stock_sale',
+                )
 
             stock_status_choice = 'Sold' if inventory_status == 'PAID' else 'Pending Deal'
 
