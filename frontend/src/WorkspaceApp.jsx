@@ -119,6 +119,12 @@ const ACTION_ITEMS = [
     description: 'Review balances, preview bills, and apply payments.',
   },
   {
+    key: 'bill_notifications',
+    type: 'action',
+    title: 'Bill Notifications',
+    description: 'Customers with unpaid balances and no bill sent for 3+ days.',
+  },
+  {
     key: 'fix',
     type: 'view',
     title: 'Fix',
@@ -725,7 +731,14 @@ function ActionSidebar({ activeView, undoEnabled, redoEnabled, onTrigger, action
               onClick={() => onTrigger(item)}
               disabled={disabled}
             >
-              <span className="action-list-item__title">{item.title}</span>
+              <span className="action-list-item__title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                <span>{item.title}</span>
+                {Number(item.badge || 0) > 0 ? (
+                  <span className="floating-action-badge" style={{ position: 'static', minWidth: '22px', height: '22px' }}>
+                    {formatCount(item.badge)}
+                  </span>
+                ) : null}
+              </span>
               <span className="action-list-item__description">{item.description}</span>
             </button>
           );
@@ -2092,6 +2105,7 @@ function CartView({
   updatingPendingKey,
   clientNameOptions,
   sellerPhoneOptions,
+  contactAutofillOptions,
   currentTimeLabel,
   cartBusy,
   summaryColumns,
@@ -2107,6 +2121,11 @@ function CartView({
   const [pendingModalOpen, setPendingModalOpen] = useState(false);
   const [pendingSearchText, setPendingSearchText] = useState('');
   const [pendingPaymentDrafts, setPendingPaymentDrafts] = useState({});
+
+  function resolveContactOption(rawValue) {
+    const text = String(rawValue || '').trim();
+    return (contactAutofillOptions || []).find((option) => option.label === text) || null;
+  }
 
   function derivePendingDraftFromRow(row) {
     const rawStatus = String(row?.inventory_status || row?.status || '').trim().toUpperCase();
@@ -2269,6 +2288,11 @@ function CartView({
           <option key={phoneLabel} value={phoneLabel} />
         ))}
       </datalist>
+      <datalist id="contact-autofill-options">
+        {(contactAutofillOptions || []).map((option) => (
+          <option key={option.label} value={option.label} />
+        ))}
+      </datalist>
 
       <div className="floating-action-stack">
         <button
@@ -2332,6 +2356,24 @@ function CartView({
                     </div>
 
                     <div className="cart-item__grid">
+                      <label className="field-block field-block--wide">
+                        <span className="field-label">Contact Autofill</span>
+                        <input
+                          type="text"
+                          list="contact-autofill-options"
+                          defaultValue=""
+                          onChange={(event) => {
+                            const match = resolveContactOption(event.target.value);
+                            if (!match) {
+                              return;
+                            }
+                            onUpdateCartItem(item.stock_row_num, 'buyer_name', match.name);
+                            onUpdateCartItem(item.stock_row_num, 'buyer_phone', match.phone);
+                          }}
+                          placeholder="Pick Google/client contact to autofill"
+                        />
+                      </label>
+
                       <label className="field-block">
                         <span className="field-label">Buyer Name</span>
                         <input
@@ -2445,6 +2487,23 @@ function CartView({
 
             <div className="form-grid form-grid--modal">
               <label className="field-block">
+                <span className="field-label">Contact Autofill</span>
+                <input
+                  type="text"
+                  list="contact-autofill-options"
+                  defaultValue=""
+                  onChange={(event) => {
+                    const match = resolveContactOption(event.target.value);
+                    if (!match) {
+                      return;
+                    }
+                    setServiceDraft((current) => ({ ...current, name: match.name, phone: match.phone }));
+                  }}
+                  placeholder="Pick Google/client contact to autofill"
+                />
+              </label>
+
+              <label className="field-block">
                 <span className="field-label">Customer Name</span>
                 <input
                   type="text"
@@ -2474,6 +2533,16 @@ function CartView({
                   value={serviceDraft.description}
                   onChange={(event) => setServiceDraft((current) => ({ ...current, description: event.target.value }))}
                   placeholder="Service description"
+                />
+              </label>
+
+              <label className="field-block field-block--wide">
+                <span className="field-label">Service Note</span>
+                <input
+                  type="text"
+                  value={serviceDraft.service_note || ''}
+                  onChange={(event) => setServiceDraft((current) => ({ ...current, service_note: event.target.value }))}
+                  placeholder="Optional note for this service"
                 />
               </label>
 
@@ -3874,6 +3943,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     name: '',
     phone: '',
     description: '',
+    service_note: '',
     price: '',
     service_expense: '',
     amount_paid: '',
@@ -3941,20 +4011,39 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     return new Set(STAFF_ALLOWED_VIEWS);
   }, [isAdmin]);
 
+  const billNotificationCount = useMemo(() => {
+    const now = Date.now();
+    const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+    return (debtorsData.sorted_debtors || []).filter(([name, amount]) => {
+      const balance = Number(amount || 0);
+      if (!(balance > 0)) {
+        return false;
+      }
+      const stats = whatsappHistoryByName?.[name] || {};
+      const lastSent = stats.last_sent_at ? new Date(stats.last_sent_at).getTime() : 0;
+      return !lastSent || Number.isNaN(lastSent) || (now - lastSent) >= threeDaysMs;
+    }).length;
+  }, [debtorsData.sorted_debtors, whatsappHistoryByName]);
+
   const visibleActionItems = useMemo(() => (
     ACTION_ITEMS.filter((item) => {
       if (item.key === 'exit') {
         return true;
       }
       if (item.type === 'action') {
-        return isAdmin || item.key === 'import_phones' || item.key === 'logout' || item.key === 'refresh';
+        return isAdmin || item.key === 'import_phones' || item.key === 'logout' || item.key === 'refresh' || item.key === 'bill_notifications';
       }
       if (item.type === 'view') {
         return isAdmin || STAFF_ALLOWED_VIEWS.has(item.key);
       }
       return false;
+    }).map((item) => {
+      if (item.key === 'bill_notifications') {
+        return { ...item, badge: billNotificationCount };
+      }
+      return item;
     })
-  ), [isAdmin]);
+  ), [billNotificationCount, isAdmin]);
 
   const productSummaryColumns = useMemo(() => {
     const baseKeys = ['description', 'colour', 'storage', 'imei', 'seller'];
@@ -4103,6 +4192,24 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     () => Object.keys(sellerPhoneByName).sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' })),
     [sellerPhoneByName]
   );
+  const contactAutofillOptions = useMemo(() => {
+    const seen = new Set();
+    const options = [];
+    [...(googleContactsData.contacts || []), ...(clientsData.entries || [])].forEach((entry) => {
+      const name = String(entry.name || '').trim();
+      const phone = normalizeWhatsappPhone(entry.phone || '');
+      if (!name || !phone) {
+        return;
+      }
+      const key = `${name.toUpperCase()}|${phone}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      options.push({ label: `${name} - ${phone}`, name, phone });
+    });
+    return options.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }));
+  }, [clientsData.entries, googleContactsData.contacts]);
   const soldUnpaidStockRows = useMemo(() => {
     // Find SOLD items with unpaid or partial payments
     return (stockView?.all_rows_cache || []).filter((row) => {
@@ -4671,7 +4778,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   }, [activeView]);
 
   useEffect(() => {
-    if (activeView !== 'clients') {
+    if (activeView !== 'clients' && activeView !== 'cart') {
       return;
     }
     if (googleContactsLoadAttempted) {
@@ -5624,11 +5731,16 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
     setServiceBusy(true);
     try {
+      const serviceNote = String(serviceDraft.service_note || '').trim();
+      const fullDescription = serviceNote ? `${description} | NOTE: ${serviceNote}` : description;
+
       await addServiceRecord({
         valuesByHeader: {
           NAME: name,
           'PHONE NUMBER': phone,
-          DESCRIPTION: description,
+          DESCRIPTION: fullDescription,
+          NOTE: serviceNote,
+          NOTES: serviceNote,
           PRICE: price,
           'SERVICE EXPENSE': serviceExpense || '0',
           'AMOUNT PAID': amountPaid,
@@ -5636,7 +5748,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         },
         forceRefresh: true,
       });
-      setServiceDraft({ name: '', phone: '', description: '', price: '', service_expense: '', amount_paid: '', status: 'UNPAID' });
+      setServiceDraft({ name: '', phone: '', description: '', service_note: '', price: '', service_expense: '', amount_paid: '', status: 'UNPAID' });
       await loadCoreWorkspace(false);
       // Pull latest cashflow sheet values so new service income/expense reflects immediately.
       if (isAdmin) {
@@ -5706,6 +5818,16 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
     if (item.key === 'import_phones') {
       await handleImportSheetPhones();
+      return;
+    }
+
+    if (item.key === 'bill_notifications') {
+      startTransition(() => setActiveView('debtors'));
+      setStatusText(
+        billNotificationCount > 0
+          ? `${formatCount(billNotificationCount)} customer(s) need bill follow-up after 3+ days.`
+          : 'No overdue bill notifications right now.'
+      );
       return;
     }
 
@@ -5857,6 +5979,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           updatingPendingKey={updatingPendingKey}
           clientNameOptions={clientNameOptions}
           sellerPhoneOptions={sellerPhoneOptions}
+          contactAutofillOptions={contactAutofillOptions}
           currentTimeLabel={currentTimeLabel}
           cartBusy={cartBusy}
           summaryColumns={cartSummaryColumns}
