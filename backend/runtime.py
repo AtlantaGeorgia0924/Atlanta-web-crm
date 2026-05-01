@@ -810,9 +810,8 @@ class BackendRuntime:
             if cost_price <= 0:
                 continue
 
-            stocked_date = parse_sheet_date(
-                self._record_value(record, 'DATE BOUGHT', 'PURCHASE DATE', 'DATE', 'AVAILABILITY/DATE SOLD')
-            )
+            # Capital outflow must be purchase-date based only.
+            stocked_date = parse_sheet_date(self._record_value(record, 'DATE BOUGHT'))
             if stocked_date is None:
                 continue
             if stocked_date < current_month_start or stocked_date > current_day:
