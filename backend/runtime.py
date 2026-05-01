@@ -524,6 +524,11 @@ class BackendRuntime:
             allowance /= 100.0
         return max(0.0, min(allowance, 1.0))
 
+    @staticmethod
+    def _is_business_only_expense_category(category):
+        text = str(category or '').strip().upper()
+        return text.startswith('BUSINESS ONLY:') or text.startswith('BUSINESS_ONLY:')
+
     def _read_numeric_config(self, key, default=0.0):
         raw_value = self.config.get(key, default)
         try:
@@ -859,6 +864,8 @@ class BackendRuntime:
         current_week_end_date = current_day
         current_week_paid_income = 0.0
         current_week_expenses = 0.0
+        current_week_allowance_expenses = 0.0
+        current_week_business_only_expenses = 0.0
         current_week_phone_profit = 0.0
         current_week_service_profit = 0.0
 
@@ -876,6 +883,7 @@ class BackendRuntime:
 
             is_income = source == 'income'
             is_paid = payment_status != 'OWING'  # missing/PAID both count as paid (backward compat)
+            is_business_only_expense = (not is_income) and self._is_business_only_expense_category(category)
             in_current_month = entry_date is not None and entry_date >= current_month_start and entry_date <= current_day
             has_phone_cost = cost_price > 0
             allow_phone_profit = entry_type != 'phone' or has_phone_cost
@@ -907,6 +915,10 @@ class BackendRuntime:
                         current_week_phone_profit += amount
                 elif not is_income:
                     current_week_expenses += amount
+                    if is_business_only_expense:
+                        current_week_business_only_expenses += amount
+                    else:
+                        current_week_allowance_expenses += amount
 
         total_cash_in = round(total_paid_income, 2)
         expected_income = round(total_owing_income, 2)
@@ -922,8 +934,9 @@ class BackendRuntime:
 
         weekly_realized_profit = round(current_week_phone_profit + current_week_service_profit, 2)
         current_week_net_cash_flow = round(current_week_paid_income - current_week_expenses, 2)
+        allowance_base_net_profit = round(current_week_paid_income - current_week_allowance_expenses, 2)
         allowance_percentage = 0.25
-        raw_allowance = max(0.0, current_week_net_cash_flow) * allowance_percentage
+        raw_allowance = max(0.0, allowance_base_net_profit) * allowance_percentage
         # Allowance must not exceed actual available cash after reserve.
         suggested_allowance = round(min(raw_allowance, max(0.0, available_cash_after_reserve)), 2)
 
@@ -947,6 +960,9 @@ class BackendRuntime:
             'current_week_service_profit': round(current_week_service_profit, 2),
             'weekly_realized_profit': weekly_realized_profit,
             'current_week_net_cash_flow': current_week_net_cash_flow,
+            'allowance_base_net_profit': allowance_base_net_profit,
+            'current_week_allowance_expenses': round(current_week_allowance_expenses, 2),
+            'current_week_business_only_expenses': round(current_week_business_only_expenses, 2),
             'capital_outflow_month': capital.get('month_total', 0.0),
             'capital_outflow_week': capital.get('week_total', 0.0),
             'current_week_start': current_week_start.isoformat(),
@@ -955,6 +971,9 @@ class BackendRuntime:
                 'suggested_allowance': suggested_allowance,
                 'calculation_date': current_day.isoformat(),
                 'previous_week_profit': weekly_realized_profit,
+                'allowance_base_net_profit': allowance_base_net_profit,
+                'allowance_expenses': round(current_week_allowance_expenses, 2),
+                'business_only_expenses': round(current_week_business_only_expenses, 2),
                 'allowance_percentage': allowance_percentage,
             },
             'expense_sheet_title': payload.get('sheet_title', 'CASH FLOW'),

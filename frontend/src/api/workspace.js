@@ -169,7 +169,7 @@ export function fetchFoundationCashflowDashboard({ forceRefresh = false, signal,
   });
 }
 
-export function createFoundationExpense({ amount, category = '', description = '', date = '', cashflowPin = '' }) {
+export function createFoundationExpense({ amount, category = '', description = '', date = '', allowanceImpact = 'personal_allowance', cashflowPin = '' }) {
   return requestJson('/api/foundation/expenses', {
     method: 'POST',
     body: {
@@ -177,6 +177,7 @@ export function createFoundationExpense({ amount, category = '', description = '
       category,
       description,
       date,
+      allowance_impact: allowanceImpact,
     },
     headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
   });

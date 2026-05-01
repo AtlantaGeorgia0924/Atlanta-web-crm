@@ -1019,6 +1019,7 @@ function CashFlowView({
     category: '',
     description: '',
     date: formatDateForInput(),
+    allowance_impact: 'personal_allowance',
   });
 
   const recentExpenses = Array.isArray(expenses) ? expenses.slice(0, 8) : [];
@@ -1030,6 +1031,7 @@ function CashFlowView({
       category: expenseDraft.category,
       description: expenseDraft.description,
       date: expenseDraft.date,
+      allowance_impact: expenseDraft.allowance_impact,
     });
 
     if (saved) {
@@ -1038,6 +1040,7 @@ function CashFlowView({
         category: '',
         description: '',
         date: formatDateForInput(),
+        allowance_impact: 'personal_allowance',
       });
     }
   }
@@ -1100,6 +1103,20 @@ function CashFlowView({
       value: formatCurrency(summary.current_week_net_cash_flow || 0),
       note: 'This week\'s profit after deducting this week\'s expenses.',
       className: 'metric-card--profit',
+    },
+    {
+      key: 'allowance-base',
+      label: 'Allowance Base Net Profit',
+      value: formatCurrency(summary.allowance_base_net_profit || 0),
+      note: `Used for allowance only. Excludes business-only expenses (${formatCurrency(summary.current_week_business_only_expenses || 0)} this week).`,
+      className: 'metric-card--profit',
+    },
+    {
+      key: 'business-week-expenses',
+      label: 'Business-Only Expenses (Week)',
+      value: formatCurrency(summary.current_week_business_only_expenses || 0),
+      note: 'Tracked for visibility; does not reduce your weekly allowance.',
+      className: '',
     },
     // ── Cash position ────────────────────────────────────────────────────────
     {
@@ -1339,6 +1356,16 @@ function CashFlowView({
                 value={expenseDraft.date}
                 onChange={(event) => setExpenseDraft((current) => ({ ...current, date: event.target.value }))}
               />
+            </label>
+            <label className="workspace-field">
+              <span className="metric-label">Allowance Impact</span>
+              <select
+                value={expenseDraft.allowance_impact}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, allowance_impact: event.target.value }))}
+              >
+                <option value="personal_allowance">Personal Allowance (affects weekly allowance)</option>
+                <option value="business_only">Business Only (does not affect weekly allowance)</option>
+              </select>
             </label>
           </div>
           <label className="workspace-field">
@@ -4222,6 +4249,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       current_week_phone_profit: 0,
       current_week_service_profit: 0,
       current_week_net_cash_flow: 0,
+      allowance_base_net_profit: 0,
+      current_week_allowance_expenses: 0,
+      current_week_business_only_expenses: 0,
       capital_outflow_month: 0,
       capital_outflow_week: 0,
       current_week_start: '',
@@ -4271,6 +4301,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         category: expenseDraft.category,
         description: expenseDraft.description,
         date: expenseDraft.date,
+        allowanceImpact: expenseDraft.allowance_impact,
       });
       await loadCashflowDashboard(true);
       return true;

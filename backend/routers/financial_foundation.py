@@ -17,6 +17,7 @@ class CreateExpenseRequest(BaseModel):
     category: str = ''
     description: str = ''
     date: str = ''
+    allowance_impact: str = 'personal_allowance'
 
 
 class AppConfigUpsertRequest(BaseModel):
@@ -30,10 +31,15 @@ class CashflowPinChangeRequest(BaseModel):
 
 @router.post('/expenses')
 def create_expense(payload: CreateExpenseRequest, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
+    category = str(payload.category or '').strip()
+    allowance_impact = str(payload.allowance_impact or 'personal_allowance').strip().lower()
+    if allowance_impact == 'business_only' and category:
+        category = f'BUSINESS ONLY: {category}'
+
     try:
         sheet_item = runtime.append_cashflow_expense_record(
             amount=payload.amount,
-            category=payload.category,
+            category=category,
             description=payload.description,
             date_text=payload.date,
             created_by=str((current_user or {}).get('username') or ''),
