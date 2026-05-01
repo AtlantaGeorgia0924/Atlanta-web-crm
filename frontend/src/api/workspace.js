@@ -60,7 +60,7 @@ export function applyPayment({ nameInput, paymentAmount, manualServiceRowIdx = n
   });
 }
 
-export function updateDebtorService({ nameInput, rowIdx, price = null, amountPaid = null, status = '', forceRefresh = false }) {
+export function updateDebtorService({ nameInput, rowIdx, price = null, amountPaid = null, status = '', newName = '', forceRefresh = false }) {
   return requestJson('/api/billing/services/update', {
     method: 'POST',
     body: {
@@ -69,6 +69,7 @@ export function updateDebtorService({ nameInput, rowIdx, price = null, amountPai
       price,
       amount_paid: amountPaid,
       status,
+      new_name: newName,
       force_refresh: forceRefresh,
     },
   });

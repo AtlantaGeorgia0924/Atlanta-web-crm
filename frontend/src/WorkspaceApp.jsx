@@ -3704,8 +3704,44 @@ function FixView({ mismatches, selectedMismatch, correctName, setCorrectName, on
   );
 }
 
-function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesTodayBusy, onChangeDate, onLoadDate }) {
+function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesTodayBusy, onChangeDate, onLoadDate, onUpdateServiceEntry }) {
   const items = servicesTodayData?.services || [];
+  const [editingRowNum, setEditingRowNum] = useState(null);
+  const [editingName, setEditingName] = useState('');
+  const [savingRowNum, setSavingRowNum] = useState(null);
+
+  function beginEdit(entry) {
+    setEditingRowNum(entry?.row_num || null);
+    setEditingName(String(entry?.name || '').trim());
+  }
+
+  function cancelEdit() {
+    setEditingRowNum(null);
+    setEditingName('');
+    setSavingRowNum(null);
+  }
+
+  async function saveEdit(entry) {
+    const nextName = String(editingName || '').trim().toUpperCase();
+    const currentName = String(entry?.name || '').trim().toUpperCase();
+    const rowNum = Number(entry?.row_num || 0);
+    if (!rowNum || !currentName || !nextName) {
+      return;
+    }
+
+    if (nextName === currentName) {
+      cancelEdit();
+      return;
+    }
+
+    setSavingRowNum(rowNum);
+    try {
+      await onUpdateServiceEntry?.({ rowNum, currentName, nextName });
+      cancelEdit();
+    } finally {
+      setSavingRowNum(null);
+    }
+  }
 
   return (
     <section className="workspace-stack">
@@ -3726,7 +3762,7 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
             />
           </div>
           <div className="toolbar-actions">
-            <button type="button" className="primary-button" onClick={() => onLoadDate?.(servicesTodayDate, true)} disabled={servicesTodayBusy}>
+            <button type="button" className="primary-button" onClick={() => onLoadDate?.(servicesTodayDate, true)} disabled={servicesTodayBusy || savingRowNum !== null}>
               {servicesTodayBusy ? 'Loading...' : 'Load Sales'}
             </button>
           </div>
@@ -3749,26 +3785,56 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
                 <th>Price</th>
                 <th>Amount Paid</th>
                 <th>Balance</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
               {items.length ? (
-                items.map((entry) => (
+                items.map((entry) => {
+                  const isEditing = Number(editingRowNum) === Number(entry.row_num);
+                  const isSaving = Number(savingRowNum) === Number(entry.row_num);
+                  return (
                   <tr key={`service-today-${entry.row_num}`}>
                     <td className="row-number" data-label="Row">#{entry.row_num}</td>
                     <td data-label="Time">{entry.time || '—'}</td>
-                    <td data-label="Customer">{entry.name || '—'}</td>
+                    <td data-label="Customer">
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={editingName}
+                          onChange={(event) => setEditingName(event.target.value.toUpperCase())}
+                          placeholder="Customer paying"
+                          style={{ width: '100%', minWidth: '160px' }}
+                          disabled={isSaving}
+                        />
+                      ) : (entry.name || '—')}
+                    </td>
                     <td data-label="Description">{entry.description || '—'}</td>
                     <td data-label="IMEI">{entry.imei || '—'}</td>
                     <td data-label="Status">{entry.status || '—'}</td>
                     <td className="amount-cell" data-label="Price">{formatCurrency(entry.price || 0)}</td>
                     <td className="amount-cell" data-label="Amount Paid">{formatCurrency(entry.amount_paid || 0)}</td>
                     <td className="amount-cell" data-label="Balance">{formatCurrency(entry.balance || 0)}</td>
+                    <td className="row-actions-cell" data-label="Action">
+                      {isEditing ? (
+                        <div className="button-row button-row--end">
+                          <button type="button" className="table-action-button" onClick={cancelEdit} disabled={isSaving}>Cancel</button>
+                          <button type="button" className="table-action-button" onClick={() => saveEdit(entry)} disabled={isSaving || !String(editingName || '').trim()}>
+                            {isSaving ? 'Saving...' : 'Save'}
+                          </button>
+                        </div>
+                      ) : (
+                        <button type="button" className="table-action-button" onClick={() => beginEdit(entry)} disabled={savingRowNum !== null || servicesTodayBusy}>
+                          Edit Customer
+                        </button>
+                      )}
+                    </td>
                   </tr>
-                ))
+                );
+                })
               ) : (
                 <tr>
-                  <td colSpan={9} className="empty-state">No services were recorded for this date.</td>
+                  <td colSpan={10} className="empty-state">No services were recorded for this date.</td>
                 </tr>
               )}
             </tbody>
@@ -4634,6 +4700,33 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setStatusText(`Loaded ${formatCount(result?.count || 0)} service(s) for ${nextDate}.`);
     } catch (error) {
       setStatusText(error.message || 'Could not load services for the selected date.');
+    } finally {
+      setServicesTodayBusy(false);
+    }
+  }
+
+  async function handleUpdateServicesTodayEntry({ rowNum, currentName, nextName }) {
+    if (!rowNum || !currentName || !nextName) {
+      return;
+    }
+
+    setServicesTodayBusy(true);
+    try {
+      await updateDebtorService({
+        nameInput: currentName,
+        rowIdx: rowNum,
+        newName: nextName,
+        forceRefresh: true,
+      });
+      await loadServicesTodayForDate(servicesTodayDate, true);
+      await loadCoreWorkspace(true);
+      if (selectedDebtor && String(selectedDebtor).trim().toUpperCase() === String(currentName).trim().toUpperCase()) {
+        setSelectedDebtor(String(nextName).trim().toUpperCase());
+      }
+      setStatusText(`Updated service row #${rowNum} customer to ${String(nextName).trim().toUpperCase()}.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not update the service customer.');
+      throw error;
     } finally {
       setServicesTodayBusy(false);
     }
@@ -6224,6 +6317,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           servicesTodayBusy={servicesTodayBusy}
           onChangeDate={setServicesTodayDate}
           onLoadDate={loadServicesTodayForDate}
+          onUpdateServiceEntry={handleUpdateServicesTodayEntry}
         />
       );
     }

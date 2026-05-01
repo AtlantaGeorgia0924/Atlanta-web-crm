@@ -82,6 +82,7 @@ class UpdateServiceRequest(BaseModel):
     price: int | None = None
     amount_paid: int | None = None
     status: str | None = None
+    new_name: str | None = None
     force_refresh: bool = False
 
 
@@ -294,6 +295,8 @@ def update_service_endpoint(payload: UpdateServiceRequest, runtime=Depends(get_r
         updates['Amount paid'] = payload.amount_paid
     if payload.status is not None and str(payload.status).strip():
         updates['STATUS'] = payload.status
+    if payload.new_name is not None and str(payload.new_name).strip():
+        updates['NAME'] = str(payload.new_name).strip().upper()
 
     try:
         result = runtime.update_main_record_fields(
