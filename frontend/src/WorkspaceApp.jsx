@@ -1047,6 +1047,78 @@ function CashFlowView({
     return null;
   }
 
+  function normalizeTxText(value) {
+    return String(value || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  }
+
+  function txDateKey(tx) {
+    return String(tx?.payment_date || tx?.date || '').trim();
+  }
+
+  const drillDownDisplay = useMemo(() => {
+    if (!drillDown) {
+      return { rows: [], total: 0, amountHeader: 'Amount' };
+    }
+
+    const titleText = String(drillDown.title || '').toLowerCase();
+    const isProfitView = titleText.includes('profit');
+    const serviceExpensePool = new Map();
+
+    if (isProfitView) {
+      for (const tx of allTx) {
+        const source = String(tx?.source || '').toLowerCase();
+        const category = String(tx?.category || '').toLowerCase();
+        if (source === 'income' || !category.includes('service expense')) {
+          continue;
+        }
+
+        const expenseAmount = Number(String(tx?.amount || '0').replace(/[^0-9.\-]/g, '')) || 0;
+        if (expenseAmount <= 0) {
+          continue;
+        }
+
+        const key = `${txDateKey(tx)}|${normalizeTxText(tx?.description)}|${normalizeTxText(tx?.created_by)}`;
+        serviceExpensePool.set(key, (serviceExpensePool.get(key) || 0) + expenseAmount);
+      }
+    }
+
+    const rows = (drillDown.rows || []).map((tx) => {
+      const txType = String(tx?.type || '').toLowerCase();
+      const txSource = String(tx?.source || '').toLowerCase();
+      const rawAmount = Number(String(tx?.amount || '0').replace(/[^0-9.\-]/g, '')) || 0;
+      let displayAmount = rawAmount;
+
+      if (isProfitView && txSource === 'income') {
+        if (txType === 'phone') {
+          const costPrice = Number(String(tx?.cost_price || '0').replace(/[^0-9.\-]/g, '')) || 0;
+          if (costPrice > 0 && rawAmount > costPrice) {
+            displayAmount = rawAmount - costPrice;
+          }
+        } else if (txType === 'service') {
+          const key = `${txDateKey(tx)}|${normalizeTxText(tx?.description)}|${normalizeTxText(tx?.created_by)}`;
+          const remainingExpense = serviceExpensePool.get(key) || 0;
+          const appliedExpense = Math.min(remainingExpense, Math.max(0, rawAmount));
+          displayAmount = rawAmount - appliedExpense;
+          if (appliedExpense > 0) {
+            serviceExpensePool.set(key, Math.max(0, remainingExpense - appliedExpense));
+          }
+        }
+      }
+
+      return {
+        ...tx,
+        _displayAmount: Number.isFinite(displayAmount) ? displayAmount : 0,
+      };
+    });
+
+    const total = rows.reduce((sum, tx) => sum + (Number(tx._displayAmount) || 0), 0);
+    return {
+      rows,
+      total,
+      amountHeader: isProfitView ? 'Realized Profit' : 'Amount',
+    };
+  }, [drillDown, allTx]);
+
   const today = new Date();
   // Backend week starts on Sunday: current_day - (weekday+1)%7
   // JS getDay(): Sun=0 Mon=1 … Sat=6 → subtract getDay() to land on Sunday
@@ -1358,12 +1430,12 @@ function CashFlowView({
                       <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Type</th>
                       <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Category / Item</th>
                       <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>Description</th>
-                      <th style={{ padding: '8px 12px', textAlign: 'right', borderBottom: '1px solid #e5e7eb' }}>Amount</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'right', borderBottom: '1px solid #e5e7eb' }}>{drillDownDisplay.amountHeader}</th>
                       <th style={{ padding: '8px 12px', textAlign: 'left', borderBottom: '1px solid #e5e7eb' }}>By</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {drillDown.rows.map((tx, idx) => {
+                    {drillDownDisplay.rows.map((tx, idx) => {
                       const txType = String(tx.type || '').toLowerCase();
                       const txSource = String(tx.source || '').toLowerCase();
                       let typeLabel = '—';
@@ -1381,14 +1453,13 @@ function CashFlowView({
                         typeLabel = 'Expense';
                         typeBadgeStyle = { ...typeBadgeStyle, background: '#fee2e2', color: '#b91c1c' };
                       }
-                      const rawAmount = Number(String(tx.amount || '0').replace(/[^0-9.\-]/g, '')) || 0;
                       return (
                         <tr key={`${tx.row_num ?? idx}`} style={{ borderBottom: '1px solid #f3f4f6' }}>
                           <td style={{ padding: '7px 12px', whiteSpace: 'nowrap' }}>{tx.payment_date || tx.date || '—'}</td>
                           <td style={{ padding: '7px 12px' }}><span style={typeBadgeStyle}>{typeLabel}</span></td>
                           <td style={{ padding: '7px 12px', fontWeight: 500 }}>{tx.category || '—'}</td>
                           <td style={{ padding: '7px 12px', color: '#374151' }}>{tx.description || '—'}</td>
-                          <td style={{ padding: '7px 12px', textAlign: 'right', fontWeight: 700 }}>{formatCurrency(rawAmount)}</td>
+                          <td style={{ padding: '7px 12px', textAlign: 'right', fontWeight: 700 }}>{formatCurrency(tx._displayAmount || 0)}</td>
                           <td style={{ padding: '7px 12px', color: '#6b7280' }}>{tx.created_by || '—'}</td>
                         </tr>
                       );
@@ -1400,7 +1471,7 @@ function CashFlowView({
             <div style={{ padding: '10px 20px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#6b7280', fontSize: '0.8rem' }}>
               <span>{drillDown.rows.length} record{drillDown.rows.length !== 1 ? 's' : ''}</span>
               <strong style={{ color: '#111827', fontSize: '0.9rem' }}>
-                Total: {formatCurrency(drillDown.rows.reduce((sum, tx) => sum + (Number(String(tx.amount || '0').replace(/[^0-9.\-]/g, '')) || 0), 0))}
+                Total: {formatCurrency(drillDownDisplay.total)}
               </strong>
             </div>
           </div>
