@@ -151,6 +151,16 @@ export function fetchServicesToday({ forceRefresh = false, targetDate = '', sign
   });
 }
 
+export function searchServices({ query = '', forceRefresh = false, signal } = {}) {
+  return requestJson('/api/billing/services/search', {
+    query: {
+      q: query,
+      force_refresh: forceRefresh,
+    },
+    signal,
+  });
+}
+
 export function fetchFoundationCashflowSummary({ signal } = {}) {
   return requestJson('/api/foundation/cashflow-summary', { signal });
 }

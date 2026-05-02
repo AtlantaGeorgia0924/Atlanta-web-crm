@@ -20,6 +20,7 @@ import {
   fetchOutstandingItems,
   fetchPaymentPlan,
   fetchServicesToday,
+  searchServices,
   fetchStockForm,
   fetchSyncStatus,
   fetchUnpaidToday,
@@ -3767,6 +3768,12 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
   const [editingRowNum, setEditingRowNum] = useState(null);
   const [editingName, setEditingName] = useState('');
   const [savingRowNum, setSavingRowNum] = useState(null);
+  const [searchMode, setSearchMode] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchCount, setSearchCount] = useState(null);
+  const searchAbortRef = React.useRef(null);
 
   function beginEdit(entry) {
     setEditingRowNum(entry?.row_num || null);
@@ -3801,33 +3808,101 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
     }
   }
 
+  async function runSearch(q) {
+    if (!String(q || '').trim()) {
+      setSearchResults([]);
+      setSearchCount(null);
+      return;
+    }
+    if (searchAbortRef.current) {
+      searchAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    setSearchBusy(true);
+    try {
+      const result = await searchServices({ query: q, signal: controller.signal });
+      setSearchResults(result.services || []);
+      setSearchCount(result.count ?? 0);
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        setSearchResults([]);
+        setSearchCount(null);
+      }
+    } finally {
+      setSearchBusy(false);
+    }
+  }
+
+  function handleSearchInput(value) {
+    setSearchQuery(value);
+    runSearch(value);
+  }
+
+  const displayItems = searchMode ? searchResults : items;
+
   return (
     <section className="workspace-stack">
       <section className="content-panel content-panel--main content-panel--full">
         <div className="panel-header">
           <h3>Services Done Today</h3>
-          <p>View services recorded for any selected day.</p>
+          <p>View services recorded for any selected day, or search all services by customer name.</p>
         </div>
 
-        <div className="panel-toolbar">
-          <div className="search-group" style={{ maxWidth: '260px' }}>
-            <label htmlFor="services-day-picker">Select date:</label>
-            <input
-              id="services-day-picker"
-              type="date"
-              value={servicesTodayDate}
-              onChange={(event) => onChangeDate?.(event.target.value)}
-            />
-          </div>
-          <div className="toolbar-actions">
-            <button type="button" className="primary-button" onClick={() => onLoadDate?.(servicesTodayDate, true)} disabled={servicesTodayBusy || savingRowNum !== null}>
-              {servicesTodayBusy ? 'Loading...' : 'Load Sales'}
+        <div className="panel-toolbar" style={{ flexWrap: 'wrap', gap: '10px' }}>
+          <div className="tab-toggle" style={{ display: 'flex', gap: '6px' }}>
+            <button
+              type="button"
+              className={searchMode ? 'secondary-button' : 'primary-button'}
+              onClick={() => setSearchMode(false)}
+            >
+              By Date
+            </button>
+            <button
+              type="button"
+              className={searchMode ? 'primary-button' : 'secondary-button'}
+              onClick={() => setSearchMode(true)}
+            >
+              Search
             </button>
           </div>
+
+          {!searchMode ? (
+            <>
+              <div className="search-group" style={{ maxWidth: '260px' }}>
+                <label htmlFor="services-day-picker">Select date:</label>
+                <input
+                  id="services-day-picker"
+                  type="date"
+                  value={servicesTodayDate}
+                  onChange={(event) => onChangeDate?.(event.target.value)}
+                />
+              </div>
+              <div className="toolbar-actions">
+                <button type="button" className="primary-button" onClick={() => onLoadDate?.(servicesTodayDate, true)} disabled={servicesTodayBusy || savingRowNum !== null}>
+                  {servicesTodayBusy ? 'Loading...' : 'Load Sales'}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="search-group" style={{ flex: 1, maxWidth: '400px' }}>
+              <label htmlFor="services-name-search">Customer name:</label>
+              <input
+                id="services-name-search"
+                type="text"
+                value={searchQuery}
+                onChange={(event) => handleSearchInput(event.target.value)}
+                placeholder="Search by customer name…"
+                autoFocus
+              />
+            </div>
+          )}
         </div>
 
         <div className="notice compact">
-          Total services for {servicesTodayDate || 'selected date'}: {formatCount(servicesTodayData?.count || 0)}
+          {searchMode
+            ? (searchBusy ? 'Searching…' : searchCount !== null ? `Found ${formatCount(searchCount)} service(s) for "${searchQuery}"` : 'Enter a name to search all services.')
+            : `Total services for ${servicesTodayDate || 'selected date'}: ${formatCount(servicesTodayData?.count || 0)}`}
         </div>
 
         <div className="table-wrap table-wrap--mobile-cards">
@@ -3835,6 +3910,7 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
             <thead>
               <tr>
                 <th>Row</th>
+                <th>Date</th>
                 <th>Time</th>
                 <th>Customer</th>
                 <th>Description</th>
@@ -3847,13 +3923,14 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
               </tr>
             </thead>
             <tbody>
-              {items.length ? (
-                items.map((entry) => {
+              {displayItems.length ? (
+                displayItems.map((entry) => {
                   const isEditing = Number(editingRowNum) === Number(entry.row_num);
                   const isSaving = Number(savingRowNum) === Number(entry.row_num);
                   return (
                   <tr key={`service-today-${entry.row_num}`}>
                     <td className="row-number" data-label="Row">#{entry.row_num}</td>
+                    <td data-label="Date">{entry.date || '—'}</td>
                     <td data-label="Time">{entry.time || '—'}</td>
                     <td data-label="Customer">
                       {isEditing ? (
@@ -3882,7 +3959,7 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
                           </button>
                         </div>
                       ) : (
-                        <button type="button" className="table-action-button" onClick={() => beginEdit(entry)} disabled={savingRowNum !== null || servicesTodayBusy}>
+                        <button type="button" className="table-action-button" onClick={() => beginEdit(entry)} disabled={savingRowNum !== null || (searchMode ? searchBusy : servicesTodayBusy)}>
                           Edit Customer
                         </button>
                       )}
@@ -3892,7 +3969,11 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
                 })
               ) : (
                 <tr>
-                  <td colSpan={10} className="empty-state">No services were recorded for this date.</td>
+                  <td colSpan={11} className="empty-state">
+                    {searchMode
+                      ? (searchBusy ? 'Searching…' : searchQuery ? 'No services found for this name.' : 'Enter a customer name above to search.')
+                      : 'No services were recorded for this date.'}
+                  </td>
                 </tr>
               )}
             </tbody>

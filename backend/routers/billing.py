@@ -10,6 +10,7 @@ from services.billing_service import (
     build_debtor_send_summary,
     build_payment_plan,
     build_services_today_rows,
+    search_services_by_name,
     build_unpaid_today_customers,
     compute_debtors,
     compute_sales_snapshot,
@@ -460,4 +461,17 @@ def services_today_live(force_refresh: bool = False, target_date: str = '', runt
         'services': services,
         'count': len(services),
         'target_date': str(parsed_target.isoformat() if parsed_target else ''),
+    }
+
+
+@router.get('/services/search')
+def search_services_endpoint(q: str = '', force_refresh: bool = False, runtime=Depends(get_runtime)):
+    if not str(q or '').strip():
+        return {'services': [], 'count': 0, 'query': ''}
+    records = runtime.get_main_records(force_refresh=force_refresh)
+    services = search_services_by_name(records, q)
+    return {
+        'services': services,
+        'count': len(services),
+        'query': str(q).strip(),
     }
