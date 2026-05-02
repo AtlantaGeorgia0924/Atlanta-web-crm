@@ -1173,6 +1173,37 @@ function CashFlowView({
   // JS getDay(): Sun=0 Mon=1 … Sat=6 → subtract getDay() to land on Sunday
   const weekStart = new Date(today); weekStart.setDate(today.getDate() - today.getDay()); weekStart.setHours(0,0,0,0);
   const weekEnd = new Date(today); weekEnd.setHours(23,59,59,999);
+  const [allowanceActionBusy, setAllowanceActionBusy] = useState(false);
+
+  const allowanceWithdrawalsThisWeek = useMemo(() => {
+    return allTx
+      .filter((tx) => {
+        if (!txIsThisWeek(tx, weekStart, weekEnd)) {
+          return false;
+        }
+        const source = String(tx?.source || '').trim().toLowerCase();
+        const category = String(tx?.category || '').trim().toLowerCase();
+        return source !== 'income' && category.includes('allowance');
+      })
+      .map((tx) => {
+        const dateValue = parse_date_approx(tx?.payment_date || tx?.date || '');
+        return {
+          ...tx,
+          _dateValue: dateValue,
+          _amount: Number(String(tx?.amount || '0').replace(/[^0-9.\-]/g, '')) || 0,
+        };
+      })
+      .sort((left, right) => {
+        const leftTime = left?._dateValue instanceof Date ? left._dateValue.getTime() : 0;
+        const rightTime = right?._dateValue instanceof Date ? right._dateValue.getTime() : 0;
+        return rightTime - leftTime;
+      });
+  }, [allTx, weekStart, weekEnd]);
+
+  const withdrawnAllowanceThisWeek = allowanceWithdrawalsThisWeek.reduce((sum, tx) => sum + (tx._amount || 0), 0);
+  const suggestedAllowanceAmount = Number(allowance?.suggested_allowance || 0);
+  const remainingAllowanceToWithdraw = Math.max(0, suggestedAllowanceAmount - withdrawnAllowanceThisWeek);
+  const latestAllowanceWithdrawal = allowanceWithdrawalsThisWeek[0] || null;
 
   const [expenseDraft, setExpenseDraft] = useState({
     amount: '',
@@ -1202,6 +1233,33 @@ function CashFlowView({
         date: formatDateForInput(),
         allowance_impact: 'personal_allowance',
       });
+    }
+  }
+
+  async function handleMarkAllowanceWithdrawn() {
+    if (remainingAllowanceToWithdraw <= 0) {
+      return;
+    }
+
+    const weekLabel = `${weekStart.toISOString().slice(0, 10)} to ${weekEnd.toISOString().slice(0, 10)}`;
+    const shouldContinue = window.confirm(
+      `Record weekly allowance withdrawal of ${formatCurrency(remainingAllowanceToWithdraw)} for ${weekLabel}?`
+    );
+    if (!shouldContinue) {
+      return;
+    }
+
+    setAllowanceActionBusy(true);
+    try {
+      await onCreateExpense?.({
+        amount: remainingAllowanceToWithdraw,
+        category: 'WEEKLY ALLOWANCE',
+        description: `Allowance withdrawn for week ${weekLabel}`,
+        date: formatDateForInput(),
+        allowance_impact: 'personal_allowance',
+      });
+    } finally {
+      setAllowanceActionBusy(false);
     }
   }
 
@@ -1397,6 +1455,20 @@ function CashFlowView({
           <button type="button" className="secondary-button" onClick={() => onReload?.()} disabled={loading}>
             {loading ? 'Loading...' : 'Reload'}
           </button>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={handleMarkAllowanceWithdrawn}
+            disabled={loading || expenseBusy || allowanceActionBusy || remainingAllowanceToWithdraw <= 0}
+          >
+            {allowanceActionBusy ? 'Recording...' : 'Mark Weekly Allowance Withdrawn'}
+          </button>
+        </div>
+        <div className="notice compact" style={{ marginTop: '10px' }}>
+          Suggested: {formatCurrency(suggestedAllowanceAmount)} | Withdrawn this week: {formatCurrency(withdrawnAllowanceThisWeek)} | Remaining: {formatCurrency(remainingAllowanceToWithdraw)}
+          {latestAllowanceWithdrawal
+            ? ` | Last withdrawal: ${latestAllowanceWithdrawal.date || latestAllowanceWithdrawal.payment_date || 'No date'} (${formatCurrency(latestAllowanceWithdrawal._amount || 0)})`
+            : ' | No allowance withdrawal recorded yet this week.'}
         </div>
         {errorText ? (
           <div className="notice notice-error" style={{ marginTop: '12px' }}>
