@@ -217,11 +217,9 @@ def generate_bill_text(name_input, records, payment_details, gender=''):
 
     greeting = resolve_day_greeting()
     salutation = resolve_salutation(gender)
-    intro_line_1 = to_math_italic(f"{greeting} {salutation}, I hope you're doing well.")
-    intro_line_2 = to_math_italic('Here is a quick summary of your outstanding bill for your review:')
+    intro_line_1 = to_math_italic(f"{greeting} {salutation}, I trust you're doing well.")
     lines = [
         intro_line_1,
-        intro_line_2,
         '',
         f"Customer: {name_input}",
         f"Generated: {generated_day} at {generated_at}",
