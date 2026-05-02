@@ -707,6 +707,58 @@ class BackendRuntime:
             entry_type='expense',
         )
 
+    def undo_last_weekly_allowance_withdrawal(self):
+        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+        today = datetime.now(timezone.utc).date()
+        latest_allowance_row = None
+
+        with self._sheet_lock:
+            values = worksheet.get_all_values()
+            for row_num in range(len(values), 1, -1):
+                row_values = values[row_num - 1] if row_num - 1 < len(values) else []
+                normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+                source = str(normalized.get('source') or '').strip().lower()
+                category = str(normalized.get('category') or '').strip().upper()
+                amount = clean_amount(normalized.get('amount'))
+                if source != 'expense':
+                    continue
+                if 'WEEKLY ALLOWANCE' not in category:
+                    continue
+                if amount <= 0:
+                    continue
+                latest_allowance_row = normalized
+                break
+
+            if latest_allowance_row is None:
+                return {'error': 'No weekly allowance withdrawal record found to undo.'}
+
+            latest_date = parse_sheet_date(latest_allowance_row.get('date'))
+            if latest_date != today:
+                return {
+                    'error': 'Undo is only allowed for today\'s latest weekly allowance withdrawal.',
+                    'latest_allowance_date': str(latest_allowance_row.get('date') or ''),
+                }
+
+            target_row_num = int(latest_allowance_row.get('row_num') or 0)
+            if target_row_num <= 1:
+                return {'error': 'Could not resolve the latest weekly allowance row to undo.'}
+
+            worksheet.delete_rows(target_row_num)
+
+            if self.postgres_ready:
+                try:
+                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', worksheet.get_all_values())
+                except Exception as exc:
+                    self.logger.warning('Failed to refresh cashflow sheet cache after allowance undo: %s', exc)
+
+        return {
+            'undone': True,
+            'removed_row_num': target_row_num,
+            'removed_amount': clean_amount(latest_allowance_row.get('amount')),
+            'removed_date': str(latest_allowance_row.get('date') or ''),
+            'removed_category': str(latest_allowance_row.get('category') or ''),
+        }
+
     def append_cashflow_income_record(self, amount, category='', description='', date_text='', created_by='', payment_status='PAID', entry_type='service', cost_price='', payment_date_text=''):
         return self._append_cashflow_sheet_record(
             amount=amount,

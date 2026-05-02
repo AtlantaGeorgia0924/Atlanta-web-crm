@@ -33,6 +33,7 @@ import {
   refreshWorkspace,
   syncGoogleContacts,
   undoPayment,
+  undoLastWeeklyAllowanceWithdrawal,
   returnDebtorService,
   updateDebtorService,
   upsertClient,
@@ -1025,6 +1026,7 @@ function CashFlowView({
   lastUpdatedAt,
   onReload,
   onCreateExpense,
+  onUndoLastAllowanceWithdrawal,
 }) {
   const summary = cashflowSummary || {};
   const allowance = weeklyAllowance || {};
@@ -1174,22 +1176,24 @@ function CashFlowView({
   const weekStart = new Date(today); weekStart.setDate(today.getDate() - today.getDay()); weekStart.setHours(0,0,0,0);
   const weekEnd = new Date(today); weekEnd.setHours(23,59,59,999);
   const [allowanceActionBusy, setAllowanceActionBusy] = useState(false);
+  const todayKey = formatDateForInput();
 
-  const allowanceWithdrawalsThisWeek = useMemo(() => {
+  const weeklyAllowanceEntriesThisWeek = useMemo(() => {
     return allTx
       .filter((tx) => {
         if (!txIsThisWeek(tx, weekStart, weekEnd)) {
           return false;
         }
         const source = String(tx?.source || '').trim().toLowerCase();
-        const category = String(tx?.category || '').trim().toLowerCase();
-        return source !== 'income' && category.includes('allowance');
+        const category = String(tx?.category || '').trim().toUpperCase();
+        return source !== 'income' && category.includes('WEEKLY ALLOWANCE');
       })
       .map((tx) => {
         const dateValue = parse_date_approx(tx?.payment_date || tx?.date || '');
         return {
           ...tx,
           _dateValue: dateValue,
+          _dateKey: dateValue instanceof Date ? dateValue.toISOString().slice(0, 10) : '',
           _amount: Number(String(tx?.amount || '0').replace(/[^0-9.\-]/g, '')) || 0,
         };
       })
@@ -1200,10 +1204,17 @@ function CashFlowView({
       });
   }, [allTx, weekStart, weekEnd]);
 
-  const withdrawnAllowanceThisWeek = allowanceWithdrawalsThisWeek.reduce((sum, tx) => sum + (tx._amount || 0), 0);
+  const withdrawnAllowanceThisWeek = weeklyAllowanceEntriesThisWeek
+    .filter((tx) => (tx._amount || 0) > 0)
+    .reduce((sum, tx) => sum + (tx._amount || 0), 0);
   const suggestedAllowanceAmount = Number(allowance?.suggested_allowance || 0);
   const remainingAllowanceToWithdraw = Math.max(0, suggestedAllowanceAmount - withdrawnAllowanceThisWeek);
-  const latestAllowanceWithdrawal = allowanceWithdrawalsThisWeek[0] || null;
+  const latestWeeklyAllowanceEntry = weeklyAllowanceEntriesThisWeek[0] || null;
+  const canUndoLatestWeeklyAllowance = Boolean(
+    latestWeeklyAllowanceEntry
+    && (latestWeeklyAllowanceEntry._amount || 0) > 0
+    && latestWeeklyAllowanceEntry._dateKey === todayKey
+  );
 
   const [expenseDraft, setExpenseDraft] = useState({
     amount: '',
@@ -1251,13 +1262,36 @@ function CashFlowView({
 
     setAllowanceActionBusy(true);
     try {
-      await onCreateExpense?.({
+      const saved = await onCreateExpense?.({
         amount: remainingAllowanceToWithdraw,
         category: 'WEEKLY ALLOWANCE',
         description: `Allowance withdrawn for week ${weekLabel}`,
-        date: formatDateForInput(),
+        date: todayKey,
         allowance_impact: 'personal_allowance',
       });
+      if (saved === false) {
+        return;
+      }
+    } finally {
+      setAllowanceActionBusy(false);
+    }
+  }
+
+  async function handleUndoLastAllowanceWithdrawal() {
+    if (!canUndoLatestWeeklyAllowance) {
+      return;
+    }
+
+    const shouldContinue = window.confirm(
+      `Undo the latest weekly allowance withdrawal (${formatCurrency(latestWeeklyAllowanceEntry?._amount || 0)}) recorded today?`
+    );
+    if (!shouldContinue) {
+      return;
+    }
+
+    setAllowanceActionBusy(true);
+    try {
+      await onUndoLastAllowanceWithdrawal?.();
     } finally {
       setAllowanceActionBusy(false);
     }
@@ -1463,11 +1497,20 @@ function CashFlowView({
           >
             {allowanceActionBusy ? 'Recording...' : 'Mark Weekly Allowance Withdrawn'}
           </button>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={handleUndoLastAllowanceWithdrawal}
+            disabled={loading || expenseBusy || allowanceActionBusy || !canUndoLatestWeeklyAllowance}
+            title={canUndoLatestWeeklyAllowance ? 'Undo latest weekly allowance withdrawal recorded today' : 'Undo is available only for the latest weekly allowance entry recorded today'}
+          >
+            {allowanceActionBusy ? 'Working...' : 'Undo Last Allowance Withdrawal'}
+          </button>
         </div>
         <div className="notice compact" style={{ marginTop: '10px' }}>
           Suggested: {formatCurrency(suggestedAllowanceAmount)} | Withdrawn this week: {formatCurrency(withdrawnAllowanceThisWeek)} | Remaining: {formatCurrency(remainingAllowanceToWithdraw)}
-          {latestAllowanceWithdrawal
-            ? ` | Last withdrawal: ${latestAllowanceWithdrawal.date || latestAllowanceWithdrawal.payment_date || 'No date'} (${formatCurrency(latestAllowanceWithdrawal._amount || 0)})`
+          {latestWeeklyAllowanceEntry
+            ? ` | Last withdrawal: ${latestWeeklyAllowanceEntry.date || latestWeeklyAllowanceEntry.payment_date || 'No date'} (${formatCurrency(latestWeeklyAllowanceEntry._amount || 0)})`
             : ' | No allowance withdrawal recorded yet this week.'}
         </div>
         {errorText ? (
@@ -5013,6 +5056,28 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
+  async function handleUndoLastAllowanceWithdrawal() {
+    setCashflowExpenseBusy(true);
+    setCashflowExpenseError('');
+    try {
+      const result = await undoLastWeeklyAllowanceWithdrawal();
+      await loadCashflowDashboard(true);
+      setStatusText(
+        result?.removed_amount
+          ? `Undid latest weekly allowance withdrawal: ${formatCurrency(result.removed_amount)}.`
+          : 'Undid latest weekly allowance withdrawal.'
+      );
+      return true;
+    } catch (error) {
+      const message = error?.message || 'Could not undo the latest allowance withdrawal.';
+      setCashflowExpenseError(message);
+      setStatusText(message);
+      return false;
+    } finally {
+      setCashflowExpenseBusy(false);
+    }
+  }
+
   async function loadServicesTodayForDate(dateText, forceRefresh = false) {
     const nextDate = String(dateText || '').trim() || formatDateForInput();
     setServicesTodayBusy(true);
@@ -6561,6 +6626,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           lastUpdatedAt={cashflowUpdatedAt}
           onReload={loadCashflowDashboard}
           onCreateExpense={handleCreateCashflowExpense}
+          onUndoLastAllowanceWithdrawal={handleUndoLastAllowanceWithdrawal}
         />
       );
     }

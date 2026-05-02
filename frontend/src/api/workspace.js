@@ -194,6 +194,14 @@ export function createFoundationExpense({ amount, category = '', description = '
   });
 }
 
+export function undoLastWeeklyAllowanceWithdrawal({ cashflowPin = '' } = {}) {
+  return requestJson('/api/foundation/allowance/undo-last', {
+    method: 'POST',
+    body: {},
+    headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
+  });
+}
+
 export function changeCashflowPin({ currentPin, newPin }) {
   return requestJson('/api/foundation/cashflow-pin/change', {
     method: 'POST',

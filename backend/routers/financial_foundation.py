@@ -189,6 +189,20 @@ def get_weekly_allowance(runtime=Depends(get_runtime), current_user=Depends(get_
     return summary
 
 
+@router.post('/allowance/undo-last', dependencies=[Depends(require_admin)])
+def undo_last_weekly_allowance(runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
+    try:
+        result = runtime.undo_last_weekly_allowance_withdrawal()
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    if result.get('error'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result['error'])
+    return result
+
+
 @router.post('/cashflow/rebuild-week', dependencies=[Depends(require_admin)])
 def rebuild_cashflow_week(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
