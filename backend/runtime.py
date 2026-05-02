@@ -4448,6 +4448,23 @@ class BackendRuntime:
                 )
             )
 
+        if not queue_ids:
+            return {
+                'queued_operation_ids': [],
+                'updates_count': 0,
+                'row_num': sheet_row,
+            }
+
+        # Service price edits/returns in Debtors should reflect immediately.
+        # Flush the queue now so subsequent refreshes see updated values.
+        try:
+            replay = self.replay_pending_queue_now(limit=max(20, len(queue_ids) * 4))
+        except Exception as exc:
+            return {'error': f'Could not apply service update right now: {exc}'}
+
+        if replay and replay.get('failed', 0) > 0:
+            return {'error': 'Service update was queued but not fully applied. Please retry.'}
+
         return {
             'queued_operation_ids': queue_ids,
             'updates_count': len(queue_ids),
