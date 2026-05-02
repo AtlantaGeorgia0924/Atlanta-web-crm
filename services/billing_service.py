@@ -252,6 +252,8 @@ def generate_bill_text(name_input, records, payment_details, gender=''):
     lines.append('Payment Details:')
     lines.append(normalized_payment_details)
     lines.append('')
+    lines.append(to_math_italic('Please note that this message was generated automatically.'))
+    lines.append('')
     lines.append('Please send your payment screenshot after transfer. Thank you.')
     return "\n".join(lines)
 
