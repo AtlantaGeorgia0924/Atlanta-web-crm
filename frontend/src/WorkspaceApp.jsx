@@ -3849,7 +3849,7 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
   );
 }
 
-function BillNotificationsView({ entries, onOpenDebtors }) {
+function BillNotificationsView({ entries, onOpenDebtors, onSendEntry, sendingKey = '' }) {
   const rows = Array.isArray(entries) ? entries : [];
 
   return (
@@ -3879,6 +3879,7 @@ function BillNotificationsView({ entries, onOpenDebtors }) {
                 <th>Days Since Last Bill</th>
                 <th>Last Bill Sent</th>
                 <th>Total Sends</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
@@ -3890,11 +3891,22 @@ function BillNotificationsView({ entries, onOpenDebtors }) {
                     <td data-label="Days Since Last Bill">{formatCount(entry.days_since_last_bill || 0)}</td>
                     <td data-label="Last Bill Sent">{entry.last_sent_at ? String(entry.last_sent_at).replace('T', ' ').slice(0, 16) : 'Never'}</td>
                     <td data-label="Total Sends">{formatCount(entry.send_count || 0)}</td>
+                    <td className="row-actions-cell" data-label="Action">
+                      <button
+                        type="button"
+                        className="table-action-button"
+                        onClick={() => onSendEntry?.(entry)}
+                        disabled={Boolean(sendingKey) || !entry.has_phone}
+                        title={entry.has_phone ? 'Open WhatsApp bill for this customer' : 'No phone saved for this customer'}
+                      >
+                        {String(sendingKey || '') === String(entry.name || '') ? 'Sending...' : (entry.has_phone ? 'Send Bill' : 'No Phone')}
+                      </button>
+                    </td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={5} className="empty-state">No overdue bill notifications right now.</td>
+                  <td colSpan={6} className="empty-state">No overdue bill notifications right now.</td>
                 </tr>
               )}
             </tbody>
@@ -4196,6 +4208,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [servicesTodayDate, setServicesTodayDate] = useState(formatDateForInput());
   const [servicesTodayBusy, setServicesTodayBusy] = useState(false);
   const [sendingTodayBills, setSendingTodayBills] = useState(false);
+  const [sendingBillNotificationKey, setSendingBillNotificationKey] = useState('');
 
   const [stockSearchText, setStockSearchText] = useState('');
   const deferredStockSearchText = useDeferredValue(stockSearchText);
@@ -4290,6 +4303,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const billNotificationEntries = useMemo(() => {
     const now = Date.now();
     const fourDaysMs = 4 * 24 * 60 * 60 * 1000;
+    const oldestUnpaidByName = debtorsData?.oldest_unpaid_date_by_name || {};
     const rows = (debtorsData.sorted_debtors || []).map(([name, amount]) => {
       const balance = Number(amount || 0);
       if (!(balance > 0)) {
@@ -4297,14 +4311,18 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       }
       const stats = whatsappHistoryByName?.[name] || {};
       const lastSent = stats.last_sent_at ? new Date(stats.last_sent_at).getTime() : 0;
-      const elapsedMs = !lastSent || Number.isNaN(lastSent) ? Number.POSITIVE_INFINITY : (now - lastSent);
+      const oldestUnpaidDateRaw = oldestUnpaidByName?.[name] || '';
+      const oldestUnpaidTs = oldestUnpaidDateRaw ? new Date(oldestUnpaidDateRaw).getTime() : 0;
+      const baselineTs = (!lastSent || Number.isNaN(lastSent))
+        ? (oldestUnpaidTs && !Number.isNaN(oldestUnpaidTs) ? oldestUnpaidTs : now)
+        : lastSent;
+      const elapsedMs = now - baselineTs;
       if (!(elapsedMs > fourDaysMs)) {
         return null;
       }
 
-      const daysSince = Number.isFinite(elapsedMs)
-        ? Math.floor(elapsedMs / (24 * 60 * 60 * 1000))
-        : 9999;
+      const daysSince = Math.max(0, Math.floor(elapsedMs / (24 * 60 * 60 * 1000)));
+      const phone = normalizeWhatsappPhone(clientsData.registry?.[name] || '');
 
       return {
         name,
@@ -4312,6 +4330,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         days_since_last_bill: daysSince,
         last_sent_at: stats.last_sent_at || '',
         send_count: Number(stats.send_count || 0),
+        has_phone: Boolean(phone),
+        phone,
       };
     }).filter(Boolean);
 
@@ -4323,7 +4343,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     });
 
     return rows;
-  }, [debtorsData.sorted_debtors, whatsappHistoryByName]);
+  }, [debtorsData.sorted_debtors, debtorsData.oldest_unpaid_date_by_name, whatsappHistoryByName, clientsData.registry]);
 
   const billNotificationCount = billNotificationEntries.length;
 
@@ -5365,6 +5385,50 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setStatusText(`Opened WhatsApp bill for ${name}. Total sends: ${formatCount(result.entry?.send_count || 0)}.`);
     } catch {
       setStatusText(`Opened WhatsApp bill for ${name}.`);
+    }
+  }
+
+  async function handleSendBillNotificationCustomer(entry) {
+    const name = String(entry?.name || '').trim().toUpperCase();
+    if (!name) {
+      return;
+    }
+
+    const phone = normalizeWhatsappPhone(entry?.phone || clientsData.registry?.[name] || '');
+    if (!phone) {
+      startTransition(() => setActiveView('clients'));
+      setClientForm({ name, phone: '' });
+      setGoogleSearch(name);
+      setSelectedGoogleContact(null);
+      setStatusText(`No client phone is saved for ${name}. Add or sync it from Clients.`);
+      return;
+    }
+
+    setSendingBillNotificationKey(name);
+    try {
+      const billResult = await fetchLiveBill(name, { forceRefresh: true });
+      const nextBillText = billResult.bill_text || '';
+      if (!nextBillText || nextBillText.includes('No outstanding bill for this customer.')) {
+        setStatusText(`No outstanding bill found for ${name}.`);
+        return;
+      }
+
+      window.open(buildWhatsappUrl(phone, nextBillText), '_blank', 'noopener,noreferrer');
+
+      try {
+        const result = await markWhatsappSent({ nameInput: name, source: 'bill_notifications' });
+        setWhatsappHistoryByName((current) => ({
+          ...current,
+          [name]: result.entry || current[name] || {},
+        }));
+        setStatusText(`Opened WhatsApp bill for ${name}. Total sends: ${formatCount(result.entry?.send_count || 0)}.`);
+      } catch {
+        setStatusText(`Opened WhatsApp bill for ${name}.`);
+      }
+    } catch (error) {
+      setStatusText(error.message || `Could not send bill to ${name}.`);
+    } finally {
+      setSendingBillNotificationKey('');
     }
   }
 
@@ -6413,6 +6477,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         <BillNotificationsView
           entries={billNotificationEntries}
           onOpenDebtors={() => startTransition(() => setActiveView('debtors'))}
+          onSendEntry={handleSendBillNotificationCustomer}
+          sendingKey={sendingBillNotificationKey}
         />
       );
     }

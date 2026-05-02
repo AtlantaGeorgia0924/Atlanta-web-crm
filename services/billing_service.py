@@ -223,6 +223,7 @@ def generate_bill_text(name_input, records, payment_details):
 def compute_debtors(records):
     records = records or []
     debtors = []
+    oldest_unpaid_date_by_name = {}
     for row in records:
         status = str(row.get("STATUS", "")).strip().lower()
         if status in ["paid", "returned"]:
@@ -231,10 +232,18 @@ def compute_debtors(records):
         paid = clean_amount(row.get("Amount paid"))
         balance = price - paid
         if balance > 0:
+            name = str(row.get("NAME", "")).strip().upper()
             debtors.append({
-                'name': str(row.get("NAME", "")).strip().upper(),
-                'amount': balance
+                'name': name,
+                'amount': balance,
+                'date': str(row.get("DATE", "")).strip(),
             })
+
+            parsed_date = parse_sheet_date(row.get("DATE"))
+            if parsed_date is not None and name:
+                previous = oldest_unpaid_date_by_name.get(name)
+                if previous is None or parsed_date < previous:
+                    oldest_unpaid_date_by_name[name] = parsed_date
 
     merged = {}
     for item in debtors:
@@ -249,6 +258,10 @@ def compute_debtors(records):
         'sorted_debtors': sorted_debtors,
         'client_names': client_names,
         'total_debtors_amount': total_debtors_amount,
+        'oldest_unpaid_date_by_name': {
+            key: value.isoformat()
+            for key, value in oldest_unpaid_date_by_name.items()
+        },
     }
 
 
