@@ -55,6 +55,15 @@ from services.sync_service import (
 )
 
 
+def normalize_client_gender(value):
+    text = str(value or '').strip().lower()
+    if text in {'male', 'm'}:
+        return 'male'
+    if text in {'female', 'f'}:
+        return 'female'
+    return ''
+
+
 class BackendRuntime:
     def __init__(self, config_path='config.json'):
         self.config_path = config_path
@@ -207,6 +216,13 @@ class BackendRuntime:
             raise RuntimeError(f'GOOGLE_CREDS_JSON could not initialize credentials: {exc}') from exc
 
     def _load_clients_from_disk(self):
+        profiles = self._load_client_profiles_from_disk()
+        return {
+            name: str((profile or {}).get('phone') or '')
+            for name, profile in profiles.items()
+        }
+
+    def _load_client_profiles_from_disk(self):
         if not os.path.exists(self.clients_file):
             return {}
 
@@ -225,20 +241,52 @@ class BackendRuntime:
             clean_key = normalize_client_name(key) or str(key or '').strip()
             if not clean_key:
                 continue
-            normalized[clean_key] = normalize_phone_number(value)
+            if isinstance(value, dict):
+                phone_value = value.get('phone', '')
+                gender_value = value.get('gender', '')
+            else:
+                phone_value = value
+                gender_value = ''
+            normalized[clean_key] = {
+                'phone': normalize_phone_number(phone_value),
+                'gender': normalize_client_gender(gender_value),
+            }
 
         if normalized != payload:
             try:
-                self._save_clients_to_disk(normalized)
+                self._save_client_profiles_to_disk(normalized)
             except Exception as exc:
                 self.logger.warning('Failed to normalize %s: %s', self.clients_file, exc)
 
         return normalized
 
     def _save_clients_to_disk(self, registry):
+        existing_profiles = self._load_client_profiles_from_disk()
+        normalized_profiles = {}
+        for key, value in sorted((registry or {}).items(), key=lambda item: str(item[0]).upper()):
+            normalized_key = normalize_client_name(key)
+            if not normalized_key:
+                continue
+            existing_key = find_existing_client_key(normalized_key, existing_profiles) or normalized_key
+            existing_gender = normalize_client_gender((existing_profiles.get(existing_key) or {}).get('gender', ''))
+            normalized_profiles[normalized_key] = {
+                'phone': normalize_phone_number(value),
+                'gender': existing_gender,
+            }
+
+        saved_profiles = self._save_client_profiles_to_disk(normalized_profiles)
+        return {
+            name: str((profile or {}).get('phone') or '')
+            for name, profile in saved_profiles.items()
+        }
+
+    def _save_client_profiles_to_disk(self, profiles):
         normalized = {
-            normalize_client_name(key): normalize_phone_number(value)
-            for key, value in sorted((registry or {}).items(), key=lambda item: str(item[0]).upper())
+            normalize_client_name(key): {
+                'phone': normalize_phone_number((value or {}).get('phone', '')),
+                'gender': normalize_client_gender((value or {}).get('gender', '')),
+            }
+            for key, value in sorted((profiles or {}).items(), key=lambda item: str(item[0]).upper())
             if normalize_client_name(key)
         }
 
@@ -3543,19 +3591,26 @@ class BackendRuntime:
             return dict(self._load_clients_from_disk() if force_reload else self._load_clients_from_disk())
 
     def get_client_registry_payload(self, force_reload=False):
-        registry = self.get_client_registry(force_reload=force_reload)
+        with self._clients_lock:
+            profiles = self._load_client_profiles_from_disk()
+        registry = {
+            name: str((profile or {}).get('phone') or '')
+            for name, profile in profiles.items()
+        }
         entries = [
             {
                 'name': name,
-                'phone': str(phone or ''),
-                'has_phone': bool(str(phone or '').strip()),
+                'phone': str((profiles.get(name) or {}).get('phone') or ''),
+                'gender': normalize_client_gender((profiles.get(name) or {}).get('gender', '')),
+                'has_phone': bool(str((profiles.get(name) or {}).get('phone') or '').strip()),
             }
-            for name, phone in sorted(registry.items(), key=lambda item: str(item[0]).upper())
+            for name, _phone in sorted(registry.items(), key=lambda item: str(item[0]).upper())
         ]
         stats = {
             'total_count': len(entries),
             'with_phone_count': sum(1 for entry in entries if entry['has_phone']),
             'without_phone_count': sum(1 for entry in entries if not entry['has_phone']),
+            'with_gender_count': sum(1 for entry in entries if entry.get('gender')),
         }
         return {
             'registry': registry,
@@ -3563,6 +3618,17 @@ class BackendRuntime:
             'directory_rows': build_client_directory_rows(registry),
             'stats': stats,
         }
+
+    def get_client_gender(self, name):
+        normalized_name = normalize_client_name(name)
+        if not normalized_name:
+            return ''
+        with self._clients_lock:
+            profiles = self._load_client_profiles_from_disk()
+        existing_key = find_existing_client_key(normalized_name, profiles)
+        if not existing_key:
+            return ''
+        return normalize_client_gender((profiles.get(existing_key) or {}).get('gender', ''))
 
     def sync_client_directory_sheet(self, force_reload=False):
         if not self._ensure_sheet_connection():
@@ -3598,10 +3664,14 @@ class BackendRuntime:
             if added or updated:
                 registry = self._save_clients_to_disk(registry)
 
+        payload = self.get_client_registry_payload(force_reload=True)
         return {
             'added': added,
             'updated': updated,
-            'registry': registry,
+            'registry': payload.get('registry', registry),
+            'entries': payload.get('entries', []),
+            'stats': payload.get('stats', {}),
+            'directory_rows': payload.get('directory_rows', []),
         }
 
     def sync_clients_to_sheet_phone_column(self, force_refresh=False):
@@ -3737,45 +3807,86 @@ class BackendRuntime:
             'pull_result': pull_result,
         }
 
-    def upsert_client(self, name, phone, sync_sheet=True, force_refresh=False):
+    def upsert_client(self, name, phone, gender=None, sync_sheet=True, force_refresh=False):
         validated = validate_client_entry(name, phone)
         if validated.get('error'):
             return validated
 
         with self._clients_lock:
-            registry = self._load_clients_from_disk()
-            added, changed, key = set_client_phone(validated['name'], validated['phone'], registry)
-            registry = self._save_clients_to_disk(registry)
+            profiles = self._load_client_profiles_from_disk()
+            registry = {
+                client_name: str((profile or {}).get('phone') or '')
+                for client_name, profile in profiles.items()
+            }
+            added, phone_changed, key = set_client_phone(validated['name'], validated['phone'], registry)
+            normalized_key = normalize_client_name(key or validated['name'])
+
+            rebuilt_profiles = {}
+            for client_name, client_phone in registry.items():
+                matched_key = find_existing_client_key(client_name, profiles) or normalize_client_name(client_name)
+                existing_gender = normalize_client_gender((profiles.get(matched_key) or {}).get('gender', ''))
+                rebuilt_profiles[normalize_client_name(client_name)] = {
+                    'phone': normalize_phone_number(client_phone),
+                    'gender': existing_gender,
+                }
+
+            gender_changed = False
+            if normalized_key in rebuilt_profiles and gender is not None:
+                next_gender = normalize_client_gender(gender)
+                prev_gender = normalize_client_gender((rebuilt_profiles.get(normalized_key) or {}).get('gender', ''))
+                rebuilt_profiles[normalized_key]['gender'] = next_gender
+                gender_changed = next_gender != prev_gender
+
+            saved_profiles = self._save_client_profiles_to_disk(rebuilt_profiles)
+            registry = {
+                client_name: str((profile or {}).get('phone') or '')
+                for client_name, profile in saved_profiles.items()
+            }
+            changed = bool(phone_changed or gender_changed)
 
         sync_result = None
-        if sync_sheet and (added or changed):
+        if sync_sheet and (added or phone_changed):
             sync_result = self._queue_client_sheet_sync(force_refresh=force_refresh, include_autofill=False)
+
+        payload = self.get_client_registry_payload(force_reload=True)
 
         return {
             'added': added,
             'changed': changed,
-            'key': key,
-            'registry': registry,
+            'key': normalized_key,
+            'registry': payload.get('registry', registry),
+            'entries': payload.get('entries', []),
+            'stats': payload.get('stats', {}),
+            'directory_rows': payload.get('directory_rows', []),
+            'gender': normalize_client_gender((saved_profiles.get(normalized_key) or {}).get('gender', '')),
             'sync_result': sync_result,
         }
 
     def delete_client(self, name, sync_sheet=True):
         with self._clients_lock:
-            registry = self._load_clients_from_disk()
-            existing_key = find_existing_client_key(name, registry)
+            profiles = self._load_client_profiles_from_disk()
+            existing_key = find_existing_client_key(name, profiles)
             if not existing_key:
                 return {'error': 'Client not found.'}
-            registry.pop(existing_key, None)
-            registry = self._save_clients_to_disk(registry)
+            profiles.pop(existing_key, None)
+            saved_profiles = self._save_client_profiles_to_disk(profiles)
+            registry = {
+                client_name: str((profile or {}).get('phone') or '')
+                for client_name, profile in saved_profiles.items()
+            }
 
         sync_result = None
         if sync_sheet:
             sync_result = self._queue_client_sheet_sync(force_refresh=False, include_autofill=True)
 
+        payload = self.get_client_registry_payload(force_reload=True)
         return {
             'deleted': True,
             'key': existing_key,
-            'registry': registry,
+            'registry': payload.get('registry', registry),
+            'entries': payload.get('entries', []),
+            'stats': payload.get('stats', {}),
+            'directory_rows': payload.get('directory_rows', []),
             'sync_result': sync_result,
         }
 

@@ -201,12 +201,13 @@ export function fetchClients({ forceReload = false, signal } = {}) {
   });
 }
 
-export function upsertClient({ name, phone, syncSheet = true, forceRefresh = false }) {
+export function upsertClient({ name, phone, gender = null, syncSheet = true, forceRefresh = false }) {
   return requestJson('/api/clients/live/upsert', {
     method: 'POST',
     body: {
       name,
       phone,
+      gender,
       sync_sheet: syncSheet,
       force_refresh: forceRefresh,
     },

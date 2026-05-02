@@ -512,12 +512,23 @@ function buildProductFormValues(formConfig) {
 }
 
 function buildClientsDataFromRegistry(registry) {
-  const normalizedRegistry = { ...(registry || {}) };
+  const normalizedRegistry = {};
+  const normalizedGenders = {};
+  Object.entries(registry || {}).forEach(([name, value]) => {
+    if (value && typeof value === 'object') {
+      normalizedRegistry[name] = String(value.phone || '');
+      normalizedGenders[name] = String(value.gender || '').trim().toLowerCase();
+      return;
+    }
+    normalizedRegistry[name] = String(value || '');
+    normalizedGenders[name] = '';
+  });
   const entries = Object.entries(normalizedRegistry)
     .sort((left, right) => String(left[0]).localeCompare(String(right[0]), undefined, { sensitivity: 'base' }))
     .map(([name, phone]) => ({
       name,
       phone: String(phone || ''),
+      gender: String(normalizedGenders[name] || ''),
       has_phone: Boolean(String(phone || '').trim()),
     }));
 
@@ -528,8 +539,33 @@ function buildClientsDataFromRegistry(registry) {
       total_count: entries.length,
       with_phone_count: entries.filter((entry) => entry.has_phone).length,
       without_phone_count: entries.filter((entry) => !entry.has_phone).length,
+      with_gender_count: entries.filter((entry) => Boolean(String(entry.gender || '').trim())).length,
     },
   };
+}
+
+function normalizeClientsPayload(payload) {
+  if (payload && typeof payload === 'object' && payload.registry && Array.isArray(payload.entries)) {
+    const normalizedEntries = payload.entries.map((entry) => ({
+      ...entry,
+      gender: String(entry?.gender || '').trim().toLowerCase(),
+    }));
+    const normalizedRegistry = {};
+    normalizedEntries.forEach((entry) => {
+      normalizedRegistry[entry.name] = String(entry.phone || '');
+    });
+    return {
+      registry: normalizedRegistry,
+      entries: normalizedEntries,
+      stats: {
+        total_count: Number(payload?.stats?.total_count || normalizedEntries.length),
+        with_phone_count: Number(payload?.stats?.with_phone_count || normalizedEntries.filter((entry) => entry.has_phone).length),
+        without_phone_count: Number(payload?.stats?.without_phone_count || normalizedEntries.filter((entry) => !entry.has_phone).length),
+        with_gender_count: Number(payload?.stats?.with_gender_count || normalizedEntries.filter((entry) => Boolean(String(entry.gender || '').trim())).length),
+      },
+    };
+  }
+  return buildClientsDataFromRegistry(payload || {});
 }
 
 function findHeaderIndex(headers, aliases) {
@@ -3457,6 +3493,7 @@ function ClientsView({
               <tr>
                 <th>Name</th>
                 <th>WhatsApp Number</th>
+                <th>Gender</th>
                 <th>Status</th>
               </tr>
             </thead>
@@ -3466,12 +3503,13 @@ function ClientsView({
                   <tr key={entry.name} onClick={() => onSelectClient(entry)}>
                     <td data-label="Name">{entry.name}</td>
                     <td data-label="WhatsApp Number">{entry.phone || '—'}</td>
+                    <td data-label="Gender">{entry.gender ? `${entry.gender.charAt(0).toUpperCase()}${entry.gender.slice(1)}` : '—'}</td>
                     <td data-label="Status">{entry.has_phone ? 'Saved' : 'Missing Number'}</td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={3} className="empty-state">No clients matched the current filter.</td>
+                  <td colSpan={4} className="empty-state">No clients matched the current filter.</td>
                 </tr>
               )}
             </tbody>
@@ -3512,6 +3550,18 @@ function ClientsView({
               />
             </label>
 
+            <label className="field-block">
+              <span className="field-label">Gender (Optional)</span>
+              <select
+                value={clientForm.gender || ''}
+                onChange={(event) => setClientForm((current) => ({ ...current, gender: event.target.value }))}
+              >
+                <option value="">Not set</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+              </select>
+            </label>
+
             <div className="button-row">
               <button type="button" className="primary-button" onClick={onSaveClient} disabled={clientsBusy}>
                 {clientsBusy ? 'Saving...' : 'Save Client'}
@@ -3541,6 +3591,10 @@ function ClientsView({
             <div className="meta-row">
               <span>Clients missing phone</span>
               <strong>{formatCount(stats.without_phone_count)}</strong>
+            </div>
+            <div className="meta-row">
+              <span>Clients with gender</span>
+              <strong>{formatCount(stats.with_gender_count || 0)}</strong>
             </div>
           </div>
         </div>
@@ -4248,7 +4302,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [clientSearch, setClientSearch] = useState('');
   const deferredClientSearch = useDeferredValue(clientSearch);
   const [clientPage, setClientPage] = useState(1);
-  const [clientForm, setClientForm] = useState({ name: '', phone: '' });
+  const [clientForm, setClientForm] = useState({ name: '', phone: '', gender: '' });
   const [clientsBusy, setClientsBusy] = useState(false);
 
   const [googleContactsData, setGoogleContactsData] = useState({ contacts: [], total_cached: 0, synced_at: '' });
@@ -4567,7 +4621,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   }, [soldUnpaidStockRows, servicePendingDeals.items, stockView?.headers]);
 
   function applyClientRegistryToState(registry) {
-    const nextData = buildClientsDataFromRegistry(registry);
+    const nextData = normalizeClientsPayload(registry);
     setClientsData(nextData);
     return nextData;
   }
@@ -4660,7 +4714,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         setServicesTodayData(servicesTodayResult.value || { services: [], count: 0 });
       }
       if (clientsResult.status === 'fulfilled') {
-        setClientsData(clientsResult.value);
+        setClientsData(normalizeClientsPayload(clientsResult.value));
       }
       if (whatsappHistoryResult.status === 'fulfilled') {
         setWhatsappHistoryByName(whatsappHistoryResult.value?.by_name || {});
@@ -5305,7 +5359,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
     if (!phone) {
       startTransition(() => setActiveView('clients'));
-      setClientForm({ name: selectedDebtor, phone: '' });
+      setClientForm((current) => ({ ...current, name: selectedDebtor, phone: '', gender: '' }));
       setGoogleSearch(selectedDebtor);
       setSelectedGoogleContact(null);
       setStatusText(`No client phone is saved for ${selectedDebtor}. Add or sync it from Clients.`);
@@ -5397,7 +5451,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     const phone = normalizeWhatsappPhone(entry?.phone || clientsData.registry?.[name] || '');
     if (!phone) {
       startTransition(() => setActiveView('clients'));
-      setClientForm({ name, phone: '' });
+      setClientForm((current) => ({ ...current, name, phone: '', gender: '' }));
       setGoogleSearch(name);
       setSelectedGoogleContact(null);
       setStatusText(`No client phone is saved for ${name}. Add or sync it from Clients.`);
@@ -5581,12 +5635,18 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       const result = await upsertClient({
         name: clientForm.name,
         phone: clientForm.phone,
+        gender: clientForm.gender || null,
         syncSheet: true,
         forceRefresh: false,
       });
-      applyClientRegistryToState(result.registry || {});
+      const nextData = applyClientRegistryToState(result);
       const nextName = result.key || clientForm.name.trim().toUpperCase();
-      setClientForm({ name: nextName, phone: result.registry?.[nextName] || '' });
+      const selectedEntry = (nextData.entries || []).find((entry) => String(entry.name || '').trim().toUpperCase() === String(nextName || '').trim().toUpperCase());
+      setClientForm({
+        name: nextName,
+        phone: selectedEntry?.phone || result.registry?.[nextName] || '',
+        gender: selectedEntry?.gender || result.gender || '',
+      });
       setStatusText(
         `${result.added ? 'Client added' : 'Client updated'} and normalized.${result.sync_result?.mode === 'queued' ? ' Sheet sync queued in background.' : ''}`
       );
@@ -5605,8 +5665,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     setClientsBusy(true);
     try {
       const result = await deleteClient({ name: clientForm.name, syncSheet: true });
-      applyClientRegistryToState(result.registry || {});
-      setClientForm({ name: '', phone: '' });
+      applyClientRegistryToState(result);
+      setClientForm({ name: '', phone: '', gender: '' });
       setStatusText(`Client deleted.${result.sync_result?.mode === 'queued' ? ' Sheet sync queued in background.' : ''}`);
     } catch (error) {
       setStatusText(error.message || 'Could not delete the client.');
@@ -5619,7 +5679,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     setClientsBusy(true);
     try {
       const result = await importSheetPhones({ forceRefresh: true });
-      applyClientRegistryToState(result.registry || {});
+      applyClientRegistryToState(result);
       setStatusText(`Imported sheet phone numbers: ${result.added} added, ${result.updated} updated.`);
     } catch (error) {
       setStatusText(error.message || 'Could not import phone numbers from the sheet.');
@@ -5655,10 +5715,11 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       const result = await upsertClient({
         name: clientForm.name,
         phone: selectedGoogleContact.phone,
+        gender: clientForm.gender || null,
         syncSheet: true,
         forceRefresh: false,
       });
-      applyClientRegistryToState(result.registry || {});
+      applyClientRegistryToState(result);
       setClientForm((current) => ({ ...current, phone: selectedGoogleContact.phone }));
       setStatusText(`Updated ${clientForm.name} with ${selectedGoogleContact.phone}.${result.sync_result?.mode === 'queued' ? ' Sheet sync queued in background.' : ''}`);
     } catch (error) {
@@ -6393,7 +6454,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           setClientForm={setClientForm}
           clientsBusy={clientsBusy}
           onSelectClient={(entry) => {
-            setClientForm({ name: entry.name, phone: entry.phone || '' });
+            setClientForm({ name: entry.name, phone: entry.phone || '', gender: entry.gender || '' });
             setGoogleSearch(entry.name);
             setSelectedGoogleContact(null);
           }}
@@ -6411,6 +6472,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
             setClientForm((current) => ({
               name: current.name || contact.name,
               phone: contact.phone,
+              gender: current.gender || '',
             }));
           }}
           onSyncGoogleContacts={handleSyncGoogleContacts}

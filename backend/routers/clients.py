@@ -83,6 +83,7 @@ class ImportSheetPhonesRequest(BaseModel):
 class LiveClientUpsertRequest(BaseModel):
     name: str
     phone: str
+    gender: str | None = None
     sync_sheet: bool = True
     force_refresh: bool = False
 
@@ -189,6 +190,7 @@ def live_client_upsert_endpoint(payload: LiveClientUpsertRequest, runtime=Depend
         result = runtime.upsert_client(
             payload.name,
             payload.phone,
+            payload.gender,
             sync_sheet=payload.sync_sheet,
             force_refresh=payload.force_refresh,
         )

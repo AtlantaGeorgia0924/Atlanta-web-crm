@@ -244,11 +244,13 @@ def outstanding_items_live(name_input: str, force_refresh: bool = False, runtime
 @router.get('/bill/live/{name_input}')
 def generate_live_bill(name_input: str, force_refresh: bool = False, runtime=Depends(get_runtime)):
     payment_details = _resolve_payment_details(runtime)
+    gender = runtime.get_client_gender(name_input)
     return {
         'bill_text': generate_bill_text(
             name_input,
             runtime.get_main_records(force_refresh=force_refresh),
             payment_details,
+            gender=gender,
         )
     }
 
@@ -435,7 +437,7 @@ def unpaid_today_live_bills(force_refresh: bool = False, runtime=Depends(get_run
             **entry,
             'has_phone': has_phone,
             'phone': phone,
-            'bill_text': generate_bill_text(name, records, payment_details),
+            'bill_text': generate_bill_text(name, records, payment_details, gender=runtime.get_client_gender(name)),
             'send_stats': get_whatsapp_send_entry(history, name),
         })
 

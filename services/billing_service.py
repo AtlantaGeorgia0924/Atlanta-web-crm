@@ -59,6 +59,25 @@ def to_math_italic(text):
     return ''.join(out)
 
 
+def resolve_day_greeting(now=None):
+    current = now or datetime.now()
+    hour = int(current.hour)
+    if hour < 12:
+        return 'Good morning'
+    if hour < 17:
+        return 'Good afternoon'
+    return 'Good evening'
+
+
+def resolve_salutation(gender=''):
+    normalized = str(gender or '').strip().lower()
+    if normalized == 'male':
+        return 'Sir'
+    if normalized == 'female':
+        return 'Ma'
+    return 'there'
+
+
 def get_customer_outstanding_items_from_values(name_input, values):
     name_input = str(name_input or '').strip().upper()
     if not values:
@@ -81,11 +100,15 @@ def get_customer_outstanding_items_from_values(name_input, values):
 
     for row_idx in range(1, len(values)):
         row = values[row_idx]
-        if name_col >= len(row) or row[name_col].strip().upper() != name_input:
+        if name_col >= len(row):
             continue
 
-        status = row[status_col].strip().lower() if status_col < len(row) else ''
-        if status in ["paid", "returned"]:
+        name = str(row[name_col]).strip().upper()
+        if name != name_input:
+            continue
+
+        status = str(row[status_col]).strip().lower() if status_col < len(row) else ''
+        if status in ['paid', 'returned']:
             continue
 
         price = clean_amount(row[price_col] if price_col < len(row) else '')
@@ -104,7 +127,6 @@ def get_customer_outstanding_items_from_values(name_input, values):
             'price': price,
             'paid': paid,
             'balance': balance,
-            'status': row[status_col].strip() if status_col < len(row) else ''
         })
         total_outstanding += balance
 
@@ -159,7 +181,7 @@ def format_service_option(item):
     return f"{description} ({date_value}) - Balance NGN {item['balance']:,}"
 
 
-def generate_bill_text(name_input, records, payment_details):
+def generate_bill_text(name_input, records, payment_details, gender=''):
     name_input = str(name_input or '').strip().upper()
     records = records or []
 
@@ -193,12 +215,18 @@ def generate_bill_text(name_input, records, payment_details):
     generated_at = datetime.now().strftime('%H:%M')
     generated_day = format_bill_date(datetime.now().strftime('%m/%d/%Y'))
 
+    greeting = resolve_day_greeting()
+    salutation = resolve_salutation(gender)
     lines = [
-        f"*Total bill: NGN {total:,}*",
+        '*BILL PAYMENT REMINDER*',
+        f'{greeting} {salutation},',
+        '',
+        f"Customer: {name_input}",
         f"Generated: {generated_day} at {generated_at}",
-        "",
+        f"*Total Outstanding: NGN {total:,}*",
+        '',
         f"Breakdown ({len(items)} item(s)):",
-        "",
+        '',
     ]
     for index, item in enumerate(items, 1):
         status_text = item['status'].upper() if item['status'] else 'OPEN'
@@ -216,7 +244,10 @@ def generate_bill_text(name_input, records, payment_details):
     if not normalized_payment_details:
         normalized_payment_details = 'Account details are not configured yet. Please contact admin.'
 
-    lines.append("\nPayment Details:\n" + normalized_payment_details + "\n\nPLEASE DO SEND SCREENSHOTS AFTER PAYMENT. Thank you 🙏📍")
+    lines.append('Payment Details:')
+    lines.append(normalized_payment_details)
+    lines.append('')
+    lines.append('Please send your payment screenshot after transfer. Thank you.')
     return "\n".join(lines)
 
 
