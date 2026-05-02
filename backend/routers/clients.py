@@ -81,6 +81,7 @@ class ImportSheetPhonesRequest(BaseModel):
 
 
 class LiveClientUpsertRequest(BaseModel):
+    previous_name: str | None = None
     name: str
     phone: str
     gender: str | None = None
@@ -91,6 +92,10 @@ class LiveClientUpsertRequest(BaseModel):
 class LiveClientDeleteRequest(BaseModel):
     name: str
     sync_sheet: bool = True
+
+
+class ClientChangeHistoryRequest(BaseModel):
+    limit: int = 100
 
 
 @router.post('/normalize/phone')
@@ -191,6 +196,7 @@ def live_client_upsert_endpoint(payload: LiveClientUpsertRequest, runtime=Depend
             payload.name,
             payload.phone,
             payload.gender,
+            payload.previous_name,
             sync_sheet=payload.sync_sheet,
             force_refresh=payload.force_refresh,
         )
@@ -220,6 +226,14 @@ def live_import_sheet_phones_endpoint(force_refresh: bool = False, runtime=Depen
         return runtime.import_sheet_phone_numbers_to_clients(force_refresh=force_refresh)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get('/live/change-history')
+def live_client_change_history(limit: int = 100, runtime=Depends(get_runtime)):
+    try:
+        return runtime.get_client_change_history(limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get('/google-contacts')

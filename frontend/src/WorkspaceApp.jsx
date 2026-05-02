@@ -4303,6 +4303,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const deferredClientSearch = useDeferredValue(clientSearch);
   const [clientPage, setClientPage] = useState(1);
   const [clientForm, setClientForm] = useState({ name: '', phone: '', gender: '' });
+  const [clientOriginalName, setClientOriginalName] = useState('');
   const [clientsBusy, setClientsBusy] = useState(false);
 
   const [googleContactsData, setGoogleContactsData] = useState({ contacts: [], total_cached: 0, synced_at: '' });
@@ -5360,6 +5361,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     if (!phone) {
       startTransition(() => setActiveView('clients'));
       setClientForm((current) => ({ ...current, name: selectedDebtor, phone: '', gender: '' }));
+      setClientOriginalName(selectedDebtor);
       setGoogleSearch(selectedDebtor);
       setSelectedGoogleContact(null);
       setStatusText(`No client phone is saved for ${selectedDebtor}. Add or sync it from Clients.`);
@@ -5452,6 +5454,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     if (!phone) {
       startTransition(() => setActiveView('clients'));
       setClientForm((current) => ({ ...current, name, phone: '', gender: '' }));
+      setClientOriginalName(name);
       setGoogleSearch(name);
       setSelectedGoogleContact(null);
       setStatusText(`No client phone is saved for ${name}. Add or sync it from Clients.`);
@@ -5633,6 +5636,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     setClientsBusy(true);
     try {
       const result = await upsertClient({
+        previousName: clientOriginalName || null,
         name: clientForm.name,
         phone: clientForm.phone,
         gender: clientForm.gender || null,
@@ -5647,8 +5651,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         phone: selectedEntry?.phone || result.registry?.[nextName] || '',
         gender: selectedEntry?.gender || result.gender || '',
       });
+      setClientOriginalName(nextName);
       setStatusText(
-        `${result.added ? 'Client added' : 'Client updated'} and normalized.${result.sync_result?.mode === 'queued' ? ' Sheet sync queued in background.' : ''}`
+        `${result.added ? 'Client added' : 'Client updated'} and normalized.${result.propagation_result ? ` Updated ${formatCount((result.propagation_result.main_updates || 0) + (result.propagation_result.stock_updates || 0))} transaction cell(s) across sheets.` : ''}${result.sync_result?.mode === 'queued' ? ' Sheet sync queued in background.' : ''}`
       );
     } catch (error) {
       setStatusText(error.message || 'Could not save the client.');
@@ -5667,6 +5672,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       const result = await deleteClient({ name: clientForm.name, syncSheet: true });
       applyClientRegistryToState(result);
       setClientForm({ name: '', phone: '', gender: '' });
+      setClientOriginalName('');
       setStatusText(`Client deleted.${result.sync_result?.mode === 'queued' ? ' Sheet sync queued in background.' : ''}`);
     } catch (error) {
       setStatusText(error.message || 'Could not delete the client.');
@@ -5713,6 +5719,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     setClientsBusy(true);
     try {
       const result = await upsertClient({
+        previousName: clientOriginalName || null,
         name: clientForm.name,
         phone: selectedGoogleContact.phone,
         gender: clientForm.gender || null,
@@ -5721,6 +5728,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       });
       applyClientRegistryToState(result);
       setClientForm((current) => ({ ...current, phone: selectedGoogleContact.phone }));
+      setClientOriginalName(result.key || clientForm.name.trim().toUpperCase());
       setStatusText(`Updated ${clientForm.name} with ${selectedGoogleContact.phone}.${result.sync_result?.mode === 'queued' ? ' Sheet sync queued in background.' : ''}`);
     } catch (error) {
       setStatusText(error.message || 'Could not update the client from Google Contacts.');
@@ -6455,6 +6463,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           clientsBusy={clientsBusy}
           onSelectClient={(entry) => {
             setClientForm({ name: entry.name, phone: entry.phone || '', gender: entry.gender || '' });
+            setClientOriginalName(entry.name);
             setGoogleSearch(entry.name);
             setSelectedGoogleContact(null);
           }}

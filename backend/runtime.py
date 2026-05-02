@@ -69,6 +69,7 @@ class BackendRuntime:
         self.config_path = config_path
         self.base_dir = os.path.dirname(os.path.abspath(config_path)) or os.getcwd()
         self.clients_file = os.path.join(self.base_dir, 'clients.json')
+        self.client_change_history_file = os.path.join(self.base_dir, 'client_change_history.json')
         self.logger = logging.getLogger(__name__)
         self._sheet_lock = threading.RLock()
         self._clients_lock = threading.RLock()
@@ -294,6 +295,40 @@ class BackendRuntime:
             json.dump(normalized, clients_file, indent=4)
 
         return normalized
+
+    def _load_client_change_history(self):
+        if not os.path.exists(self.client_change_history_file):
+            return []
+
+        try:
+            with open(self.client_change_history_file, 'r') as history_file:
+                payload = json.load(history_file)
+        except Exception as exc:
+            self.logger.warning('Failed to load %s: %s', self.client_change_history_file, exc)
+            return []
+
+        if not isinstance(payload, list):
+            return []
+
+        return payload
+
+    def _append_client_change_history(self, entry):
+        history = self._load_client_change_history()
+        history.insert(0, entry)
+        history = history[:1000]
+        with open(self.client_change_history_file, 'w') as history_file:
+            json.dump(history, history_file, indent=2)
+        return entry
+
+    def get_client_change_history(self, limit=100):
+        capped = max(1, min(int(limit or 100), 500))
+        with self._clients_lock:
+            history = self._load_client_change_history()
+        return {
+            'entries': history[:capped],
+            'count': len(history),
+            'limit': capped,
+        }
 
     @staticmethod
     def _extract_sheet_id(value):
@@ -3630,6 +3665,145 @@ class BackendRuntime:
             return ''
         return normalize_client_gender((profiles.get(existing_key) or {}).get('gender', ''))
 
+    def _propagate_client_transaction_updates(self, source_name, target_name, target_phone, force_refresh=False):
+        source_name = normalize_client_name(source_name)
+        target_name = normalize_client_name(target_name)
+        target_phone = normalize_phone_number(target_phone)
+        if not source_name:
+            return {
+                'main_updates': 0,
+                'stock_updates': 0,
+                'main_name_updates': 0,
+                'main_phone_updates': 0,
+                'stock_name_updates': 0,
+                'stock_phone_updates': 0,
+                'queued_operation_ids': [],
+            }
+
+        queue_ids = []
+        main_name_updates = 0
+        main_phone_updates = 0
+        stock_name_updates = 0
+        stock_phone_updates = 0
+
+        main_values = self.get_main_values(force_refresh=force_refresh)
+        if main_values:
+            main_headers = [str(cell or '').strip() for cell in (main_values[0] if main_values else [])]
+            main_headers_upper = [header.upper() for header in main_headers]
+            main_name_col = svc_stock_header_index(main_headers_upper, 'NAME', 'CLIENT NAME', 'CUSTOMER NAME', 'NAME OF BUYER')
+            main_phone_col = svc_stock_header_index(main_headers_upper, 'PHONE NUMBER', 'PHONE', 'WHATSAPP NUMBER', 'PHONE NUMBER OF BUYER')
+
+            for index in range(1, len(main_values)):
+                row = list(main_values[index] or [])
+                row_num = index + 1
+
+                row_name = str(row[main_name_col] if main_name_col is not None and main_name_col < len(row) else '').strip().upper()
+                if row_name != source_name:
+                    continue
+
+                if main_name_col is not None and target_name and row_name != target_name:
+                    field_name = main_headers[main_name_col] if main_name_col < len(main_headers) else 'NAME'
+                    queue_ids.append(
+                        self._enqueue_db_first_operation(
+                            'clients',
+                            'main_update_client_name',
+                            {
+                                'kind': 'main_update_cell',
+                                'row': row_num,
+                                'col': main_name_col + 1,
+                                'value': target_name,
+                            },
+                            cache_apply_callable=lambda dr=index - 1, fn=field_name, rn=row_num, cn=main_name_col + 1, nv=target_name: (
+                                self.postgres_sync_manager.update_cached_main_record_field(dr, fn, nv),
+                                self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                            ),
+                        )
+                    )
+                    main_name_updates += 1
+
+                if main_phone_col is not None and target_phone:
+                    current_phone = normalize_phone_number(row[main_phone_col] if main_phone_col < len(row) else '')
+                    if current_phone != target_phone:
+                        field_name = main_headers[main_phone_col] if main_phone_col < len(main_headers) else 'PHONE NUMBER'
+                        queue_ids.append(
+                            self._enqueue_db_first_operation(
+                                'clients',
+                                'main_update_client_phone',
+                                {
+                                    'kind': 'main_update_cell',
+                                    'row': row_num,
+                                    'col': main_phone_col + 1,
+                                    'value': target_phone,
+                                },
+                                cache_apply_callable=lambda dr=index - 1, fn=field_name, rn=row_num, cn=main_phone_col + 1, nv=target_phone: (
+                                    self.postgres_sync_manager.update_cached_main_record_field(dr, fn, nv),
+                                    self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                                ),
+                            )
+                        )
+                        main_phone_updates += 1
+
+        stock_values = self.get_stock_values(force_refresh=force_refresh)
+        if stock_values:
+            stock_sheet_id = self._resolve_stock_sheet_id()
+            stock_header_row_idx, _, stock_headers_upper = detect_stock_headers(stock_values)
+            stock_name_col = svc_stock_header_index(stock_headers_upper, 'NAME OF BUYER', 'NAME', 'CLIENT NAME', 'CUSTOMER NAME', 'BUYER NAME')
+            stock_phone_col = svc_stock_header_index(stock_headers_upper, 'PHONE NUMBER OF BUYER', 'PHONE NUMBER', 'PHONE', 'WHATSAPP NUMBER')
+
+            for index in range(stock_header_row_idx + 1, len(stock_values)):
+                row = list(stock_values[index] or [])
+                row_num = index + 1
+
+                row_name = str(row[stock_name_col] if stock_name_col is not None and stock_name_col < len(row) else '').strip().upper()
+                if row_name != source_name:
+                    continue
+
+                if stock_name_col is not None and target_name and row_name != target_name:
+                    queue_ids.append(
+                        self._enqueue_db_first_operation(
+                            'clients',
+                            'stock_update_client_name',
+                            {
+                                'kind': 'stock_update_cell',
+                                'stock_sheet_id': stock_sheet_id,
+                                'row': row_num,
+                                'col': stock_name_col + 1,
+                                'value': target_name,
+                            },
+                            cache_apply_callable=lambda rn=row_num, cn=stock_name_col + 1, nv=target_name: self.postgres_sync_manager.update_cached_stock_value(rn, cn, nv),
+                        )
+                    )
+                    stock_name_updates += 1
+
+                if stock_phone_col is not None and target_phone:
+                    current_phone = normalize_phone_number(row[stock_phone_col] if stock_phone_col < len(row) else '')
+                    if current_phone != target_phone:
+                        queue_ids.append(
+                            self._enqueue_db_first_operation(
+                                'clients',
+                                'stock_update_client_phone',
+                                {
+                                    'kind': 'stock_update_cell',
+                                    'stock_sheet_id': stock_sheet_id,
+                                    'row': row_num,
+                                    'col': stock_phone_col + 1,
+                                    'value': target_phone,
+                                },
+                                cache_apply_callable=lambda rn=row_num, cn=stock_phone_col + 1, nv=target_phone: self.postgres_sync_manager.update_cached_stock_value(rn, cn, nv),
+                            )
+                        )
+                        stock_phone_updates += 1
+
+        return {
+            'main_updates': main_name_updates + main_phone_updates,
+            'stock_updates': stock_name_updates + stock_phone_updates,
+            'main_name_updates': main_name_updates,
+            'main_phone_updates': main_phone_updates,
+            'stock_name_updates': stock_name_updates,
+            'stock_phone_updates': stock_phone_updates,
+            'queued_operation_ids': queue_ids,
+        }
+
     def sync_client_directory_sheet(self, force_reload=False):
         if not self._ensure_sheet_connection():
             raise RuntimeError(self.sync_state.get('sheet_error') or 'Google Sheets connection unavailable')
@@ -3807,45 +3981,86 @@ class BackendRuntime:
             'pull_result': pull_result,
         }
 
-    def upsert_client(self, name, phone, gender=None, sync_sheet=True, force_refresh=False):
+    def upsert_client(self, name, phone, gender=None, previous_name=None, sync_sheet=True, force_refresh=False):
         validated = validate_client_entry(name, phone)
         if validated.get('error'):
             return validated
 
+        target_name = normalize_client_name(validated['name'])
+        target_phone = normalize_phone_number(validated['phone'])
+
         with self._clients_lock:
             profiles = self._load_client_profiles_from_disk()
-            registry = {
-                client_name: str((profile or {}).get('phone') or '')
-                for client_name, profile in profiles.items()
+            source_lookup = normalize_client_name(previous_name or target_name)
+            source_key = find_existing_client_key(source_lookup, profiles)
+            existing_target_key = find_existing_client_key(target_name, profiles)
+
+            if source_key and existing_target_key and existing_target_key != source_key:
+                return {'error': 'Another client already uses this name. Rename blocked to avoid accidental merge.'}
+
+            if source_key:
+                original_profile = dict(profiles.pop(source_key) or {})
+            elif existing_target_key:
+                source_key = existing_target_key
+                original_profile = dict(profiles.pop(existing_target_key) or {})
+            else:
+                original_profile = {}
+
+            previous_effective_name = normalize_client_name(source_key or '')
+            previous_phone = normalize_phone_number(original_profile.get('phone', ''))
+            previous_gender = normalize_client_gender(original_profile.get('gender', ''))
+
+            next_gender = previous_gender if gender is None else normalize_client_gender(gender)
+            profiles[target_name] = {
+                'phone': target_phone,
+                'gender': next_gender,
             }
-            added, phone_changed, key = set_client_phone(validated['name'], validated['phone'], registry)
-            normalized_key = normalize_client_name(key or validated['name'])
 
-            rebuilt_profiles = {}
-            for client_name, client_phone in registry.items():
-                matched_key = find_existing_client_key(client_name, profiles) or normalize_client_name(client_name)
-                existing_gender = normalize_client_gender((profiles.get(matched_key) or {}).get('gender', ''))
-                rebuilt_profiles[normalize_client_name(client_name)] = {
-                    'phone': normalize_phone_number(client_phone),
-                    'gender': existing_gender,
-                }
-
-            gender_changed = False
-            if normalized_key in rebuilt_profiles and gender is not None:
-                next_gender = normalize_client_gender(gender)
-                prev_gender = normalize_client_gender((rebuilt_profiles.get(normalized_key) or {}).get('gender', ''))
-                rebuilt_profiles[normalized_key]['gender'] = next_gender
-                gender_changed = next_gender != prev_gender
-
-            saved_profiles = self._save_client_profiles_to_disk(rebuilt_profiles)
+            saved_profiles = self._save_client_profiles_to_disk(profiles)
             registry = {
                 client_name: str((profile or {}).get('phone') or '')
                 for client_name, profile in saved_profiles.items()
             }
-            changed = bool(phone_changed or gender_changed)
+
+            added = not bool(previous_effective_name)
+            name_changed = bool(previous_effective_name and previous_effective_name != target_name)
+            phone_changed = bool(previous_phone != target_phone)
+            gender_changed = bool(previous_gender != next_gender)
+            changed = bool(added or name_changed or phone_changed or gender_changed)
+
+        propagation_result = None
+        if (name_changed or phone_changed) and not added:
+            source_name_for_rows = previous_effective_name or target_name
+            propagation_result = self._propagate_client_transaction_updates(
+                source_name=source_name_for_rows,
+                target_name=target_name,
+                target_phone=target_phone,
+                force_refresh=force_refresh,
+            )
+            if propagation_result.get('queued_operation_ids'):
+                try:
+                    self.replay_pending_queue_now(limit=300)
+                except Exception:
+                    pass
+
+            with self._clients_lock:
+                self._append_client_change_history({
+                    'event': 'client_profile_update',
+                    'changed_at': datetime.now(timezone.utc).isoformat(),
+                    'old_name': previous_effective_name,
+                    'new_name': target_name,
+                    'old_phone': previous_phone,
+                    'new_phone': target_phone,
+                    'old_gender': previous_gender,
+                    'new_gender': next_gender,
+                    'main_updates': int(propagation_result.get('main_updates', 0)),
+                    'stock_updates': int(propagation_result.get('stock_updates', 0)),
+                    'queued_operation_ids': propagation_result.get('queued_operation_ids', []),
+                    'changed_by': 'admin',
+                })
 
         sync_result = None
-        if sync_sheet and (added or phone_changed):
+        if sync_sheet and (added or name_changed or phone_changed):
             sync_result = self._queue_client_sheet_sync(force_refresh=force_refresh, include_autofill=False)
 
         payload = self.get_client_registry_payload(force_reload=True)
@@ -3853,12 +4068,16 @@ class BackendRuntime:
         return {
             'added': added,
             'changed': changed,
-            'key': normalized_key,
+            'key': target_name,
             'registry': payload.get('registry', registry),
             'entries': payload.get('entries', []),
             'stats': payload.get('stats', {}),
             'directory_rows': payload.get('directory_rows', []),
-            'gender': normalize_client_gender((saved_profiles.get(normalized_key) or {}).get('gender', '')),
+            'gender': normalize_client_gender((saved_profiles.get(target_name) or {}).get('gender', '')),
+            'name_changed': name_changed,
+            'phone_changed': phone_changed,
+            'gender_changed': gender_changed,
+            'propagation_result': propagation_result,
             'sync_result': sync_result,
         }
 
