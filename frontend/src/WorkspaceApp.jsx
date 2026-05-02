@@ -122,7 +122,7 @@ const ACTION_ITEMS = [
     key: 'bill_notifications',
     type: 'action',
     title: 'Bill Notifications',
-    description: 'Customers with unpaid balances and no bill sent for 3+ days.',
+    description: 'Customers with unpaid balances and no bill sent for more than 4 days.',
   },
   {
     key: 'fix',
@@ -193,13 +193,17 @@ const VIEW_META = {
     title: 'Services Today',
     description: 'All services recorded today with status, amount paid, and balances.',
   },
+  bill_notifications: {
+    title: 'Bill Notifications',
+    description: 'Overdue unpaid customers with bill sends older than 4 days.',
+  },
   users: {
     title: 'User Management',
     description: 'Admin-only user provisioning and role/status control.',
   },
 };
 
-const STAFF_ALLOWED_VIEWS = new Set(['products', 'cart']);
+const STAFF_ALLOWED_VIEWS = new Set(['products', 'cart', 'bill_notifications']);
 const STOCK_VIEW_CACHE_KEY = 'atlanta_stock_view_cache_v1';
 const STOCK_FORM_CACHE_KEY = 'atlanta_stock_form_cache_v1';
 const WORKSPACE_CORE_CACHE_KEY = 'atlanta_workspace_core_cache_v1';
@@ -3845,6 +3849,62 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
   );
 }
 
+function BillNotificationsView({ entries, onOpenDebtors }) {
+  const rows = Array.isArray(entries) ? entries : [];
+
+  return (
+    <section className="workspace-stack">
+      <section className="content-panel content-panel--main content-panel--full">
+        <div className="panel-header">
+          <h3>Bill Notifications</h3>
+          <p>Customers with unpaid balances whose last bill send is more than 4 days ago, sorted highest overdue to lowest.</p>
+        </div>
+
+        <div className="notice compact">
+          Total overdue customers: {formatCount(rows.length)}
+        </div>
+
+        <div className="button-row" style={{ marginBottom: '10px' }}>
+          <button type="button" className="secondary-button" onClick={onOpenDebtors}>
+            Open Debtors
+          </button>
+        </div>
+
+        <div className="table-wrap table-wrap--mobile-cards">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Outstanding</th>
+                <th>Days Since Last Bill</th>
+                <th>Last Bill Sent</th>
+                <th>Total Sends</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length ? (
+                rows.map((entry) => (
+                  <tr key={`bill-notify-${entry.name}`}>
+                    <td data-label="Customer">{entry.name}</td>
+                    <td className="amount-cell" data-label="Outstanding">{formatCurrency(entry.outstanding || 0)}</td>
+                    <td data-label="Days Since Last Bill">{formatCount(entry.days_since_last_bill || 0)}</td>
+                    <td data-label="Last Bill Sent">{entry.last_sent_at ? String(entry.last_sent_at).replace('T', ' ').slice(0, 16) : 'Never'}</td>
+                    <td data-label="Total Sends">{formatCount(entry.send_count || 0)}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={5} className="empty-state">No overdue bill notifications right now.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onReloadStatus }) {
   const syncState = syncStatus?.sync_state || {};
   const postgresSnapshot = syncStatus?.postgres_snapshot || {};
@@ -4227,19 +4287,45 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     return new Set(STAFF_ALLOWED_VIEWS);
   }, [isAdmin]);
 
-  const billNotificationCount = useMemo(() => {
+  const billNotificationEntries = useMemo(() => {
     const now = Date.now();
-    const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
-    return (debtorsData.sorted_debtors || []).filter(([name, amount]) => {
+    const fourDaysMs = 4 * 24 * 60 * 60 * 1000;
+    const rows = (debtorsData.sorted_debtors || []).map(([name, amount]) => {
       const balance = Number(amount || 0);
       if (!(balance > 0)) {
-        return false;
+        return null;
       }
       const stats = whatsappHistoryByName?.[name] || {};
       const lastSent = stats.last_sent_at ? new Date(stats.last_sent_at).getTime() : 0;
-      return !lastSent || Number.isNaN(lastSent) || (now - lastSent) >= threeDaysMs;
-    }).length;
+      const elapsedMs = !lastSent || Number.isNaN(lastSent) ? Number.POSITIVE_INFINITY : (now - lastSent);
+      if (!(elapsedMs > fourDaysMs)) {
+        return null;
+      }
+
+      const daysSince = Number.isFinite(elapsedMs)
+        ? Math.floor(elapsedMs / (24 * 60 * 60 * 1000))
+        : 9999;
+
+      return {
+        name,
+        outstanding: balance,
+        days_since_last_bill: daysSince,
+        last_sent_at: stats.last_sent_at || '',
+        send_count: Number(stats.send_count || 0),
+      };
+    }).filter(Boolean);
+
+    rows.sort((a, b) => {
+      if ((b.days_since_last_bill || 0) !== (a.days_since_last_bill || 0)) {
+        return (b.days_since_last_bill || 0) - (a.days_since_last_bill || 0);
+      }
+      return (b.outstanding || 0) - (a.outstanding || 0);
+    });
+
+    return rows;
   }, [debtorsData.sorted_debtors, whatsappHistoryByName]);
+
+  const billNotificationCount = billNotificationEntries.length;
 
   const visibleActionItems = useMemo(() => (
     ACTION_ITEMS.filter((item) => {
@@ -6066,10 +6152,10 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
 
     if (item.key === 'bill_notifications') {
-      startTransition(() => setActiveView('debtors'));
+      startTransition(() => setActiveView('bill_notifications'));
       setStatusText(
         billNotificationCount > 0
-          ? `${formatCount(billNotificationCount)} customer(s) need bill follow-up after 3+ days.`
+          ? `${formatCount(billNotificationCount)} customer(s) need bill follow-up after 4+ days.`
           : 'No overdue bill notifications right now.'
       );
       return;
@@ -6318,6 +6404,15 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           onChangeDate={setServicesTodayDate}
           onLoadDate={loadServicesTodayForDate}
           onUpdateServiceEntry={handleUpdateServicesTodayEntry}
+        />
+      );
+    }
+
+    if (activeView === 'bill_notifications') {
+      return (
+        <BillNotificationsView
+          entries={billNotificationEntries}
+          onOpenDebtors={() => startTransition(() => setActiveView('debtors'))}
         />
       );
     }
