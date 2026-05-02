@@ -183,6 +183,7 @@ def format_service_option(item):
 
 def generate_bill_text(name_input, records, payment_details, gender=''):
     name_input = str(name_input or '').strip().upper()
+    display_name = str(name_input or '').strip().upper()
     records = records or []
 
     items = []
@@ -218,13 +219,14 @@ def generate_bill_text(name_input, records, payment_details, gender=''):
     greeting = resolve_day_greeting()
     salutation = resolve_salutation(gender)
     if salutation == 'there':
-        fallback_name = str(name_input or '').strip()
-        salutation = fallback_name.title() if fallback_name else 'there'
+        salutation = display_name if display_name else 'there'
     intro_line_1 = to_math_italic(f"{greeting} {salutation}, I trust you're doing well.")
+    intro_line_2 = to_math_italic('Here is a quick summary of your outstanding bill for your review:')
     lines = [
         intro_line_1,
+        intro_line_2,
         '',
-        f"Customer: {name_input}",
+        display_name,
         f"Generated: {generated_day} at {generated_at}",
         f"*Total Outstanding: NGN {total:,}*",
         '',
