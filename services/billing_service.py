@@ -217,6 +217,9 @@ def generate_bill_text(name_input, records, payment_details, gender=''):
 
     greeting = resolve_day_greeting()
     salutation = resolve_salutation(gender)
+    if salutation == 'there':
+        fallback_name = str(name_input or '').strip()
+        salutation = fallback_name.title() if fallback_name else 'there'
     intro_line_1 = to_math_italic(f"{greeting} {salutation}, I trust you're doing well.")
     lines = [
         intro_line_1,
