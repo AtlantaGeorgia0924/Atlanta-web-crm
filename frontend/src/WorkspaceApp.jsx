@@ -1009,6 +1009,7 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
 function CashFlowView({
   cashflowSummary,
   weeklyAllowance,
+  salesSnapshot,
   expenses,
   transactions,
   capitalFlow,
@@ -1027,28 +1028,32 @@ function CashFlowView({
 }) {
   const summary = cashflowSummary || {};
   const allowance = weeklyAllowance || {};
+  const sales = salesSnapshot || {};
   const capital = capitalFlow || { month_total: 0, week_total: 0, entries: [] };
-  const stockCounts = stockView?.counts || {};
   const liveSummaryCards = [
     {
-      label: 'Customers Owing',
-      value: formatCount((debtorsData?.sorted_debtors || []).length),
-      note: 'Live debtor count.',
+      key: 'sales-month',
+      label: 'Sales This Month',
+      value: formatCurrency(sales.sales_month || 0),
+      note: 'Total value of completed services for this month.',
     },
     {
-      label: 'Products Available',
-      value: formatCount(stockCounts.available),
-      note: 'Current available stock count.',
+      key: 'sales-today',
+      label: 'Sales Today',
+      value: formatCurrency(sales.sales_today || 0),
+      note: 'Total value of completed services today.',
     },
     {
-      label: 'Pending Deals',
-      value: formatCount(stockCounts.pending),
-      note: 'Deals waiting to close.',
+      key: 'debt-outstanding',
+      label: 'Total Debt Outstanding',
+      value: formatCurrency(debtorsData?.total_debtors_amount || 0),
+      note: 'Current unpaid customer balance.',
     },
     {
-      label: 'Name Fixes',
-      value: formatCount(nameFixData?.count),
-      note: 'Rows waiting for correction.',
+      key: 'expected-income',
+      label: 'Expected Income',
+      value: formatCurrency(summary.expected_income || 0),
+      note: 'Projected incoming cash from unpaid records.',
     },
   ];
   const [revealedMetric, setRevealedMetric] = useState('');
@@ -1348,11 +1353,15 @@ function CashFlowView({
         <h2>Live Summary</h2>
         <div className="summary-grid summary-grid--home" style={{ marginTop: '10px' }}>
           {liveSummaryCards.map((card) => (
-            <article key={card.label} className="metric-card metric-card--home">
-              <span className="metric-label">{card.label}</span>
-              <strong className="metric-value">{card.value}</strong>
-              <span className="metric-note">{card.note}</span>
-            </article>
+            <MaskedMetricCard
+              key={card.key}
+              label={card.label}
+              value={card.value}
+              note={card.note}
+              revealKey={`cashflow-${card.key}`}
+              revealedMetric={revealedMetric}
+              setRevealedMetric={setRevealedMetric}
+            />
           ))}
         </div>
       </section>
@@ -6464,6 +6473,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         <CashFlowView
           cashflowSummary={cashflowSummary}
           weeklyAllowance={weeklyAllowance}
+          salesSnapshot={salesSnapshot}
           expenses={cashflowExpenses}
           transactions={cashflowTransactions}
           capitalFlow={cashflowCapital}
