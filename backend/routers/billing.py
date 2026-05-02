@@ -302,7 +302,7 @@ def update_service_endpoint(payload: UpdateServiceRequest, runtime=Depends(get_r
 
     try:
         result = runtime.update_main_record_fields(
-            row_num - 1,
+            row_num,
             updates,
             force_refresh=payload.force_refresh,
         )
@@ -319,7 +319,7 @@ def return_service_endpoint(payload: ReturnServiceRequest, runtime=Depends(get_r
     row_num, _record = _resolve_customer_service_row(runtime, payload.name_input, payload.row_idx, force_refresh=payload.force_refresh)
     try:
         result = runtime.update_main_record_fields(
-            row_num - 1,
+            row_num,
             {'STATUS': 'RETURNED'},
             force_refresh=payload.force_refresh,
         )
