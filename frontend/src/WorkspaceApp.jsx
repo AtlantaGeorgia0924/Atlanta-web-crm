@@ -4876,7 +4876,7 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
                           </button>
                         )}
                         <button type="button" className="table-action-button" onClick={() => savePaymentEdit(entry)} disabled={isSavingPayment || isSaving}>
-                          {isSavingPayment ? 'Saving...' : 'Save Payment'}
+                          {isSavingPayment ? 'Applying...' : 'Apply Payment'}
                         </button>
                         <button type="button" className="table-action-button" onClick={() => toggleExpand(entry.row_num)}>
                           {isExpanded ? 'Less' : 'More'}
@@ -7491,7 +7491,6 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         || !item.swap_incoming_devices.length
         || item.swap_incoming_devices.some((device) => {
           const valuesByHeader = device?.values_by_header || {};
-                          {isSavingPayment ? 'Applying...' : 'Apply Payment'}
           const imei = getValueByHeaderAliases(valuesByHeader, ['IMEI']);
           return !description || !imei;
         })
