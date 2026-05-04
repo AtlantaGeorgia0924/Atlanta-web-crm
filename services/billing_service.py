@@ -2,6 +2,8 @@ import json
 import os
 from datetime import date, datetime
 
+from services.sync_service import detect_sheet_header_row
+
 
 def clean_amount(value):
     try:
@@ -83,22 +85,31 @@ def get_customer_outstanding_items_from_values(name_input, values):
     if not values:
         return [], 0, None
 
-    header = values[0]
-    try:
-        name_col = header.index("NAME")
-        price_col = header.index("PRICE")
-        paid_col = header.index("Amount paid")
-        status_col = header.index("STATUS")
-    except ValueError:
+    header_row_idx = detect_sheet_header_row(values)
+    header = values[header_row_idx] if header_row_idx < len(values) else []
+    header_upper = [str(cell or '').strip().upper() for cell in header]
+
+    def find_col(*candidates):
+        for candidate in candidates:
+            upper = str(candidate or '').strip().upper()
+            if upper in header_upper:
+                return header_upper.index(upper)
+        return None
+
+    name_col = find_col('NAME', 'CLIENT NAME', 'CUSTOMER NAME')
+    price_col = find_col('PRICE', 'AMOUNT SOLD', 'SELLING PRICE')
+    paid_col = find_col('AMOUNT PAID', 'AMOUNT PAID ')
+    status_col = find_col('STATUS')
+    if name_col is None or price_col is None or paid_col is None or status_col is None:
         return [], 0, None
 
-    description_col = header.index("DESCRIPTION") if "DESCRIPTION" in header else None
-    date_col = header.index("DATE") if "DATE" in header else None
+    description_col = find_col('DESCRIPTION', 'MODEL', 'DEVICE', 'DESC')
+    date_col = find_col('DATE')
 
     outstanding_items = []
     total_outstanding = 0
 
-    for row_idx in range(1, len(values)):
+    for row_idx in range(header_row_idx + 1, len(values)):
         row = values[row_idx]
         if name_col >= len(row):
             continue

@@ -5344,7 +5344,8 @@ class BackendRuntime:
             return {'error': 'No payment action available.'}
 
         values = self.get_main_values(force_refresh=False)
-        header = values[0] if values else []
+        header_row_idx = detect_sheet_header_row(values)
+        header = values[header_row_idx] if values and header_row_idx < len(values) else []
         queue_ids = []
 
         for row in action.get('rows', []):
@@ -5405,16 +5406,18 @@ class BackendRuntime:
         if plan.get('error'):
             return plan
 
+        header_row_idx = detect_sheet_header_row(values)
+        header = values[header_row_idx] if values and header_row_idx < len(values) else []
         paid_col = plan['columns']['paid_col']
         status_col = plan['columns']['status_col']
-        headers_upper = [str(cell or '').strip().upper() for cell in (values[0] if values else [])]
+        headers_upper = [str(cell or '').strip().upper() for cell in header]
         name_col = svc_stock_header_index(headers_upper, 'NAME', 'CLIENT NAME', 'CUSTOMER NAME')
         description_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
         imei_col = svc_stock_header_index(headers_upper, 'IMEI')
         price_col = svc_stock_header_index(headers_upper, 'PRICE', 'AMOUNT SOLD', 'SELLING PRICE')
         cost_col = svc_stock_header_index(headers_upper, 'COST PRICE', 'COST')
-        paid_field_name = values[0][paid_col] if paid_col < len(values[0]) else 'Amount paid'
-        status_field_name = values[0][status_col] if status_col < len(values[0]) else 'STATUS'
+        paid_field_name = header[paid_col] if paid_col < len(header) else 'Amount paid'
+        status_field_name = header[status_col] if status_col < len(header) else 'STATUS'
         queue_ids = []
 
         for item in plan['updates']:
