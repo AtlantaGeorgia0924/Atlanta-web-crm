@@ -87,6 +87,13 @@ class UpdateServiceRequest(BaseModel):
     force_refresh: bool = False
 
 
+class UpdateSalesTodayPaymentRequest(BaseModel):
+    row_num: int
+    payment_status: str
+    amount_paid: int | None = None
+    force_refresh: bool = False
+
+
 class ReturnServiceRequest(BaseModel):
     name_input: str
     row_idx: int
@@ -305,6 +312,23 @@ def update_service_endpoint(payload: UpdateServiceRequest, runtime=Depends(get_r
         result = runtime.update_main_record_fields(
             row_num,
             updates,
+            force_refresh=payload.force_refresh,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if result.get('error'):
+        raise HTTPException(status_code=400, detail=result['error'])
+    return result
+
+
+@router.post('/services/payment-update')
+def update_sales_today_payment_endpoint(payload: UpdateSalesTodayPaymentRequest, runtime=Depends(get_runtime)):
+    try:
+        result = runtime.update_sales_today_payment(
+            payload.row_num,
+            payload.payment_status,
+            amount_paid=payload.amount_paid,
             force_refresh=payload.force_refresh,
         )
     except RuntimeError as exc:

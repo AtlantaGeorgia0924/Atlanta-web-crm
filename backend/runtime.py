@@ -1954,9 +1954,127 @@ class BackendRuntime:
         header_row_idx, headers, headers_upper = detect_stock_headers(values)
         return values, header_row_idx, headers, headers_upper, True
 
-    def _ensure_stock_required_columns(self, force_refresh=False):
+    def _ensure_main_optional_columns(self, force_refresh=False, required_headers=None):
+        required_headers = [str(header or '').strip().upper() for header in (required_headers or []) if str(header or '').strip()]
+        values = self.get_main_values(force_refresh=force_refresh)
+        if not values or not required_headers:
+            return values, detect_sheet_header_row(values), [str(cell or '').strip() for cell in (values[detect_sheet_header_row(values)] if values and detect_sheet_header_row(values) < len(values) else [])], [str(cell or '').strip().upper() for cell in (values[detect_sheet_header_row(values)] if values and detect_sheet_header_row(values) < len(values) else [])], []
+
+        header_row_idx = detect_sheet_header_row(values)
+        headers = [str(cell or '').strip() for cell in (values[header_row_idx] if header_row_idx < len(values) else [])]
+        headers_upper = [header.upper() for header in headers]
+        inserted_headers = []
+        main_sheet_id = self._extract_sheet_id(self.config.get('sheet_id', ''))
+        if not main_sheet_id or not self.main_sheet:
+            return values, header_row_idx, headers, headers_upper, inserted_headers
+
+        for required_header in required_headers:
+            if required_header in headers_upper:
+                continue
+            insert_index = len(headers)
+            request_body = {
+                'requests': [{
+                    'insertDimension': {
+                        'range': {
+                            'sheetId': self.main_sheet.id,
+                            'dimension': 'COLUMNS',
+                            'startIndex': insert_index,
+                            'endIndex': insert_index + 1,
+                        },
+                        'inheritFromBefore': insert_index > 0,
+                    }
+                }]
+            }
+            try:
+                with self._sheet_lock:
+                    self.sheets_api_service.spreadsheets().batchUpdate(
+                        spreadsheetId=main_sheet_id,
+                        body=request_body,
+                    ).execute()
+                    self.main_sheet.update_cell(header_row_idx + 1, insert_index + 1, required_header)
+                    values = self.main_sheet.get_all_values()
+            except Exception as exc:
+                self.logger.warning('Could not insert %s column into main sheet: %s', required_header, exc)
+                continue
+
+            headers = [str(cell or '').strip() for cell in (values[header_row_idx] if header_row_idx < len(values) else [])]
+            headers_upper = [header.upper() for header in headers]
+            inserted_headers.append(required_header)
+
+        if inserted_headers and self.postgres_ready:
+            try:
+                self.postgres_sync_manager.upsert_sheet_cache('main_values', values)
+                self.postgres_sync_manager.upsert_sheet_cache('main_records', self.main_sheet.get_all_records())
+            except Exception as exc:
+                self.logger.warning('Failed to cache main sheet after column insert: %s', exc)
+
+        return values, header_row_idx, headers, headers_upper, inserted_headers
+
+    def _ensure_stock_optional_columns(self, force_refresh=False, required_headers=None):
+        values, header_row_idx, headers, headers_upper, inserted_cost_price, inserted_product_status = self._ensure_stock_required_columns_base(force_refresh=force_refresh)
+        required_headers = [str(header or '').strip().upper() for header in (required_headers or []) if str(header or '').strip()]
+        inserted_headers = []
+        stock_sheet_id = self._resolve_stock_sheet_id()
+        if not stock_sheet_id or not required_headers:
+            return values, header_row_idx, headers, headers_upper, inserted_cost_price, inserted_product_status, inserted_headers
+
+        try:
+            worksheet = self._resolve_stock_worksheet(stock_sheet_id)
+        except Exception as exc:
+            self.logger.warning('Could not resolve stock worksheet while ensuring optional columns: %s', exc)
+            return values, header_row_idx, headers, headers_upper, inserted_cost_price, inserted_product_status, inserted_headers
+
+        for required_header in required_headers:
+            if required_header in headers_upper:
+                continue
+            insert_index = len(headers)
+            request_body = {
+                'requests': [{
+                    'insertDimension': {
+                        'range': {
+                            'sheetId': worksheet.id,
+                            'dimension': 'COLUMNS',
+                            'startIndex': insert_index,
+                            'endIndex': insert_index + 1,
+                        },
+                        'inheritFromBefore': insert_index > 0,
+                    }
+                }]
+            }
+            try:
+                with self._sheet_lock:
+                    self.sheets_api_service.spreadsheets().batchUpdate(
+                        spreadsheetId=stock_sheet_id,
+                        body=request_body,
+                    ).execute()
+                    worksheet.update_cell(header_row_idx + 1, insert_index + 1, required_header)
+                    values = worksheet.get_all_values()
+            except Exception as exc:
+                self.logger.warning('Could not insert %s column into stock sheet: %s', required_header, exc)
+                continue
+
+            headers = [str(cell or '').strip() for cell in (values[header_row_idx] if header_row_idx < len(values) else [])]
+            headers_upper = [header.upper() for header in headers]
+            inserted_headers.append(required_header)
+
+        if inserted_headers and self.postgres_ready:
+            try:
+                self.postgres_sync_manager.upsert_sheet_cache('stock_values', values)
+            except Exception as exc:
+                self.logger.warning('Failed to cache stock sheet after optional column insert: %s', exc)
+
+        return values, header_row_idx, headers, headers_upper, inserted_cost_price, inserted_product_status, inserted_headers
+
+    def _ensure_stock_required_columns_base(self, force_refresh=False):
         values, header_row_idx, headers, headers_upper, inserted_cost_price = self._ensure_stock_cost_price_column(force_refresh=force_refresh)
         values, header_row_idx, headers, headers_upper, inserted_product_status = self._ensure_stock_product_status_column(force_refresh=False)
+        return values, header_row_idx, headers, headers_upper, inserted_cost_price, inserted_product_status
+
+    def _ensure_stock_required_columns(self, force_refresh=False):
+        values, header_row_idx, headers, headers_upper, inserted_cost_price, inserted_product_status, _ = self._ensure_stock_optional_columns(
+            force_refresh=force_refresh,
+            required_headers=['DEAL LOCATION', 'INTERNAL NOTE'],
+        )
         return values, header_row_idx, headers, headers_upper, inserted_cost_price, inserted_product_status
 
     @staticmethod
@@ -2670,6 +2788,127 @@ class BackendRuntime:
         }
 
     def add_stock_record(self, values_by_header, force_refresh=False):
+        return self.add_stock_record_with_guard(values_by_header, force_refresh=force_refresh, allow_stolen_warning_override=False)
+
+    def _normalize_imei_digits(self, value):
+        return ''.join(ch for ch in str(value or '') if ch.isdigit())
+
+    def _extract_stock_imei_value(self, values_by_header, headers=None, headers_upper=None):
+        headers = list(headers or [])
+        headers_upper = list(headers_upper or [])
+        if not headers_upper and headers:
+            headers_upper = [str(header or '').strip().upper() for header in headers]
+
+        imei_index = svc_stock_header_index(headers_upper, 'IMEI')
+        if imei_index is not None and imei_index < len(headers):
+            imei_header = headers[imei_index]
+            if imei_header in dict(values_by_header or {}):
+                return str(dict(values_by_header or {}).get(imei_header) or '').strip()
+
+        normalized_values = {
+            ''.join(str(key or '').strip().upper().replace('_', ' ').replace('-', ' ').split()): value
+            for key, value in dict(values_by_header or {}).items()
+        }
+        return str(normalized_values.get('IMEI') or '').strip()
+
+    def _get_stolen_device_registry_match(self, imei_value):
+        if not self.postgres_sync_manager or not self.postgres_sync_manager.ready:
+            return {
+                'available': False,
+                'exact_match': None,
+                'format_warning_match': None,
+            }
+
+        imei_raw = str(imei_value or '').strip()
+        imei_digits = self._normalize_imei_digits(imei_raw)
+        if not imei_raw and not imei_digits:
+            return {
+                'available': True,
+                'exact_match': None,
+                'format_warning_match': None,
+            }
+
+        exact_match = self.postgres_sync_manager.fetchone_dict(
+            """
+            SELECT id, phone_name, imei_raw, imei_digits, note, source, is_active, created_at, updated_at, cleared_at, cleared_note
+            FROM stolen_devices
+            WHERE is_active = TRUE AND imei_raw = %s
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (imei_raw,),
+        )
+        if exact_match:
+            return {
+                'available': True,
+                'exact_match': exact_match,
+                'format_warning_match': None,
+            }
+
+        if not imei_digits:
+            return {
+                'available': True,
+                'exact_match': None,
+                'format_warning_match': None,
+            }
+
+        format_warning_match = self.postgres_sync_manager.fetchone_dict(
+            """
+            SELECT id, phone_name, imei_raw, imei_digits, note, source, is_active, created_at, updated_at, cleared_at, cleared_note
+            FROM stolen_devices
+            WHERE is_active = TRUE AND imei_digits = %s
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (imei_digits,),
+        )
+        return {
+            'available': True,
+            'exact_match': None,
+            'format_warning_match': format_warning_match,
+        }
+
+    def check_stolen_device_imei(self, imei_value):
+        imei_raw = str(imei_value or '').strip()
+        imei_digits = self._normalize_imei_digits(imei_raw)
+        match_info = self._get_stolen_device_registry_match(imei_raw)
+        exact_match = match_info.get('exact_match')
+        format_warning_match = match_info.get('format_warning_match')
+
+        if exact_match:
+            return {
+                'available': bool(match_info.get('available')),
+                'status': 'blocked',
+                'can_override': False,
+                'match_type': 'exact_raw',
+                'imei_raw': imei_raw,
+                'imei_digits': imei_digits,
+                'record': exact_match,
+                'message': f"This IMEI is flagged as stolen: {str(exact_match.get('phone_name') or 'Unknown phone').strip() or 'Unknown phone'}. Remove it from stock entry.",
+            }
+        if format_warning_match:
+            return {
+                'available': bool(match_info.get('available')),
+                'status': 'warning',
+                'can_override': True,
+                'match_type': 'digits_only_variant',
+                'imei_raw': imei_raw,
+                'imei_digits': imei_digits,
+                'record': format_warning_match,
+                'message': 'This IMEI matches a stolen-device record by digits, but the formatting is different. Verify carefully before overriding.',
+            }
+        return {
+            'available': bool(match_info.get('available')),
+            'status': 'clear',
+            'can_override': False,
+            'match_type': 'none',
+            'imei_raw': imei_raw,
+            'imei_digits': imei_digits,
+            'record': None,
+            'message': '',
+        }
+
+    def add_stock_record_with_guard(self, values_by_header, force_refresh=False, allow_stolen_warning_override=False):
         values, header_row_idx, headers, headers_upper, _, _ = self._ensure_stock_required_columns(force_refresh=force_refresh)
         normalized_values = dict(values_by_header or {})
         status_col = svc_stock_header_index(headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS')
@@ -2677,6 +2916,16 @@ class BackendRuntime:
             status_header = headers[status_col]
             if not str(normalized_values.get(status_header, '')).strip():
                 normalized_values[status_header] = 'AVAILABLE'
+
+        imei_value = self._extract_stock_imei_value(normalized_values, headers=headers, headers_upper=headers_upper)
+        stolen_check = self.check_stolen_device_imei(imei_value)
+        if stolen_check.get('status') == 'blocked':
+            return {'error': stolen_check.get('message') or 'This IMEI is flagged as stolen.', 'stolen_check': stolen_check}
+        if stolen_check.get('status') == 'warning' and not allow_stolen_warning_override:
+            return {
+                'error': stolen_check.get('message') or 'This IMEI matches a stolen-device warning and requires override.',
+                'stolen_check': stolen_check,
+            }
 
         row_values, non_empty_count = build_stock_row_values(headers, normalized_values)
         validation_error = validate_stock_row(row_values, headers_upper)
@@ -2709,15 +2958,108 @@ class BackendRuntime:
             'headers_upper': headers_upper,
             'header_row_idx': header_row_idx,
             'target_row': target_row,
+            'stolen_check': stolen_check,
         }
 
+    def list_stolen_devices(self, include_inactive=False):
+        if not self.postgres_sync_manager or not self.postgres_sync_manager.ready:
+            return {'error': 'Stolen device registry database is not ready.', 'items': [], 'count': 0}
+
+        sql = """
+        SELECT id, phone_name, imei_raw, imei_digits, note, source, is_active, created_at, updated_at, cleared_at, cleared_note
+        FROM stolen_devices
+        """
+        params = []
+        if not include_inactive:
+            sql += " WHERE is_active = TRUE"
+        sql += " ORDER BY is_active DESC, updated_at DESC, id DESC"
+        items = self.postgres_sync_manager.fetchall_dict(sql, tuple(params))
+        return {'items': items, 'count': len(items)}
+
+    def add_stolen_device(self, phone_name='', imei_raw='', note='', source=''):
+        if not self.postgres_sync_manager or not self.postgres_sync_manager.ready:
+            return {'error': 'Stolen device registry database is not ready.'}
+
+        phone_name_text = str(phone_name or '').strip().upper()
+        imei_raw_text = str(imei_raw or '').strip()
+        imei_digits = self._normalize_imei_digits(imei_raw_text)
+        note_text = str(note or '').strip()
+        source_text = str(source or '').strip()
+
+        if len(imei_digits) != 15:
+            return {'error': 'Enter a valid 15-digit IMEI for the stolen device registry.'}
+        if not imei_raw_text:
+            return {'error': 'IMEI text is required.'}
+
+        existing = self.postgres_sync_manager.fetchone_dict(
+            """
+            SELECT id, imei_raw, is_active
+            FROM stolen_devices
+            WHERE imei_raw = %s AND is_active = TRUE
+            LIMIT 1
+            """,
+            (imei_raw_text,),
+        )
+        if existing:
+            return {'error': 'That exact IMEI arrangement already exists in the stolen device registry.'}
+
+        created = self.postgres_sync_manager.fetchone_dict(
+            """
+            INSERT INTO stolen_devices (phone_name, imei_raw, imei_digits, note, source, is_active, created_at, updated_at, cleared_note)
+            VALUES (%s, %s, %s, %s, %s, TRUE, NOW(), NOW(), '')
+            RETURNING id, phone_name, imei_raw, imei_digits, note, source, is_active, created_at, updated_at, cleared_at, cleared_note
+            """,
+            (phone_name_text, imei_raw_text, imei_digits, note_text, source_text),
+        )
+        return {'item': created}
+
+    def update_stolen_device(self, record_id, phone_name=None, note=None, source=None, is_active=None, cleared_note=None):
+        if not self.postgres_sync_manager or not self.postgres_sync_manager.ready:
+            return {'error': 'Stolen device registry database is not ready.'}
+
+        existing = self.postgres_sync_manager.fetchone_dict(
+            """
+            SELECT id, phone_name, imei_raw, imei_digits, note, source, is_active, created_at, updated_at, cleared_at, cleared_note
+            FROM stolen_devices
+            WHERE id = %s
+            LIMIT 1
+            """,
+            (int(record_id),),
+        )
+        if not existing:
+            return {'error': 'Stolen device record was not found.'}
+
+        next_phone_name = str(phone_name if phone_name is not None else existing.get('phone_name') or '').strip().upper()
+        next_note = str(note if note is not None else existing.get('note') or '').strip()
+        next_source = str(source if source is not None else existing.get('source') or '').strip()
+        next_is_active = bool(existing.get('is_active')) if is_active is None else bool(is_active)
+        next_cleared_note = str(cleared_note if cleared_note is not None else existing.get('cleared_note') or '').strip()
+
+        updated = self.postgres_sync_manager.fetchone_dict(
+            """
+            UPDATE stolen_devices
+            SET phone_name = %s,
+                note = %s,
+                source = %s,
+                is_active = %s,
+                updated_at = NOW(),
+                cleared_at = CASE WHEN %s = FALSE THEN COALESCE(cleared_at, NOW()) ELSE NULL END,
+                cleared_note = %s
+            WHERE id = %s
+            RETURNING id, phone_name, imei_raw, imei_digits, note, source, is_active, created_at, updated_at, cleared_at, cleared_note
+            """,
+            (next_phone_name, next_note, next_source, next_is_active, next_is_active, next_cleared_note, int(record_id)),
+        )
+        return {'item': updated}
+
     def add_service_record(self, values_by_header, force_refresh=False):
-        main_values = self.get_main_values(force_refresh=force_refresh)
+        main_values, header_row_idx, headers, _headers_upper, _inserted_headers = self._ensure_main_optional_columns(
+            force_refresh=force_refresh,
+            required_headers=['DEAL LOCATION', 'INTERNAL NOTE'],
+        )
         if not main_values:
             return {'error': 'Main inventory sheet is empty.'}
 
-        header_row_idx = detect_sheet_header_row(main_values)
-        headers = [str(cell or '').strip() for cell in (main_values[header_row_idx] if header_row_idx < len(main_values) else [])]
         if not headers:
             return {'error': 'Main inventory headers are missing.'}
 
@@ -2741,6 +3083,11 @@ class BackendRuntime:
             or merged_values.get('SERVICE COST')
             or 0
         )
+
+        fulfillment_method = str(merged_values.get('FULFILLMENT METHOD') or '').strip().upper().replace('-', ' ')
+        deal_location = str(merged_values.get('DEAL LOCATION') or '').strip()
+        if fulfillment_method in {'OFF OFFICE', 'OFFOFFICE'} and not deal_location:
+            return {'error': 'Deal location is required when fulfillment method is OFF OFFICE.'}
 
         row_values = self._build_sheet_row_values(headers, merged_values)
         if not any(str(value or '').strip() for value in row_values):
@@ -2818,16 +3165,16 @@ class BackendRuntime:
         }
 
     def get_pending_service_deals(self, force_refresh=False):
-        main_values = self.get_main_values(force_refresh=force_refresh)
+        main_values, header_row_idx, headers, headers_upper, _inserted_headers = self._ensure_main_optional_columns(
+            force_refresh=force_refresh,
+            required_headers=['DEAL LOCATION', 'INTERNAL NOTE'],
+        )
         if not main_values:
             return {
                 'items': [],
                 'count': 0,
             }
 
-        header_row_idx = detect_sheet_header_row(main_values)
-        headers = [str(cell or '').strip() for cell in (main_values[header_row_idx] if header_row_idx < len(main_values) else [])]
-        headers_upper = [header.upper() for header in headers]
         if not headers:
             return {
                 'items': [],
@@ -2850,6 +3197,8 @@ class BackendRuntime:
         swap_type_col = svc_stock_header_index(headers_upper, 'SWAP TYPE')
         swap_detail_col = svc_stock_header_index(headers_upper, 'SWAP DETAIL', 'SWAP DETAILS')
         swap_cash_col = svc_stock_header_index(headers_upper, 'SWAP CASH AMOUNT', 'SWAP CASH')
+        deal_location_col = svc_stock_header_index(headers_upper, 'DEAL LOCATION')
+        internal_note_col = svc_stock_header_index(headers_upper, 'INTERNAL NOTE', 'SERVICE NOTE', 'NOTE', 'NOTES')
 
         if status_col is None:
             return {
@@ -2892,6 +3241,8 @@ class BackendRuntime:
                 'swap_type': str(row[swap_type_col] if swap_type_col is not None and swap_type_col < len(row) else '').strip(),
                 'swap_detail': str(row[swap_detail_col] if swap_detail_col is not None and swap_detail_col < len(row) else '').strip(),
                 'swap_cash_amount': str(row[swap_cash_col] if swap_cash_col is not None and swap_cash_col < len(row) else '').strip(),
+                'deal_location': str(row[deal_location_col] if deal_location_col is not None and deal_location_col < len(row) else '').strip(),
+                'internal_note': str(row[internal_note_col] if internal_note_col is not None and internal_note_col < len(row) else '').strip(),
             })
 
         items.sort(key=lambda item: int(item.get('row_num') or 0), reverse=True)
@@ -3627,6 +3978,67 @@ class BackendRuntime:
             ),
         }
 
+    def update_sales_today_payment(self, main_row_num, payment_status, amount_paid=None, force_refresh=False):
+        main_values = self.get_main_values(force_refresh=force_refresh)
+        if not main_values:
+            return {'error': 'Main inventory sheet is empty.'}
+
+        header_row_idx = detect_sheet_header_row(main_values)
+        headers = [str(cell or '').strip() for cell in (main_values[header_row_idx] if header_row_idx < len(main_values) else [])]
+        headers_upper = [header.upper() for header in headers]
+        row_num = int(main_row_num or 0)
+        if row_num <= header_row_idx + 1 or row_num > len(main_values):
+            return {'error': f'Inventory row {row_num} is no longer available.'}
+
+        row = list(main_values[row_num - 1]) if row_num - 1 < len(main_values) else []
+        imei_col = svc_stock_header_index(headers_upper, 'IMEI')
+        buyer_name_col = svc_stock_header_index(headers_upper, 'NAME', 'CLIENT NAME', 'CUSTOMER NAME')
+        buyer_phone_col = svc_stock_header_index(headers_upper, 'PHONE NUMBER', 'PHONE', 'PHONE NO')
+        description_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'MODEL', 'DEVICE', 'DESC')
+
+        imei_value = str(row[imei_col] if imei_col is not None and imei_col < len(row) else '').strip()
+        if not imei_value:
+            return self.update_service_pending_payment(row_num, payment_status, amount_paid=amount_paid, force_refresh=force_refresh)
+
+        stock_values, stock_header_row_idx, stock_headers, stock_headers_upper, _, _ = self._ensure_stock_required_columns(force_refresh=force_refresh)
+        stock_buyer_col = svc_stock_header_index(stock_headers_upper, 'NAME OF BUYER')
+        stock_phone_col = svc_stock_header_index(stock_headers_upper, 'PHONE NUMBER OF BUYER', 'PHONE OF BUYER', 'BUYER PHONE')
+        stock_imei_col = svc_stock_header_index(stock_headers_upper, 'IMEI')
+        stock_desc_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
+
+        buyer_name = str(row[buyer_name_col] if buyer_name_col is not None and buyer_name_col < len(row) else '').strip().upper()
+        buyer_phone = normalize_phone_number(row[buyer_phone_col] if buyer_phone_col is not None and buyer_phone_col < len(row) else '')
+        description_value = str(row[description_col] if description_col is not None and description_col < len(row) else '').strip().upper()
+
+        matched_stock_row = None
+        for index in range(len(stock_values) - 1, stock_header_row_idx, -1):
+            stock_row = stock_values[index] if index < len(stock_values) else []
+            if not stock_row:
+                continue
+            stock_imei = str(stock_row[stock_imei_col] if stock_imei_col is not None and stock_imei_col < len(stock_row) else '').strip()
+            if stock_imei != imei_value:
+                continue
+            stock_name = str(stock_row[stock_buyer_col] if stock_buyer_col is not None and stock_buyer_col < len(stock_row) else '').strip().upper()
+            stock_phone = normalize_phone_number(stock_row[stock_phone_col] if stock_phone_col is not None and stock_phone_col < len(stock_row) else '')
+            stock_desc = str(stock_row[stock_desc_col] if stock_desc_col is not None and stock_desc_col < len(stock_row) else '').strip().upper()
+            if buyer_name and stock_name and stock_name != buyer_name:
+                continue
+            if buyer_phone and stock_phone and stock_phone != buyer_phone:
+                continue
+            if description_value and stock_desc and stock_desc != description_value:
+                continue
+            matched_stock_row = index + 1
+            break
+
+        if not matched_stock_row:
+            return {'error': f'Could not find the linked stock row for inventory row #{row_num}.'}
+
+        result = self.update_pending_deal_payment(matched_stock_row, payment_status, amount_paid=amount_paid, force_refresh=force_refresh)
+        if result.get('error'):
+            return result
+        result['main_row_num'] = row_num
+        return result
+
     def update_stock_row(self, row_num, values_by_header, force_refresh=False):
         values, header_row_idx, headers, headers_upper, _, _ = self._ensure_stock_required_columns(force_refresh=force_refresh)
         row_num = int(row_num or 0)
@@ -4185,13 +4597,13 @@ class BackendRuntime:
         queued_operation_ids = []
 
         stock_values, stock_header_row_idx, stock_headers, stock_headers_upper, _, _ = self._ensure_stock_required_columns(force_refresh=force_refresh)
-        main_values = self.get_main_values(force_refresh=force_refresh)
+        main_values, main_header_row_idx, main_headers, main_headers_upper, _inserted_headers = self._ensure_main_optional_columns(
+            force_refresh=force_refresh,
+            required_headers=['DEAL LOCATION', 'INTERNAL NOTE'],
+        )
         if not main_values:
             return {'error': 'Main inventory sheet is empty.'}
 
-        main_header_row_idx = detect_sheet_header_row(main_values)
-        main_headers = [str(cell or '').strip() for cell in (main_values[main_header_row_idx] if main_header_row_idx < len(main_values) else [])]
-        main_headers_upper = [header.upper() for header in main_headers]
         if not main_headers:
             return {'error': 'Main inventory headers are missing.'}
 
@@ -4243,11 +4655,15 @@ class BackendRuntime:
         stock_swap_type_col = svc_stock_header_index(stock_headers_upper, 'SWAP TYPE')
         stock_swap_detail_col = svc_stock_header_index(stock_headers_upper, 'SWAP DETAIL', 'SWAP DETAILS')
         stock_swap_cash_col = svc_stock_header_index(stock_headers_upper, 'SWAP CASH AMOUNT', 'SWAP CASH')
+        stock_deal_location_col = svc_stock_header_index(stock_headers_upper, 'DEAL LOCATION')
+        stock_internal_note_col = svc_stock_header_index(stock_headers_upper, 'INTERNAL NOTE', 'SERVICE NOTE', 'NOTE', 'NOTES')
         name_of_seller_col = svc_stock_header_index(stock_headers_upper, 'NAME OF SELLER', 'SELLER NAME')
         phone_of_seller_col = svc_stock_header_index(stock_headers_upper, 'PHONE NUMBER OF SELLER', 'SELLER PHONE')
         availability_col = svc_stock_header_index(stock_headers_upper, 'AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE')
         product_status_col = svc_stock_header_index(stock_headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS')
         description_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
+        color_col = svc_stock_header_index(stock_headers_upper, 'COLOUR', 'COLOR')
+        storage_col = svc_stock_header_index(stock_headers_upper, 'STORAGE')
         imei_col = svc_stock_header_index(stock_headers_upper, 'IMEI')
         main_name_col = svc_stock_header_index(main_headers_upper, 'NAME')
         main_imei_col = svc_stock_header_index(main_headers_upper, 'IMEI')
@@ -4262,6 +4678,8 @@ class BackendRuntime:
         main_swap_type_col = svc_stock_header_index(main_headers_upper, 'SWAP TYPE')
         main_swap_detail_col = svc_stock_header_index(main_headers_upper, 'SWAP DETAIL', 'SWAP DETAILS')
         main_swap_cash_col = svc_stock_header_index(main_headers_upper, 'SWAP CASH AMOUNT', 'SWAP CASH')
+        main_deal_location_col = svc_stock_header_index(main_headers_upper, 'DEAL LOCATION')
+        main_internal_note_col = svc_stock_header_index(main_headers_upper, 'INTERNAL NOTE', 'SERVICE NOTE', 'NOTE', 'NOTES')
         main_record_id_col = svc_stock_header_index(main_headers_upper, 'RECORD_ID', 'RECORD ID')
         cost_price_col = svc_stock_header_index(stock_headers_upper, 'COST PRICE', 'COST', 'BUYING PRICE')
         sold_by_text = str(sold_by or '').strip()
@@ -4277,6 +4695,10 @@ class BackendRuntime:
             normalized = str(value or '').strip().upper().replace('-', ' ').replace('_', ' ')
             if normalized in {'WAYBILL', 'WAY BILL'}:
                 return 'WAYBILL'
+            if normalized in {'IN OFFICE', 'INOFFICE', 'OFFICE', 'IN-OFFICE'}:
+                return 'IN OFFICE'
+            if normalized in {'OFF OFFICE', 'OFFOFFICE', 'OFF SITE', 'OUTSIDE OFFICE', 'OFF-OFFICE'}:
+                return 'OFF OFFICE'
             if normalized in {'WALK IN PICKUP', 'WALK IN', 'PICKUP', 'WALK-IN PICKUP', ''}:
                 return 'WALK-IN PICKUP'
             return normalized
@@ -4287,9 +4709,49 @@ class BackendRuntime:
                 return 'REPRESENTATIVE'
             return 'BUYER' if normalized in {'', 'BUYER', 'SELF', 'CAME HIMSELF'} else normalized
 
-        def _parse_swap_devices(raw_text):
+        def _extract_device_field(values_by_header, aliases):
+            normalized = {
+                ''.join(str(key or '').strip().upper().replace('_', ' ').replace('-', ' ').split()): value
+                for key, value in dict(values_by_header or {}).items()
+            }
+            for alias in aliases:
+                alias_key = ''.join(str(alias or '').strip().upper().replace('_', ' ').replace('-', ' ').split())
+                if alias_key in normalized:
+                    return normalized.get(alias_key)
+            return ''
+
+        def _parse_swap_devices(raw_payload):
             parsed = []
-            for raw_line in str(raw_text or '').splitlines():
+            if isinstance(raw_payload, list):
+                for entry in raw_payload:
+                    if not isinstance(entry, dict):
+                        continue
+                    values_by_header = dict(entry.get('values_by_header') or {})
+                    device_description = str(
+                        _extract_device_field(values_by_header, ['DESCRIPTION', 'MODEL', 'DEVICE'])
+                        or entry.get('description')
+                        or ''
+                    ).strip()
+                    device_imei = str(
+                        _extract_device_field(values_by_header, ['IMEI'])
+                        or entry.get('imei')
+                        or ''
+                    ).strip()
+                    device_value_raw = _extract_device_field(values_by_header, ['COST PRICE', 'COST', 'BUYING PRICE'])
+                    if str(device_value_raw or '').strip() == '':
+                        device_value_raw = entry.get('value')
+                    device_value = clean_amount(device_value_raw)
+                    if not device_description and not device_imei:
+                        continue
+                    parsed.append({
+                        'description': device_description,
+                        'imei': device_imei,
+                        'value': device_value,
+                        'values_by_header': values_by_header,
+                    })
+                return parsed
+
+            for raw_line in str(raw_payload or '').splitlines():
                 line = str(raw_line or '').strip()
                 if not line:
                     continue
@@ -4303,6 +4765,7 @@ class BackendRuntime:
                     'description': device_description,
                     'imei': device_imei,
                     'value': device_value,
+                    'values_by_header': {},
                 })
             return parsed
 
@@ -4314,6 +4777,8 @@ class BackendRuntime:
             stock_row = list(stock_values[row_num - 1])
             padded_stock_row = stock_row + [''] * max(0, len(stock_headers) - len(stock_row))
             description = padded_stock_row[description_col] if description_col is not None and description_col < len(padded_stock_row) else ''
+            sold_color = str(padded_stock_row[color_col] if color_col is not None and color_col < len(padded_stock_row) else '').strip()
+            sold_storage = str(padded_stock_row[storage_col] if storage_col is not None and storage_col < len(padded_stock_row) else '').strip()
             imei = padded_stock_row[imei_col] if imei_col is not None and imei_col < len(padded_stock_row) else ''
             cost_price_at_sale = clean_amount(
                 padded_stock_row[cost_price_col]
@@ -4334,6 +4799,8 @@ class BackendRuntime:
             pickup_mode = _normalize_pickup_mode(item.get('pickup_mode'))
             representative_name = str(item.get('representative_name') or '').strip().upper()
             representative_phone = normalize_phone_number(item.get('representative_phone') or '')
+            deal_location = str(item.get('deal_location') or '').strip()
+            internal_note = str(item.get('internal_note') or '').strip()
             is_swap = bool(item.get('is_swap'))
             swap_type = str(item.get('swap_type') or '').strip().upper()
             swap_cash_amount = clean_amount(item.get('swap_cash_amount'))
@@ -4347,25 +4814,43 @@ class BackendRuntime:
                 return {'error': f'Stock row {row_num} is missing a description.'}
             if pickup_mode == 'REPRESENTATIVE' and (not representative_name or not representative_phone):
                 return {'error': f'Representative name and phone are required for stock row {row_num} when pickup mode is REPRESENTATIVE.'}
+            if fulfillment_method == 'OFF OFFICE' and not deal_location:
+                return {'error': f'Deal location is required for stock row {row_num} when fulfillment method is OFF OFFICE.'}
             if is_swap:
                 if swap_type not in {'UPGRADE', 'DOWNGRADE'}:
                     return {'error': f'Swap type must be UPGRADE or DOWNGRADE for stock row {row_num}.'}
                 if not swap_devices:
                     return {'error': f'Add at least one incoming swap device for stock row {row_num}.'}
+                invalid_incoming = next((device for device in swap_devices if not str(device.get('description') or '').strip() or not str(device.get('imei') or '').strip()), None)
+                if invalid_incoming is not None:
+                    return {'error': f'Each incoming swap device must include description and IMEI for stock row {row_num}.'}
 
             swap_summary = ''
             if is_swap:
                 swap_sources = []
+
+                def _device_with_details(base_description, device_data):
+                    values_by_header = dict(device_data.get('values_by_header') or {})
+                    device_color = str(_extract_device_field(values_by_header, ['COLOUR', 'COLOR']) or '').strip()
+                    device_storage = str(_extract_device_field(values_by_header, ['STORAGE']) or '').strip()
+                    device_imei = str(device_data.get('imei') or '').strip()
+                    return [
+                        str(base_description or '').strip(),
+                        device_color,
+                        device_storage,
+                        f'IMEI {device_imei}' if device_imei else '',
+                    ]
+
                 for swap_device in swap_devices:
                     src_desc = str(swap_device.get('description') or 'PHONE').strip()
-                    src_imei = str(swap_device.get('imei') or '').strip()
-                    if src_imei:
-                        swap_sources.append(f'{src_desc} (IMEI: {src_imei})')
-                    else:
-                        swap_sources.append(src_desc)
-                sold_ref = str(description or '').strip()
-                sold_imei = str(imei or '').strip()
-                sold_target = f'{sold_ref} (IMEI: {sold_imei})' if sold_imei else sold_ref
+                    swap_sources.append(' | '.join(part for part in _device_with_details(src_desc, swap_device) if part))
+
+                sold_target = ' | '.join(part for part in [
+                    str(description or '').strip(),
+                    sold_color,
+                    sold_storage,
+                    f'IMEI {str(imei or '').strip()}' if str(imei or '').strip() else '',
+                ] if part)
                 swap_summary = f'{swap_type} | Swapped from {" + ".join(swap_sources)} to {sold_target}'
                 if swap_cash_amount > 0:
                     cash_direction = 'Customer Added Cash' if swap_type == 'UPGRADE' else 'Cash Returned To Customer'
@@ -4430,6 +4915,10 @@ class BackendRuntime:
                 stock_cell_updates.append({'col': stock_swap_detail_col + 1, 'value': '' if inventory_status == 'RETURNED' else swap_summary})
             if stock_swap_cash_col is not None:
                 stock_cell_updates.append({'col': stock_swap_cash_col + 1, 'value': '' if inventory_status == 'RETURNED' else (swap_cash_amount if swap_cash_amount > 0 else '')})
+            if stock_deal_location_col is not None:
+                stock_cell_updates.append({'col': stock_deal_location_col + 1, 'value': '' if inventory_status == 'RETURNED' else deal_location})
+            if stock_internal_note_col is not None:
+                stock_cell_updates.append({'col': stock_internal_note_col + 1, 'value': '' if inventory_status == 'RETURNED' else internal_note})
             if availability_col is not None:
                 stock_cell_updates.append({'col': availability_col + 1, 'value': availability_value})
             if product_status_col is not None:
@@ -4566,6 +5055,10 @@ class BackendRuntime:
                     existing_extra_updates.append((main_swap_detail_col + 1, swap_summary))
                 if main_swap_cash_col is not None:
                     existing_extra_updates.append((main_swap_cash_col + 1, swap_cash_amount if swap_cash_amount > 0 else ''))
+                if main_deal_location_col is not None:
+                    existing_extra_updates.append((main_deal_location_col + 1, deal_location))
+                if main_internal_note_col is not None:
+                    existing_extra_updates.append((main_internal_note_col + 1, internal_note))
 
                 for col_number, value in existing_extra_updates:
                     queue_meta = self._enqueue_db_first_operation(
@@ -4627,6 +5120,8 @@ class BackendRuntime:
                     'SWAP TYPE': swap_type if is_swap else '',
                     'SWAP DETAIL': swap_summary,
                     'SWAP CASH AMOUNT': swap_cash_amount if swap_cash_amount > 0 else '',
+                    'DEAL LOCATION': deal_location,
+                    'INTERNAL NOTE': internal_note,
                     'RECORD_ID': record_id,
                     'SUN S/N': str(next_sun_serial),
                 }
@@ -4680,23 +5175,24 @@ class BackendRuntime:
                     incoming_desc = str(swap_device.get('description') or '').strip()
                     incoming_imei = str(swap_device.get('imei') or '').strip()
                     incoming_value = clean_amount(swap_device.get('value'))
-                    incoming_summary = f'Swapped from {incoming_desc or "PHONE"} ({incoming_imei or "NO IMEI"}) to {str(description or "").strip()} ({str(imei or "").strip() or "NO IMEI"})'
-                    incoming_values_by_header = {
-                        'DESCRIPTION': incoming_summary,
-                        'IMEI': incoming_imei,
-                        'PRODUCT STATUS': 'AVAILABLE',
-                        'AVAILABILITY/DATE SOLD': 'AVAILABLE',
-                        'NAME OF SELLER': buyer_name,
-                        'PHONE NUMBER OF SELLER': buyer_phone,
-                        'SWAP TYPE': swap_type,
-                        'SWAP DETAIL': swap_summary,
-                        'SWAP CASH AMOUNT': swap_cash_amount if swap_cash_amount > 0 else '',
-                        'COST PRICE': incoming_value if incoming_value > 0 else '',
-                    }
+                    incoming_values_by_header = dict(swap_device.get('values_by_header') or {})
+                    incoming_values_by_header.setdefault('DESCRIPTION', incoming_desc)
+                    incoming_values_by_header.setdefault('IMEI', incoming_imei)
+                    incoming_values_by_header.setdefault('PRODUCT STATUS', 'AVAILABLE')
+                    incoming_values_by_header.setdefault('AVAILABILITY/DATE SOLD', 'AVAILABLE')
+                    incoming_values_by_header.setdefault('DATE', today_text)
+                    incoming_values_by_header.setdefault('TIME', time_text)
+                    incoming_values_by_header.setdefault('NAME OF SELLER', buyer_name)
+                    incoming_values_by_header.setdefault('PHONE NUMBER OF SELLER', buyer_phone)
+                    incoming_values_by_header['SWAP TYPE'] = swap_type
+                    incoming_values_by_header['SWAP DETAIL'] = swap_summary
+                    incoming_values_by_header['SWAP CASH AMOUNT'] = swap_cash_amount if swap_cash_amount > 0 else ''
+                    if incoming_value > 0 and not str(incoming_values_by_header.get('COST PRICE') or '').strip():
+                        incoming_values_by_header['COST PRICE'] = incoming_value
                     if name_of_seller_col is not None:
-                        incoming_values_by_header['NAME OF SELLER'] = buyer_name
+                        incoming_values_by_header.setdefault('NAME OF SELLER', buyer_name)
                     if phone_of_seller_col is not None:
-                        incoming_values_by_header['PHONE NUMBER OF SELLER'] = buyer_phone
+                        incoming_values_by_header.setdefault('PHONE NUMBER OF SELLER', buyer_phone)
 
                     incoming_row_values, _ = build_stock_row_values(stock_headers, incoming_values_by_header)
                     queue_id = self._enqueue_db_first_operation(

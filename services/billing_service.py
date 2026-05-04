@@ -645,6 +645,8 @@ def build_services_today_rows(records, today=None):
             'price': price,
             'amount_paid': amount_paid,
             'balance': balance,
+            'deal_location': str(row.get('DEAL LOCATION') or '').strip(),
+            'internal_note': str(row.get('INTERNAL NOTE') or row.get('SERVICE NOTE') or row.get('NOTE') or row.get('NOTES') or '').strip(),
         })
 
     rows.sort(key=lambda entry: int(entry.get('row_num') or 0), reverse=True)
@@ -684,6 +686,8 @@ def search_services_by_name(records, query):
             'price': price,
             'amount_paid': amount_paid,
             'balance': balance,
+            'deal_location': str(row.get('DEAL LOCATION') or '').strip(),
+            'internal_note': str(row.get('INTERNAL NOTE') or row.get('SERVICE NOTE') or row.get('NOTE') or row.get('NOTES') or '').strip(),
         })
 
     rows.sort(key=lambda entry: int(entry.get('row_num') or 0), reverse=True)

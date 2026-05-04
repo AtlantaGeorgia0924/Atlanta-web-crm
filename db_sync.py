@@ -187,6 +187,20 @@ class PostgresSyncManager:
             value JSONB NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS stolen_devices (
+            id BIGSERIAL PRIMARY KEY,
+            phone_name TEXT NOT NULL DEFAULT '',
+            imei_raw TEXT NOT NULL,
+            imei_digits TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            cleared_at TIMESTAMPTZ,
+            cleared_note TEXT NOT NULL DEFAULT ''
+        );
+
         CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
         CREATE INDEX IF NOT EXISTS idx_expenses_created_by ON expenses(created_by);
         CREATE INDEX IF NOT EXISTS idx_sales_ledger_date ON sales_ledger(date);
@@ -198,6 +212,11 @@ class PostgresSyncManager:
         CREATE INDEX IF NOT EXISTS idx_returns_ledger_date ON returns_ledger(date);
         CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp);
         CREATE INDEX IF NOT EXISTS idx_audit_log_user_id ON audit_log(user_id);
+        CREATE INDEX IF NOT EXISTS idx_stolen_devices_imei_digits ON stolen_devices(imei_digits);
+        CREATE INDEX IF NOT EXISTS idx_stolen_devices_active ON stolen_devices(is_active);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_stolen_devices_imei_raw_active
+            ON stolen_devices(imei_raw)
+            WHERE is_active = TRUE;
         """
 
         with self._connect() as conn:

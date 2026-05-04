@@ -75,6 +75,18 @@ export function updateDebtorService({ nameInput, rowIdx, price = null, amountPai
   });
 }
 
+export function updateSalesTodayPayment({ rowNum, paymentStatus, amountPaid = null, forceRefresh = false }) {
+  return requestJson('/api/billing/services/payment-update', {
+    method: 'POST',
+    body: {
+      row_num: rowNum,
+      payment_status: paymentStatus,
+      amount_paid: amountPaid,
+      force_refresh: forceRefresh,
+    },
+  });
+}
+
 export function returnDebtorService({ nameInput, rowIdx, forceRefresh = false }) {
   return requestJson('/api/billing/services/return', {
     method: 'POST',
@@ -306,12 +318,52 @@ export function fetchStockForm({ forceRefresh = false, signal } = {}) {
   });
 }
 
-export function addStockRecord({ valuesByHeader, forceRefresh = false }) {
+export function addStockRecord({ valuesByHeader, forceRefresh = false, allowStolenWarningOverride = false }) {
   return requestJson('/api/stock/live/add', {
     method: 'POST',
     body: {
       values_by_header: valuesByHeader,
       force_refresh: forceRefresh,
+      allow_stolen_warning_override: allowStolenWarningOverride,
+    },
+  });
+}
+
+export function checkStolenDeviceImei({ imei }) {
+  return requestJson('/api/stock/live/stolen-devices/check', {
+    method: 'POST',
+    body: { imei },
+  });
+}
+
+export function fetchStolenDevices({ includeInactive = false, signal } = {}) {
+  return requestJson('/api/stock/live/stolen-devices', {
+    query: { include_inactive: includeInactive },
+    signal,
+  });
+}
+
+export function createStolenDevice({ phoneName = '', imeiRaw, note = '', source = '' }) {
+  return requestJson('/api/stock/live/stolen-devices', {
+    method: 'POST',
+    body: {
+      phone_name: phoneName,
+      imei_raw: imeiRaw,
+      note,
+      source,
+    },
+  });
+}
+
+export function updateStolenDevice({ recordId, phoneName = null, note = null, source = null, isActive = null, clearedNote = null }) {
+  return requestJson(`/api/stock/live/stolen-devices/${encodeURIComponent(recordId)}`, {
+    method: 'PATCH',
+    body: {
+      phone_name: phoneName,
+      note,
+      source,
+      is_active: isActive,
+      cleared_note: clearedNote,
     },
   });
 }

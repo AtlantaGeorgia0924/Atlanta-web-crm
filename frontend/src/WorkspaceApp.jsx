@@ -9,6 +9,7 @@ import {
   applyNameFix,
   applyPayment,
   createFoundationExpense,
+  createStolenDevice,
   deleteClient,
   fetchDashboardLogo,
   fetchClients,
@@ -18,6 +19,7 @@ import {
   fetchLiveBill,
   fetchNameFixes,
   fetchOutstandingItems,
+  fetchStolenDevices,
   fetchPaymentPlan,
   fetchServicesToday,
   searchServices,
@@ -31,9 +33,12 @@ import {
   pullNow,
   redoPayment,
   refreshWorkspace,
+  checkStolenDeviceImei,
   syncGoogleContacts,
   undoPayment,
   undoLastWeeklyAllowanceWithdrawal,
+  updateStolenDevice,
+  updateSalesTodayPayment,
   returnDebtorService,
   updateDebtorService,
   upsertClient,
@@ -139,6 +144,12 @@ const ACTION_ITEMS = [
     description: 'Inspect sync status, cache counts, and runtime health.',
   },
   {
+    key: 'stolen_devices',
+    type: 'view',
+    title: 'Stolen Devices',
+    description: 'Register flagged IMEIs and block risky stock additions.',
+  },
+  {
     key: 'users',
     type: 'view',
     title: 'User Management',
@@ -190,6 +201,10 @@ const VIEW_META = {
   settings: {
     title: 'Settings',
     description: 'Watch the sync runtime, queue state, and cache health.',
+  },
+  stolen_devices: {
+    title: 'Stolen Devices',
+    description: 'Admin-only IMEI registry for stolen devices and add-product screening.',
   },
   services_today: {
     title: 'Services Today',
@@ -635,6 +650,8 @@ function buildCartItemFromProductRow(row, headers) {
     pickup_mode: 'BUYER',
     representative_name: '',
     representative_phone: '',
+    deal_location: '',
+    internal_note: '',
     is_swap: false,
     swap_type: 'UPGRADE',
     swap_devices: '',
@@ -1807,16 +1824,72 @@ function ProductComposerModal({
   sellerPhoneOptions,
   currentTimeLabel,
   dropdownOptions,
+  onCheckStolenImei,
   onClose,
   onSubmitProduct,
   onResetProductForm,
 }) {
   const visibleHeaders = stockForm?.visible_headers || [];
   const [draftValues, setDraftValues] = useState({});
+  const [stolenImeiCheck, setStolenImeiCheck] = useState(null);
+  const [checkingStolenImei, setCheckingStolenImei] = useState(false);
+  const [allowStolenWarningOverride, setAllowStolenWarningOverride] = useState(false);
 
   useEffect(() => {
     setDraftValues(productFormValues || {});
   }, [productFormValues]);
+
+  const imeiDraftValue = getValueByHeaderAliases(draftValues, ['IMEI']);
+
+  useEffect(() => {
+    const imeiDigits = String(imeiDraftValue || '').replace(/\D/g, '');
+    setAllowStolenWarningOverride(false);
+
+    if (!imeiDigits) {
+      setStolenImeiCheck(null);
+      setCheckingStolenImei(false);
+      return undefined;
+    }
+
+    if (imeiDigits.length !== 15) {
+      setStolenImeiCheck(null);
+      setCheckingStolenImei(false);
+      return undefined;
+    }
+
+    let active = true;
+    const timerId = window.setTimeout(async () => {
+      setCheckingStolenImei(true);
+      try {
+        const result = await onCheckStolenImei?.(imeiDraftValue);
+        if (active) {
+          setStolenImeiCheck(result || null);
+        }
+      } catch (error) {
+        if (active) {
+          setStolenImeiCheck({
+            status: 'error',
+            message: error.message || 'Could not check the stolen-device registry right now.',
+            record: null,
+            can_override: false,
+          });
+        }
+      } finally {
+        if (active) {
+          setCheckingStolenImei(false);
+        }
+      }
+    }, 240);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timerId);
+    };
+  }, [imeiDraftValue, onCheckStolenImei]);
+
+  const canSubmitProduct = !isAddingProduct
+    && stolenImeiCheck?.status !== 'blocked'
+    && (stolenImeiCheck?.status !== 'warning' || allowStolenWarningOverride);
 
   function renderProductField(header) {
     const key = String(header || '').toUpperCase();
@@ -1980,7 +2053,37 @@ function ProductComposerModal({
         </div>
 
         {visibleHeaders.length ? (
-          <form className="form-stack" onSubmit={(event) => onSubmitProduct(event, draftValues)}>
+          <form className="form-stack" onSubmit={(event) => onSubmitProduct(event, draftValues, { allowStolenWarningOverride })}>
+            {checkingStolenImei ? (
+              <div className="notice compact">Checking stolen-device registry...</div>
+            ) : null}
+            {stolenImeiCheck?.status === 'blocked' ? (
+              <div className="notice notice-error">
+                {stolenImeiCheck.message}
+                {stolenImeiCheck.record?.imei_raw ? ` Saved as: ${stolenImeiCheck.record.imei_raw}.` : ''}
+              </div>
+            ) : null}
+            {stolenImeiCheck?.status === 'warning' ? (
+              <div className="notice" style={{ borderColor: '#c97a12', background: '#fff5df', color: '#6f4b00' }}>
+                <p style={{ margin: 0 }}>{stolenImeiCheck.message}</p>
+                <p style={{ margin: '8px 0 0' }}>
+                  Matched record: {stolenImeiCheck.record?.phone_name || 'Unknown phone'} | Saved IMEI: {stolenImeiCheck.record?.imei_raw || '—'}
+                </p>
+                <label className="field-block" style={{ marginTop: '10px' }}>
+                  <span className="field-label">Override Warning</span>
+                  <select
+                    value={allowStolenWarningOverride ? 'YES' : 'NO'}
+                    onChange={(event) => setAllowStolenWarningOverride(event.target.value === 'YES')}
+                  >
+                    <option value="NO">Do not override</option>
+                    <option value="YES">Override and allow add</option>
+                  </select>
+                </label>
+              </div>
+            ) : null}
+            {stolenImeiCheck?.status === 'error' ? (
+              <div className="notice notice-error">{stolenImeiCheck.message}</div>
+            ) : null}
             <div className="form-grid form-grid--modal">
               {visibleHeaders.map((header) => (
                 <label key={header} className="field-block">
@@ -1994,7 +2097,7 @@ function ProductComposerModal({
               <button type="button" className="secondary-button" onClick={onResetProductForm} disabled={isAddingProduct}>
                 Reset Form
               </button>
-              <button type="submit" className="primary-button" disabled={isAddingProduct}>
+              <button type="submit" className="primary-button" disabled={!canSubmitProduct}>
                 {isAddingProduct ? 'Adding Product...' : 'Add Product'}
               </button>
             </div>
@@ -3168,6 +3271,18 @@ function CartView({
                         </select>
                       </label>
 
+                      {String(item.fulfillment_method || '').toUpperCase() === 'OFF OFFICE' ? (
+                        <label className="field-block">
+                          <span className="field-label">Deal Location</span>
+                          <input
+                            type="text"
+                            value={item.deal_location || ''}
+                            onChange={(event) => onUpdateCartItem(item.stock_row_num, 'deal_location', event.target.value)}
+                            placeholder="Where was the deal done?"
+                          />
+                        </label>
+                      ) : null}
+
                       <label className="field-block">
                         <span className="field-label">Pickup By</span>
                         <select value={item.pickup_mode || 'BUYER'} onChange={(event) => onUpdateCartItem(item.stock_row_num, 'pickup_mode', event.target.value)}>
@@ -3362,13 +3477,38 @@ function CartView({
                 />
               </label>
 
+              <label className="field-block">
+                <span className="field-label">Fulfillment Method</span>
+                <select
+                  value={serviceDraft.fulfillment_method || 'WALK-IN PICKUP'}
+                  onChange={(event) => setServiceDraft((current) => ({ ...current, fulfillment_method: event.target.value, deal_location: event.target.value !== 'OFF OFFICE' ? '' : current.deal_location }))}
+                >
+                  <option value="WALK-IN PICKUP">Walk-in Pickup</option>
+                  <option value="WAYBILL">Waybill</option>
+                  <option value="IN OFFICE">In Office</option>
+                  <option value="OFF OFFICE">Off Office</option>
+                </select>
+              </label>
+
+              {String(serviceDraft.fulfillment_method || '').toUpperCase() === 'OFF OFFICE' ? (
+                <label className="field-block field-block--wide">
+                  <span className="field-label">Deal Location</span>
+                  <input
+                    type="text"
+                    value={serviceDraft.deal_location || ''}
+                    onChange={(event) => setServiceDraft((current) => ({ ...current, deal_location: event.target.value }))}
+                    placeholder="Where was the deal done?"
+                  />
+                </label>
+              ) : null}
+
               <label className="field-block field-block--wide">
-                <span className="field-label">Service Note</span>
+                <span className="field-label">Internal Note <span style={{fontWeight:'normal',fontSize:'0.85em'}}>(not included in bills)</span></span>
                 <input
                   type="text"
-                  value={serviceDraft.service_note || ''}
-                  onChange={(event) => setServiceDraft((current) => ({ ...current, service_note: event.target.value }))}
-                  placeholder="Optional note for this service"
+                  value={serviceDraft.internal_note || ''}
+                  onChange={(event) => setServiceDraft((current) => ({ ...current, internal_note: event.target.value }))}
+                  placeholder="Internal note — not sent to customer"
                 />
               </label>
 
@@ -3737,6 +3877,7 @@ function ProductsView({
           sellerPhoneByName={sellerPhoneByName}
           currentTimeLabel={currentTimeLabel}
           dropdownOptions={stockForm?.dropdown_options}
+          onCheckStolenImei={handleCheckStolenImei}
         />
       ) : null}
 
@@ -4472,11 +4613,14 @@ function FixView({ mismatches, selectedMismatch, correctName, setCorrectName, on
   );
 }
 
-function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesTodayBusy, onChangeDate, onLoadDate, onUpdateServiceEntry }) {
+function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesTodayBusy, onChangeDate, onLoadDate, onUpdateServiceEntry, onUpdateServicePayment }) {
   const items = servicesTodayData?.services || [];
   const [editingRowNum, setEditingRowNum] = useState(null);
   const [editingName, setEditingName] = useState('');
   const [savingRowNum, setSavingRowNum] = useState(null);
+  const [expandedRowNum, setExpandedRowNum] = useState(null);
+  const [paymentEdits, setPaymentEdits] = useState({});
+  const [savingPaymentRowNum, setSavingPaymentRowNum] = useState(null);
   const [searchMode, setSearchMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -4514,6 +4658,37 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
       cancelEdit();
     } finally {
       setSavingRowNum(null);
+    }
+  }
+
+  function toggleExpand(rowNum) {
+    setExpandedRowNum((prev) => (prev === rowNum ? null : rowNum));
+  }
+
+  function getPaymentEdit(entry) {
+    const rn = entry.row_num;
+    return paymentEdits[rn] || { status: entry.status || 'UNPAID', amountPaid: String(entry.amount_paid || '0') };
+  }
+
+  function setPaymentEdit(rowNum, key, value) {
+    setPaymentEdits((prev) => ({ ...prev, [rowNum]: { ...getPaymentEditByRowNum(prev, rowNum), [key]: value } }));
+  }
+
+  function getPaymentEditByRowNum(edits, rowNum) {
+    return edits[rowNum] || {};
+  }
+
+  async function savePaymentEdit(entry) {
+    const rn = Number(entry.row_num);
+    if (!rn) return;
+    const edit = paymentEdits[rn] || {};
+    const status = String(edit.status || entry.status || 'UNPAID').trim().toUpperCase();
+    const amountPaid = String(edit.amountPaid ?? entry.amount_paid ?? '0').trim();
+    setSavingPaymentRowNum(rn);
+    try {
+      await onUpdateServicePayment?.({ rowNum: rn, paymentStatus: status, amountPaid });
+    } finally {
+      setSavingPaymentRowNum(null);
     }
   }
 
@@ -4636,8 +4811,12 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
                 displayItems.map((entry) => {
                   const isEditing = Number(editingRowNum) === Number(entry.row_num);
                   const isSaving = Number(savingRowNum) === Number(entry.row_num);
+                  const isExpanded = Number(expandedRowNum) === Number(entry.row_num);
+                  const isSavingPayment = Number(savingPaymentRowNum) === Number(entry.row_num);
+                  const payEdit = getPaymentEdit(entry);
                   return (
-                  <tr key={`service-today-${entry.row_num}`}>
+                  <React.Fragment key={`service-today-${entry.row_num}`}>
+                  <tr>
                     <td className="row-number" data-label="Row">#{entry.row_num}</td>
                     <td data-label="Date">{entry.date || '—'}</td>
                     <td data-label="Time">{entry.time || '—'}</td>
@@ -4655,25 +4834,68 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
                     </td>
                     <td data-label="Description">{entry.description || '—'}</td>
                     <td data-label="IMEI">{entry.imei || '—'}</td>
-                    <td data-label="Status">{entry.status || '—'}</td>
+                    <td data-label="Status">
+                      <select
+                        value={payEdit.status}
+                        onChange={(e) => setPaymentEdit(entry.row_num, 'status', e.target.value)}
+                        disabled={isSavingPayment}
+                        style={{ maxWidth: '100px' }}
+                      >
+                        <option value="PAID">PAID</option>
+                        <option value="UNPAID">UNPAID</option>
+                        <option value="PART PAYMENT">PART PAYMENT</option>
+                      </select>
+                    </td>
                     <td className="amount-cell" data-label="Price">{formatCurrency(entry.price || 0)}</td>
-                    <td className="amount-cell" data-label="Amount Paid">{formatCurrency(entry.amount_paid || 0)}</td>
+                    <td className="amount-cell" data-label="Amount Paid">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={payEdit.amountPaid}
+                        onChange={(e) => setPaymentEdit(entry.row_num, 'amountPaid', e.target.value.replace(/[^0-9.]/g, ''))}
+                        disabled={isSavingPayment}
+                        style={{ width: '80px', textAlign: 'right' }}
+                      />
+                    </td>
                     <td className="amount-cell" data-label="Balance">{formatCurrency(entry.balance || 0)}</td>
                     <td className="row-actions-cell" data-label="Action">
-                      {isEditing ? (
-                        <div className="button-row button-row--end">
-                          <button type="button" className="table-action-button" onClick={cancelEdit} disabled={isSaving}>Cancel</button>
-                          <button type="button" className="table-action-button" onClick={() => saveEdit(entry)} disabled={isSaving || !String(editingName || '').trim()}>
-                            {isSaving ? 'Saving...' : 'Save'}
+                      <div className="button-row button-row--end" style={{ gap: '4px', flexWrap: 'wrap' }}>
+                        {isEditing ? (
+                          <>
+                            <button type="button" className="table-action-button" onClick={cancelEdit} disabled={isSaving}>Cancel</button>
+                            <button type="button" className="table-action-button" onClick={() => saveEdit(entry)} disabled={isSaving || !String(editingName || '').trim()}>
+                              {isSaving ? 'Saving...' : 'Save Name'}
+                            </button>
+                          </>
+                        ) : (
+                          <button type="button" className="table-action-button" onClick={() => beginEdit(entry)} disabled={savingRowNum !== null || (searchMode ? searchBusy : servicesTodayBusy)}>
+                            Edit Name
                           </button>
-                        </div>
-                      ) : (
-                        <button type="button" className="table-action-button" onClick={() => beginEdit(entry)} disabled={savingRowNum !== null || (searchMode ? searchBusy : servicesTodayBusy)}>
-                          Edit Customer
+                        )}
+                        <button type="button" className="table-action-button" onClick={() => savePaymentEdit(entry)} disabled={isSavingPayment || isSaving}>
+                          {isSavingPayment ? 'Saving...' : 'Save Payment'}
                         </button>
-                      )}
+                        <button type="button" className="table-action-button" onClick={() => toggleExpand(entry.row_num)}>
+                          {isExpanded ? 'Less' : 'More'}
+                        </button>
+                      </div>
                     </td>
                   </tr>
+                  {isExpanded ? (
+                    <tr>
+                      <td colSpan={11} style={{ background: 'var(--surface-2, #f8f9fa)', padding: '12px 16px' }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', fontSize: '0.9em' }}>
+                          <div><strong>Fulfillment Method:</strong> {entry.fulfillment_method || '—'}</div>
+                          <div><strong>Deal Location:</strong> {entry.deal_location || '—'}</div>
+                          <div><strong>Internal Note:</strong> {entry.internal_note || '—'}</div>
+                          <div><strong>Payment Method:</strong> {entry.payment_method || '—'}</div>
+                          <div><strong>Pickup Mode:</strong> {entry.pickup_mode || '—'}</div>
+                          {entry.representative_name ? <div><strong>Representative:</strong> {entry.representative_name} {entry.representative_phone ? `(${entry.representative_phone})` : ''}</div> : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                  </React.Fragment>
                 );
                 })
               ) : (
@@ -4684,6 +4906,99 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
                       : 'No services were recorded for this date.'}
                   </td>
                 </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  );
+}
+
+function StolenDevicesView({ data, busy, form, onFormChange, onLoad, onCreate, onToggleActive }) {
+  const items = data?.items || [];
+
+  React.useEffect(() => {
+    if (!data) {
+      onLoad?.();
+    }
+  }, []);
+
+  return (
+    <section className="workspace-stack">
+      <section className="content-panel content-panel--main content-panel--full">
+        <div className="panel-header">
+          <h3>Stolen Device Registry</h3>
+          <p>Manage the IMEI registry used to block sales of reported stolen devices.</p>
+        </div>
+
+        <div className="panel-toolbar">
+          <button type="button" className="primary-button" onClick={onLoad} disabled={busy}>
+            {busy ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
+
+        <form className="modal-form" onSubmit={onCreate} style={{ marginBottom: '20px' }}>
+          <h4 style={{ marginBottom: '10px' }}>Add Stolen Device</h4>
+          <div className="form-grid">
+            <label className="field-block">
+              <span className="field-label">Phone Name</span>
+              <input type="text" value={form?.phone_name || ''} onChange={(e) => onFormChange?.('phone_name', e.target.value)} placeholder="e.g. iPhone 14 Pro" required />
+            </label>
+            <label className="field-block">
+              <span className="field-label">IMEI</span>
+              <input type="text" value={form?.imei_raw || ''} onChange={(e) => onFormChange?.('imei_raw', e.target.value)} placeholder="IMEI number" required />
+            </label>
+            <label className="field-block">
+              <span className="field-label">Note</span>
+              <input type="text" value={form?.note || ''} onChange={(e) => onFormChange?.('note', e.target.value)} placeholder="Optional note" />
+            </label>
+            <label className="field-block">
+              <span className="field-label">Source</span>
+              <input type="text" value={form?.source || ''} onChange={(e) => onFormChange?.('source', e.target.value)} placeholder="Who reported this?" />
+            </label>
+          </div>
+          <div className="button-row" style={{ marginTop: '10px' }}>
+            <button type="submit" className="primary-button" disabled={busy}>
+              {busy ? 'Saving...' : 'Add to Registry'}
+            </button>
+          </div>
+        </form>
+
+        <div className="notice compact">Total records: {formatCount(items.length)}</div>
+
+        <div className="table-wrap table-wrap--mobile-cards">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Phone Name</th>
+                <th>IMEI</th>
+                <th>Status</th>
+                <th>Note</th>
+                <th>Source</th>
+                <th>Added</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length ? items.map((item) => (
+                <tr key={`stolen-${item.id}`} style={{ opacity: item.is_active ? 1 : 0.5 }}>
+                  <td data-label="ID">#{item.id}</td>
+                  <td data-label="Phone Name">{item.phone_name || '—'}</td>
+                  <td data-label="IMEI"><code>{item.imei_raw || '—'}</code></td>
+                  <td data-label="Status">{item.is_active ? 'Active' : 'Cleared'}</td>
+                  <td data-label="Note">{item.note || '—'}</td>
+                  <td data-label="Source">{item.source || '—'}</td>
+                  <td data-label="Added">{item.created_at ? new Date(item.created_at).toLocaleDateString() : '—'}</td>
+                  <td data-label="Action">
+                    <button type="button" className="table-action-button" onClick={() => onToggleActive?.(item)} disabled={busy}>
+                      {item.is_active ? 'Clear' : 'Reactivate'}
+                    </button>
+                  </td>
+                </tr>
+              )) : (
+                <tr><td colSpan={8} className="empty-state">No stolen device records found.</td></tr>
               )}
             </tbody>
           </table>
@@ -5054,6 +5369,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [sendingTodayBills, setSendingTodayBills] = useState(false);
   const [refreshingDebtorsSection, setRefreshingDebtorsSection] = useState(false);
   const [sendingBillNotificationKey, setSendingBillNotificationKey] = useState('');
+  const [stolenDevicesData, setStolenDevicesData] = useState({ items: [], count: 0 });
+  const [stolenDevicesBusy, setStolenDevicesBusy] = useState(false);
+  const [stolenDeviceForm, setStolenDeviceForm] = useState({ phone_name: '', imei_raw: '', note: '', source: '' });
 
   const [stockSearchText, setStockSearchText] = useState('');
   const deferredStockSearchText = useDeferredValue(stockSearchText);
@@ -5077,11 +5395,13 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     name: '',
     phone: '',
     description: '',
-    service_note: '',
+    internal_note: '',
+    deal_location: '',
     price: '',
     service_expense: '',
     amount_paid: '',
     payment_method: 'CASH',
+    fulfillment_method: 'WALK-IN PICKUP',
     pickup_mode: 'BUYER',
     representative_name: '',
     representative_phone: '',
@@ -5692,6 +6012,26 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
+  async function loadStolenDevices(includeInactive = true) {
+    if (!isAdmin) {
+      return;
+    }
+    setStolenDevicesBusy(true);
+    try {
+      const result = await fetchStolenDevices({ includeInactive });
+      setStolenDevicesData(result || { items: [], count: 0 });
+    } catch (error) {
+      setStatusText(error.message || 'Could not load stolen device registry.');
+    } finally {
+      setStolenDevicesBusy(false);
+    }
+  }
+
+  async function handleCheckStolenImei(imei) {
+    const result = await checkStolenDeviceImei({ imei });
+    return result;
+  }
+
   async function handleUpdateServicesTodayEntry({ rowNum, currentName, nextName }) {
     if (!rowNum || !currentName || !nextName) {
       return;
@@ -5716,6 +6056,72 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       throw error;
     } finally {
       setServicesTodayBusy(false);
+    }
+  }
+
+  async function handleUpdateServicesTodayPayment({ rowNum, paymentStatus, amountPaid }) {
+    if (!rowNum) {
+      return;
+    }
+    setServicesTodayBusy(true);
+    try {
+      await updateSalesTodayPayment({
+        rowNum,
+        paymentStatus,
+        amountPaid,
+        forceRefresh: true,
+      });
+      await loadServicesTodayForDate(servicesTodayDate, true);
+      await loadCoreWorkspace(true);
+      if (selectedDebtor) {
+        await loadSelectedDebtorDetails(selectedDebtor, true);
+      }
+      setStatusText(`Updated payment for sales row #${rowNum}.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not update payment for this sales row.');
+      throw error;
+    } finally {
+      setServicesTodayBusy(false);
+    }
+  }
+
+  async function handleCreateStolenDevice(event) {
+    event.preventDefault();
+    setStolenDevicesBusy(true);
+    try {
+      await createStolenDevice({
+        phoneName: stolenDeviceForm.phone_name,
+        imeiRaw: stolenDeviceForm.imei_raw,
+        note: stolenDeviceForm.note,
+        source: stolenDeviceForm.source,
+      });
+      setStolenDeviceForm({ phone_name: '', imei_raw: '', note: '', source: '' });
+      await loadStolenDevices(true);
+      setStatusText('Stolen device record added.');
+    } catch (error) {
+      setStatusText(error.message || 'Could not add stolen device record.');
+    } finally {
+      setStolenDevicesBusy(false);
+    }
+  }
+
+  async function handleToggleStolenDevice(record) {
+    if (!record?.id) {
+      return;
+    }
+    setStolenDevicesBusy(true);
+    try {
+      await updateStolenDevice({
+        recordId: record.id,
+        isActive: !Boolean(record.is_active),
+        clearedNote: !Boolean(record.is_active) ? '' : 'Cleared from registry',
+      });
+      await loadStolenDevices(true);
+      setStatusText(`Stolen device record ${record.is_active ? 'cleared' : 'reactivated'}.`);
+    } catch (error) {
+      setStatusText(error.message || 'Could not update stolen device record.');
+    } finally {
+      setStolenDevicesBusy(false);
     }
   }
 
@@ -6746,7 +7152,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
-  async function handleSubmitProduct(event, submittedValues = null) {
+  async function handleSubmitProduct(event, submittedValues = null, options = {}) {
     event.preventDefault();
     setIsAddingProduct(true);
     try {
@@ -6763,7 +7169,11 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       if (!nextValues['AVAILABILITY/DATE SOLD']) {
         nextValues['AVAILABILITY/DATE SOLD'] = 'AVAILABLE';
       }
-      await addStockRecord({ valuesByHeader: nextValues, forceRefresh: false });
+      await addStockRecord({
+        valuesByHeader: nextValues,
+        forceRefresh: false,
+        allowStolenWarningOverride: Boolean(options?.allowStolenWarningOverride),
+      });
       await loadStock(true);
       await loadStockForm(true, true);
       setIsProductComposerOpen(false);
@@ -6810,6 +7220,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       if (field === 'pickup_mode' && String(value || '').toUpperCase() !== 'REPRESENTATIVE') {
         nextItem.representative_name = '';
         nextItem.representative_phone = '';
+      }
+      if (field === 'fulfillment_method' && String(value || '').toUpperCase() !== 'OFF OFFICE') {
+        nextItem.deal_location = '';
       }
       if (field === 'representative_phone') {
         nextItem.representative_phone = extractPhoneFromSuggestionText(value);
@@ -7136,11 +7549,14 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     const name = String(serviceDraft.name || '').trim().toUpperCase();
     const phone = normalizeWhatsappPhone(serviceDraft.phone || '');
     const description = String(serviceDraft.description || '').trim();
+    const internalNote = String(serviceDraft.internal_note || '').trim();
+    const dealLocation = String(serviceDraft.deal_location || '').trim();
     const price = normalizeDigits(serviceDraft.price || '');
     const serviceExpense = normalizeDigits(serviceDraft.service_expense || '');
     let amountPaid = normalizeDigits(serviceDraft.amount_paid || '');
     let status = String(serviceDraft.status || 'UNPAID').trim().toUpperCase();
     const paymentMethod = String(serviceDraft.payment_method || 'CASH').trim().toUpperCase();
+    const fulfillmentMethod = String(serviceDraft.fulfillment_method || 'WALK-IN PICKUP').trim().toUpperCase();
     const pickupMode = String(serviceDraft.pickup_mode || 'BUYER').trim().toUpperCase();
     const representativeName = String(serviceDraft.representative_name || '').trim().toUpperCase();
     const representativePhone = normalizeWhatsappPhone(serviceDraft.representative_phone || '');
@@ -7157,6 +7573,10 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setStatusText('Enter a valid service price.');
       return;
     }
+    if (fulfillmentMethod === 'OFF OFFICE' && !dealLocation) {
+      setStatusText('Enter the deal location for off-office services.');
+      return;
+    }
     if (!amountPaid) {
       amountPaid = '0';
     }
@@ -7170,16 +7590,14 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
     setServiceBusy(true);
     try {
-      const serviceNote = String(serviceDraft.service_note || '').trim();
-      const fullDescription = serviceNote ? `${description} | NOTE: ${serviceNote}` : description;
-
       await addServiceRecord({
         valuesByHeader: {
           NAME: name,
           'PHONE NUMBER': phone,
-          DESCRIPTION: fullDescription,
-          NOTE: serviceNote,
-          NOTES: serviceNote,
+          DESCRIPTION: description,
+          'INTERNAL NOTE': internalNote,
+          'DEAL LOCATION': dealLocation,
+          'FULFILLMENT METHOD': fulfillmentMethod,
           PRICE: price,
           'SERVICE EXPENSE': serviceExpense || '0',
           'AMOUNT PAID': amountPaid,
@@ -7195,11 +7613,13 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         name: '',
         phone: '',
         description: '',
-        service_note: '',
+        internal_note: '',
+        deal_location: '',
         price: '',
         service_expense: '',
         amount_paid: '',
         payment_method: 'CASH',
+        fulfillment_method: 'WALK-IN PICKUP',
         pickup_mode: 'BUYER',
         representative_name: '',
         representative_phone: '',
@@ -7540,6 +7960,21 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           onChangeDate={setServicesTodayDate}
           onLoadDate={loadServicesTodayForDate}
           onUpdateServiceEntry={handleUpdateServicesTodayEntry}
+          onUpdateServicePayment={handleUpdateServicesTodayPayment}
+        />
+      );
+    }
+
+    if (activeView === 'stolen_devices') {
+      return (
+        <StolenDevicesView
+          data={stolenDevicesData}
+          busy={stolenDevicesBusy}
+          form={stolenDeviceForm}
+          onFormChange={(key, value) => setStolenDeviceForm((prev) => ({ ...prev, [key]: value }))}
+          onLoad={() => loadStolenDevices(true)}
+          onCreate={handleCreateStolenDevice}
+          onToggleActive={handleToggleStolenDevice}
         />
       );
     }

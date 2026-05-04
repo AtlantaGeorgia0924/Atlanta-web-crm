@@ -3,7 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.dependencies import get_current_user, get_runtime, require_staff
+from backend.dependencies import get_current_user, get_runtime, require_admin, require_staff
 from services.stock_service import (
     build_sale_status_update_values,
     build_stock_form_defaults,
@@ -222,6 +222,7 @@ class ClassifySeriesRequest(BaseModel):
 class StockLiveAddRequest(BaseModel):
     values_by_header: dict[str, Any] = Field(default_factory=dict)
     force_refresh: bool = False
+    allow_stolen_warning_override: bool = False
 
 
 class StockLiveUpdateRowRequest(BaseModel):
@@ -233,6 +234,25 @@ class StockLiveUpdateRowRequest(BaseModel):
 class StockLiveServiceAddRequest(BaseModel):
     values_by_header: dict[str, Any] = Field(default_factory=dict)
     force_refresh: bool = False
+
+
+class StolenDeviceCheckRequest(BaseModel):
+    imei: str = ''
+
+
+class StolenDeviceCreateRequest(BaseModel):
+    phone_name: str = ''
+    imei_raw: str
+    note: str = ''
+    source: str = ''
+
+
+class StolenDeviceUpdateRequest(BaseModel):
+    phone_name: str | None = None
+    note: str | None = None
+    source: str | None = None
+    is_active: bool | None = None
+    cleared_note: str | None = None
 
 
 class StockLiveReturnRequest(BaseModel):
@@ -277,7 +297,7 @@ class StockCartItem(BaseModel):
     representative_phone: str = ''
     is_swap: bool = False
     swap_type: str = ''
-    swap_devices: str = ''
+    swap_devices: Any = None
     swap_cash_amount: Any = None
     stock_status: str = 'sold'
     inventory_status: str = 'UNPAID'
@@ -432,10 +452,55 @@ def add_live_stock_record(payload: StockLiveAddRequest, runtime=Depends(get_runt
     if _is_staff_user(current_user):
         values_by_header = _strip_cost_price_from_values_by_header(values_by_header)
     try:
-        result = runtime.add_stock_record(values_by_header, force_refresh=payload.force_refresh)
+        result = runtime.add_stock_record_with_guard(
+            values_by_header,
+            force_refresh=payload.force_refresh,
+            allow_stolen_warning_override=payload.allow_stolen_warning_override,
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    if result.get('error'):
+        raise HTTPException(status_code=400, detail=result['error'])
+    return result
+
+
+@router.post('/live/stolen-devices/check')
+def check_stolen_device_imei(payload: StolenDeviceCheckRequest, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
+    return runtime.check_stolen_device_imei(payload.imei)
+
+
+@router.get('/live/stolen-devices', dependencies=[Depends(require_admin)])
+def list_stolen_devices(include_inactive: bool = False, runtime=Depends(get_runtime), current_user=Depends(require_admin)):
+    result = runtime.list_stolen_devices(include_inactive=include_inactive)
+    if result.get('error'):
+        raise HTTPException(status_code=503, detail=result['error'])
+    return result
+
+
+@router.post('/live/stolen-devices', dependencies=[Depends(require_admin)])
+def create_stolen_device(payload: StolenDeviceCreateRequest, runtime=Depends(get_runtime), current_user=Depends(require_admin)):
+    result = runtime.add_stolen_device(
+        phone_name=payload.phone_name,
+        imei_raw=payload.imei_raw,
+        note=payload.note,
+        source=payload.source,
+    )
+    if result.get('error'):
+        raise HTTPException(status_code=400, detail=result['error'])
+    return result
+
+
+@router.patch('/live/stolen-devices/{record_id}', dependencies=[Depends(require_admin)])
+def update_stolen_device(record_id: int, payload: StolenDeviceUpdateRequest, runtime=Depends(get_runtime), current_user=Depends(require_admin)):
+    result = runtime.update_stolen_device(
+        record_id=record_id,
+        phone_name=payload.phone_name,
+        note=payload.note,
+        source=payload.source,
+        is_active=payload.is_active,
+        cleared_note=payload.cleared_note,
+    )
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
     return result
