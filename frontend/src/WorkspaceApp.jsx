@@ -3503,7 +3503,7 @@ function CartView({
                     <th>Date</th>
                     <th>Sale Price</th>
                     <th>Amount Paid</th>
-                    <th>Amount Entry</th>
+                    <th>Details</th>
                     <th>Action</th>
                   </tr>
                 </thead>
@@ -3521,21 +3521,8 @@ function CartView({
                         <td data-label="Date">{row.date || getProductCellValue(row, headers, ['DATE', 'DATE BOUGHT', 'AVAILABILITY/DATE SOLD']) || '—'}</td>
                         <td data-label="Sale Price">{row.price || row.amount || '—'}</td>
                         <td data-label="Amount Paid">{row.amount_paid || row.inventory_amount_paid || '—'}</td>
-                        <td data-label="Amount Entry">
+                        <td data-label="Details">
                           <div className="inline-action-row">
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              value={draft.amount_paid}
-                              onChange={(event) => {
-                                const nextAmount = normalizeDigits(event.target.value);
-                                updatePendingDraft(rowKey, 'amount_paid', nextAmount);
-                              }}
-                              placeholder="Amount paid (optional)"
-                              disabled={rowBusy}
-                            />
-                          </div>
-                          <div className="inline-action-row" style={{ marginTop: '8px' }}>
                             <select
                               value={draft.payment_method || 'CASH'}
                               onChange={(event) => updatePendingDraft(rowKey, 'payment_method', event.target.value)}
@@ -3637,14 +3624,17 @@ function CartView({
                             <button
                               type="button"
                               className="primary-button"
-                              onClick={() => onUpdatePendingDealPayment(
-                                row,
-                                derivePendingStatusFromAmount(row, draft.amount_paid, draft.status),
-                                draft.amount_paid
-                              )}
+                              onClick={() => {
+                                const existingAmount = row.amount_paid || row.inventory_amount_paid || '';
+                                onUpdatePendingDealPayment(
+                                  row,
+                                  derivePendingStatusFromAmount(row, existingAmount, 'PAID'),
+                                  existingAmount
+                                );
+                              }}
                               disabled={rowBusy}
                             >
-                              {updatingPendingKey === rowKey ? 'Updating...' : 'Apply'}
+                              {updatingPendingKey === rowKey ? 'Updating...' : 'Mark Paid'}
                             </button>
                             <button
                               type="button"
@@ -3668,7 +3658,7 @@ function CartView({
                     );
                   }) : (
                     <tr>
-                      <td colSpan={9} className="empty-state">No pending deals matched the current filter.</td>
+                      <td colSpan={8} className="empty-state">No pending deals matched the current filter.</td>
                     </tr>
                   )}
                 </tbody>
