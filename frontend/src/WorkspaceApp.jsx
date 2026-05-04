@@ -4667,7 +4667,7 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
 
   function getPaymentEdit(entry) {
     const rn = entry.row_num;
-    return paymentEdits[rn] || { status: entry.status || 'UNPAID', amountPaid: String(entry.amount_paid || '0') };
+    return paymentEdits[rn] || { amountPaid: String(entry.amount_paid || '0') };
   }
 
   function setPaymentEdit(rowNum, key, value) {
@@ -4678,15 +4678,28 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
     return edits[rowNum] || {};
   }
 
+  function derivePaymentStatusFromAmount(priceValueRaw, amountPaidRaw) {
+    const normalizedAmount = String(amountPaidRaw ?? '').replace(/[^0-9.]/g, '');
+    const amountPaid = Number.parseFloat(normalizedAmount) || 0;
+    const priceValue = Number.parseFloat(String(priceValueRaw ?? '0')) || 0;
+    if (amountPaid <= 0) {
+      return 'UNPAID';
+    }
+    if (priceValue > 0 && amountPaid < priceValue) {
+      return 'PART PAYMENT';
+    }
+    return 'PAID';
+  }
+
   async function savePaymentEdit(entry) {
     const rn = Number(entry.row_num);
     if (!rn) return;
     const edit = paymentEdits[rn] || {};
-    const status = String(edit.status || entry.status || 'UNPAID').trim().toUpperCase();
     const amountPaid = String(edit.amountPaid ?? entry.amount_paid ?? '0').trim();
+    const paymentStatus = derivePaymentStatusFromAmount(entry.price, amountPaid);
     setSavingPaymentRowNum(rn);
     try {
-      await onUpdateServicePayment?.({ rowNum: rn, paymentStatus: status, amountPaid });
+      await onUpdateServicePayment?.({ rowNum: rn, paymentStatus, amountPaid });
     } finally {
       setSavingPaymentRowNum(null);
     }
@@ -4814,6 +4827,7 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
                   const isExpanded = Number(expandedRowNum) === Number(entry.row_num);
                   const isSavingPayment = Number(savingPaymentRowNum) === Number(entry.row_num);
                   const payEdit = getPaymentEdit(entry);
+                  const computedStatus = derivePaymentStatusFromAmount(entry.price, payEdit.amountPaid);
                   return (
                   <React.Fragment key={`service-today-${entry.row_num}`}>
                   <tr>
@@ -4834,18 +4848,7 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
                     </td>
                     <td data-label="Description">{entry.description || '—'}</td>
                     <td data-label="IMEI">{entry.imei || '—'}</td>
-                    <td data-label="Status">
-                      <select
-                        value={payEdit.status}
-                        onChange={(e) => setPaymentEdit(entry.row_num, 'status', e.target.value)}
-                        disabled={isSavingPayment}
-                        style={{ maxWidth: '100px' }}
-                      >
-                        <option value="PAID">PAID</option>
-                        <option value="UNPAID">UNPAID</option>
-                        <option value="PART PAYMENT">PART PAYMENT</option>
-                      </select>
-                    </td>
+                    <td data-label="Status">{computedStatus}</td>
                     <td className="amount-cell" data-label="Price">{formatCurrency(entry.price || 0)}</td>
                     <td className="amount-cell" data-label="Amount Paid">
                       <input
