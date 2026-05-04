@@ -6044,7 +6044,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     try {
       await updateDebtorService({
         nameInput: currentName,
-        rowIdx: rowNum,
+        rowIdx: rowNum - 1,
         newName: nextName,
         forceRefresh: true,
       });

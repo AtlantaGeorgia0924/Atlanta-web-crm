@@ -619,7 +619,7 @@ def build_services_today_rows(records, today=None):
     today = today or date.today()
     rows = []
 
-    for row_idx, row in enumerate(records or [], start=1):
+    for row_idx, row in enumerate(records or [], start=2):
         status_text = str(row.get('STATUS', '')).strip()
         if is_returned_status(status_text):
             continue
@@ -660,7 +660,7 @@ def search_services_by_name(records, query):
         return []
 
     rows = []
-    for row_idx, row in enumerate(records or [], start=1):
+    for row_idx, row in enumerate(records or [], start=2):
         status_text = str(row.get('STATUS', '')).strip()
         if is_returned_status(status_text):
             continue
