@@ -513,6 +513,34 @@ function buildProductFormValues(formConfig) {
   return values;
 }
 
+function normalizeHeaderName(value) {
+  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function getValueByHeaderAliases(valuesByHeader, aliases) {
+  if (!valuesByHeader || typeof valuesByHeader !== 'object') {
+    return '';
+  }
+
+  const normalizedEntries = Object.entries(valuesByHeader || {}).map(([key, value]) => [normalizeHeaderName(key), value]);
+  for (const alias of aliases || []) {
+    const normalizedAlias = normalizeHeaderName(alias);
+    const match = normalizedEntries.find(([key]) => key === normalizedAlias);
+    if (match) {
+      return String(match[1] || '').trim();
+    }
+  }
+  return '';
+}
+
+function formatSwapDeviceLabel(valuesByHeader) {
+  const description = getValueByHeaderAliases(valuesByHeader, ['DESCRIPTION', 'MODEL', 'DEVICE']) || 'Phone';
+  const color = getValueByHeaderAliases(valuesByHeader, ['COLOUR', 'COLOR']);
+  const storage = getValueByHeaderAliases(valuesByHeader, ['STORAGE']);
+  const imei = getValueByHeaderAliases(valuesByHeader, ['IMEI']);
+  return [description, color, storage, imei ? `IMEI ${imei}` : ''].filter(Boolean).join(' | ');
+}
+
 function buildClientsDataFromRegistry(registry) {
   const normalizedRegistry = {};
   const normalizedGenders = {};
@@ -610,6 +638,7 @@ function buildCartItemFromProductRow(row, headers) {
     is_swap: false,
     swap_type: 'UPGRADE',
     swap_devices: '',
+    swap_incoming_devices: [],
     swap_cash_amount: '',
     payment_status: 'UNPAID',
     availability_choice: 'AUTO',
@@ -2369,9 +2398,198 @@ function ProductSummaryTable({
   );
 }
 
+function SwapIncomingDevicesModal({
+  open,
+  cartItem,
+  stockForm,
+  sellerPhoneOptions,
+  currentTimeLabel,
+  onClose,
+  onSave,
+}) {
+  const visibleHeaders = stockForm?.visible_headers || [];
+  const [entries, setEntries] = useState([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  useEffect(() => {
+    if (!open || !cartItem) {
+      return;
+    }
+    const existingEntries = Array.isArray(cartItem.swap_incoming_devices) ? cartItem.swap_incoming_devices : [];
+    if (existingEntries.length) {
+      setEntries(existingEntries.map((entry) => ({ values_by_header: { ...(entry?.values_by_header || {}) } })));
+      setActiveIndex(0);
+      return;
+    }
+    setEntries([{ values_by_header: buildProductFormValues(stockForm) }]);
+    setActiveIndex(0);
+  }, [open, cartItem, stockForm]);
+
+  if (!open || !cartItem) {
+    return null;
+  }
+
+  const activeEntry = entries[activeIndex] || { values_by_header: {} };
+
+  function updateField(header, value) {
+    setEntries((current) => current.map((entry, index) => (
+      index === activeIndex
+        ? { ...entry, values_by_header: { ...(entry.values_by_header || {}), [header]: value } }
+        : entry
+    )));
+  }
+
+  function addEntry() {
+    setEntries((current) => {
+      const next = [...current, { values_by_header: buildProductFormValues(stockForm) }];
+      setActiveIndex(next.length - 1);
+      return next;
+    });
+  }
+
+  function removeEntry(indexToRemove) {
+    setEntries((current) => {
+      if (current.length <= 1) {
+        return current;
+      }
+      const next = current.filter((_, index) => index !== indexToRemove);
+      setActiveIndex((prev) => Math.max(0, Math.min(prev, next.length - 1)));
+      return next;
+    });
+  }
+
+  function handleSave() {
+    const cleaned = (entries || []).map((entry) => {
+      const values = {};
+      Object.entries(entry?.values_by_header || {}).forEach(([header, value]) => {
+        values[header] = String(value ?? '').trim();
+      });
+      return { values_by_header: values };
+    }).filter((entry) => {
+      const description = getValueByHeaderAliases(entry.values_by_header, ['DESCRIPTION', 'MODEL', 'DEVICE']);
+      const imei = getValueByHeaderAliases(entry.values_by_header, ['IMEI']);
+      return Boolean(description || imei);
+    });
+
+    onSave(cleaned);
+    onClose();
+  }
+
+  function renderField(header) {
+    const key = String(header || '').toUpperCase();
+    const value = activeEntry?.values_by_header?.[header] || '';
+
+    if (key === 'TIME') {
+      return (
+        <input
+          type="text"
+          value={value || currentTimeLabel}
+          onChange={(event) => updateField(header, event.target.value)}
+          placeholder="Auto time"
+        />
+      );
+    }
+
+    if (key === 'PHONE NUMBER OF SELLER') {
+      return (
+        <>
+          <input
+            type="text"
+            list="swap-seller-phone-options"
+            value={value}
+            onChange={(event) => updateField(header, extractPhoneFromSuggestionText(event.target.value))}
+            placeholder="Search Google/saved contact numbers"
+          />
+          <datalist id="swap-seller-phone-options">
+            {(sellerPhoneOptions || []).map((option) => (
+              <option key={option} value={option} />
+            ))}
+          </datalist>
+        </>
+      );
+    }
+
+    if (key === 'PRODUCT STATUS' || key === 'STOCK STATUS' || key === 'ITEM STATUS') {
+      return (
+        <select value={value || 'AVAILABLE'} onChange={(event) => updateField(header, event.target.value)}>
+          <option value="AVAILABLE">AVAILABLE</option>
+          <option value="SOLD">SOLD</option>
+        </select>
+      );
+    }
+
+    return (
+      <input
+        type="text"
+        value={value}
+        onChange={(event) => updateField(header, event.target.value)}
+      />
+    );
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <section className="modal-sheet" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-sheet__header">
+          <div className="panel-header">
+            <h3>Incoming Swap Devices</h3>
+            <p>Fill full stock details for each incoming swap phone. These entries will be stocked automatically at checkout.</p>
+          </div>
+          <button type="button" className="secondary-button" onClick={onClose}>Close</button>
+        </div>
+
+        <div className="panel-toolbar">
+          <div className="filter-tabs" role="tablist" aria-label="Incoming swap devices">
+            {entries.map((entry, index) => {
+              const label = formatSwapDeviceLabel(entry?.values_by_header || {});
+              return (
+                <button
+                  key={`incoming-device-${index}`}
+                  type="button"
+                  className={index === activeIndex ? 'filter-tab active' : 'filter-tab'}
+                  onClick={() => setActiveIndex(index)}
+                >
+                  {label || `Device ${index + 1}`}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="button-row button-row--end" style={{ margin: 0 }}>
+            <button type="button" className="secondary-button" onClick={addEntry}>Add Another</button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => removeEntry(activeIndex)}
+              disabled={entries.length <= 1}
+            >
+              Remove Current
+            </button>
+          </div>
+        </div>
+
+        <div className="form-grid form-grid--modal">
+          {visibleHeaders.map((header) => (
+            <label key={header} className="field-block">
+              <span className="field-label">{header}</span>
+              {renderField(header)}
+            </label>
+          ))}
+        </div>
+
+        <div className="button-row button-row--end">
+          <button type="button" className="secondary-button" onClick={onClose}>Cancel</button>
+          <button type="button" className="primary-button" onClick={handleSave}>Save Incoming Devices</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function CartView({
   stockView,
   stockViewRaw,
+  stockForm,
   productSearchText,
   setProductSearchText,
   filterMode,
@@ -2420,6 +2638,7 @@ function CartView({
   const [cartModalOpen, setCartModalOpen] = useState(false);
   const [serviceModalOpen, setServiceModalOpen] = useState(false);
   const [pendingModalOpen, setPendingModalOpen] = useState(false);
+  const [swapDeviceModalRowNum, setSwapDeviceModalRowNum] = useState(null);
   const [pendingSearchText, setPendingSearchText] = useState('');
   const [pendingPaymentDrafts, setPendingPaymentDrafts] = useState({});
 
@@ -2479,6 +2698,21 @@ function CartView({
         [field]: value,
       },
     }));
+  }
+
+  const activeSwapModalItem = (cartItems || []).find((item) => Number(item.stock_row_num) === Number(swapDeviceModalRowNum)) || null;
+
+  function saveIncomingSwapDevices(rowNum, devices) {
+    const incomingList = Array.isArray(devices) ? devices : [];
+    onUpdateCartItem(rowNum, 'swap_incoming_devices', incomingList);
+    onUpdateCartItem(
+      rowNum,
+      'swap_devices',
+      incomingList
+        .map((entry) => formatSwapDeviceLabel(entry?.values_by_header || {}))
+        .filter(Boolean)
+        .join('\n')
+    );
   }
 
   function isPaidPhoneMissingCost(item) {
@@ -2929,6 +3163,8 @@ function CartView({
                         <select value={item.fulfillment_method || 'WALK-IN PICKUP'} onChange={(event) => onUpdateCartItem(item.stock_row_num, 'fulfillment_method', event.target.value)}>
                           <option value="WALK-IN PICKUP">Walk-in Pickup</option>
                           <option value="WAYBILL">Waybill</option>
+                          <option value="IN OFFICE">In Office</option>
+                          <option value="OFF OFFICE">Off Office</option>
                         </select>
                       </label>
 
@@ -2994,15 +3230,23 @@ function CartView({
                             />
                           </label>
 
-                          <label className="field-block field-block--wide">
+                          <div className="field-block field-block--wide" style={{ alignSelf: 'stretch' }}>
                             <span className="field-label">Incoming Swap Device(s)</span>
-                            <textarea
-                              value={item.swap_devices || ''}
-                              onChange={(event) => onUpdateCartItem(item.stock_row_num, 'swap_devices', event.target.value)}
-                              rows={4}
-                              placeholder={'One device per line: Description | IMEI | Value(optional)\nExample: iPhone 11 128GB | 3567... | 210000'}
-                            />
-                          </label>
+                            <div className="button-row" style={{ marginTop: '8px' }}>
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() => setSwapDeviceModalRowNum(item.stock_row_num)}
+                              >
+                                Manage Incoming Swap Devices
+                              </button>
+                              <span className="metric-note">
+                                {Array.isArray(item.swap_incoming_devices) && item.swap_incoming_devices.length
+                                  ? `${item.swap_incoming_devices.length} device(s) configured`
+                                  : 'No incoming device configured yet'}
+                              </span>
+                            </div>
+                          </div>
                         </>
                       ) : null}
 
@@ -3307,6 +3551,8 @@ function CartView({
                             >
                               <option value="WALK-IN PICKUP">Walk-in</option>
                               <option value="WAYBILL">Waybill</option>
+                              <option value="IN OFFICE">In Office</option>
+                              <option value="OFF OFFICE">Off Office</option>
                             </select>
                           </div>
                           <div className="inline-action-row" style={{ marginTop: '8px' }}>
@@ -3431,6 +3677,21 @@ function CartView({
           </section>
         </div>
       ) : null}
+
+      <SwapIncomingDevicesModal
+        open={Boolean(activeSwapModalItem)}
+        cartItem={activeSwapModalItem}
+        stockForm={stockForm}
+        sellerPhoneOptions={sellerPhoneOptions}
+        currentTimeLabel={currentTimeLabel}
+        onClose={() => setSwapDeviceModalRowNum(null)}
+        onSave={(devices) => {
+          if (!activeSwapModalItem) {
+            return;
+          }
+          saveIncomingSwapDevices(activeSwapModalItem.stock_row_num, devices);
+        }}
+      />
     </div>
   );
 }
@@ -3619,7 +3880,9 @@ function DebtorsView({
   onSendWhatsapp,
   onRefreshTodayUnpaid,
   onSendTodayUnpaidCustomer,
+  onRefreshDebtorsSection,
   sendingTodayBills,
+  refreshingDebtorsSection,
   unpaidTodaySummary,
   whatsappHistoryByName,
   onApplyPayment,
@@ -3716,7 +3979,15 @@ function DebtorsView({
             <button type="button" className="primary-button" onClick={onSendWhatsapp} disabled={!selectedDebtor || detailLoading}>
               Send To WhatsApp
             </button>
-            <button type="button" className="secondary-button" onClick={onRefreshTodayUnpaid} disabled={sendingTodayBills}>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={onRefreshDebtorsSection}
+              disabled={refreshingDebtorsSection || sendingTodayBills}
+            >
+              {refreshingDebtorsSection ? 'Refreshing Debtors...' : 'Refresh Debtors Section'}
+            </button>
+            <button type="button" className="secondary-button" onClick={onRefreshTodayUnpaid} disabled={sendingTodayBills || refreshingDebtorsSection}>
               {sendingTodayBills ? 'Loading Today List...' : 'Refresh Today Unpaid List'}
             </button>
           </div>
@@ -4885,6 +5156,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [servicesTodayDate, setServicesTodayDate] = useState(formatDateForInput());
   const [servicesTodayBusy, setServicesTodayBusy] = useState(false);
   const [sendingTodayBills, setSendingTodayBills] = useState(false);
+  const [refreshingDebtorsSection, setRefreshingDebtorsSection] = useState(false);
   const [sendingBillNotificationKey, setSendingBillNotificationKey] = useState('');
 
   const [stockSearchText, setStockSearchText] = useState('');
@@ -6052,6 +6324,41 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
+  async function handleRefreshDebtorsSection() {
+    if (!isAdmin) {
+      setStatusText('Debtor section refresh is available for admin users only.');
+      return;
+    }
+
+    setRefreshingDebtorsSection(true);
+    try {
+      const [bootstrapResult, unpaidResult, whatsappResult] = await Promise.all([
+        fetchHomeBootstrap({ forceRefresh: true }),
+        fetchUnpaidTodayBills({ forceRefresh: true }),
+        fetchWhatsappHistory({ forceRefresh: true }),
+      ]);
+
+      if (bootstrapResult?.debtors) {
+        const nextDebtors = bootstrapResult.debtors;
+        setDebtorsData(nextDebtors);
+        const availableNames = (nextDebtors.sorted_debtors || []).map(([name]) => name);
+        const nextSelected = availableNames.includes(selectedDebtor) ? selectedDebtor : availableNames[0] || '';
+        startTransition(() => setSelectedDebtor(nextSelected));
+        if (nextSelected) {
+          await loadSelectedDebtorDetails(nextSelected, true);
+        }
+      }
+
+      setUnpaidTodaySummary(unpaidResult || { count: 0, with_phone_count: 0, customers: [] });
+      setWhatsappHistoryByName(whatsappResult?.by_name || {});
+      setStatusText('Debtors section refreshed.');
+    } catch (error) {
+      setStatusText(error.message || 'Could not refresh the debtors section.');
+    } finally {
+      setRefreshingDebtorsSection(false);
+    }
+  }
+
   async function handleSendTodayUnpaidCustomer(entry) {
     const name = String(entry?.name || '').trim().toUpperCase();
     if (!name) {
@@ -6611,6 +6918,11 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       if (field === 'representative_phone') {
         nextItem.representative_phone = extractPhoneFromSuggestionText(value);
       }
+      if (field === 'is_swap' && !value) {
+        nextItem.swap_incoming_devices = [];
+        nextItem.swap_devices = '';
+        nextItem.swap_cash_amount = '';
+      }
       if (field === 'sale_price' || field === 'amount_paid') {
         const saleValue = parseAmountLike(nextItem.sale_price);
         const paidValue = parseAmountLike(nextItem.amount_paid);
@@ -6861,10 +7173,20 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
     const invalidSwap = saleCartItems.find((item) => (
       item.is_swap
-      && (!String(item.swap_type || '').trim() || !String(item.swap_devices || '').trim())
+      && (
+        !String(item.swap_type || '').trim()
+        || !Array.isArray(item.swap_incoming_devices)
+        || !item.swap_incoming_devices.length
+        || item.swap_incoming_devices.some((device) => {
+          const valuesByHeader = device?.values_by_header || {};
+          const description = getValueByHeaderAliases(valuesByHeader, ['DESCRIPTION', 'MODEL', 'DEVICE']);
+          const imei = getValueByHeaderAliases(valuesByHeader, ['IMEI']);
+          return !description || !imei;
+        })
+      )
     ));
     if (invalidSwap) {
-      setStatusText(`Add swap type and incoming swap device details for cart row #${invalidSwap.stock_row_num}.`);
+      setStatusText(`Add swap type and full incoming device details (including IMEI) for cart row #${invalidSwap.stock_row_num}.`);
       return;
     }
 
@@ -6896,7 +7218,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           representative_phone: item.representative_phone,
           is_swap: Boolean(item.is_swap),
           swap_type: item.swap_type,
-          swap_devices: item.swap_devices,
+          swap_devices: item.swap_incoming_devices,
           swap_cash_amount: item.swap_cash_amount,
           stock_status: item.payment_status === 'PAID' ? 'Sold' : 'Pending Deal',
           inventory_status: item.payment_status,
@@ -7188,6 +7510,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         <CartView
           stockView={stockViewForDisplay}
           stockViewRaw={stockView}
+          stockForm={stockForm}
           productSearchText={stockSearchText}
           setProductSearchText={setStockSearchText}
           filterMode={cartFilterMode}
@@ -7299,7 +7622,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           onSendWhatsapp={handleSendWhatsapp}
           onRefreshTodayUnpaid={handleRefreshTodayUnpaidList}
           onSendTodayUnpaidCustomer={handleSendTodayUnpaidCustomer}
+          onRefreshDebtorsSection={handleRefreshDebtorsSection}
           sendingTodayBills={sendingTodayBills}
+          refreshingDebtorsSection={refreshingDebtorsSection}
           unpaidTodaySummary={unpaidTodaySummary}
           whatsappHistoryByName={whatsappHistoryByName}
           onApplyPayment={handleApplyPayment}
