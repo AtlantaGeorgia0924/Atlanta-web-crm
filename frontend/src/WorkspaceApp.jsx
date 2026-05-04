@@ -3503,7 +3503,7 @@ function CartView({
                     <th>Date</th>
                     <th>Sale Price</th>
                     <th>Amount Paid</th>
-                    <th>Details</th>
+                    <th>Amount Entry</th>
                     <th>Action</th>
                   </tr>
                 </thead>
@@ -3521,128 +3521,34 @@ function CartView({
                         <td data-label="Date">{row.date || getProductCellValue(row, headers, ['DATE', 'DATE BOUGHT', 'AVAILABILITY/DATE SOLD']) || '—'}</td>
                         <td data-label="Sale Price">{row.price || row.amount || '—'}</td>
                         <td data-label="Amount Paid">{row.amount_paid || row.inventory_amount_paid || '—'}</td>
-                        <td data-label="Details">
+                        <td data-label="Amount Entry">
                           <div className="inline-action-row">
-                            <select
-                              value={draft.payment_method || 'CASH'}
-                              onChange={(event) => updatePendingDraft(rowKey, 'payment_method', event.target.value)}
-                              disabled={rowBusy}
-                            >
-                              <option value="CASH">Cash</option>
-                              <option value="TRANSFER">Transfer</option>
-                            </select>
-                            <select
-                              value={draft.fulfillment_method || 'WALK-IN PICKUP'}
-                              onChange={(event) => updatePendingDraft(rowKey, 'fulfillment_method', event.target.value)}
-                              disabled={rowBusy}
-                            >
-                              <option value="WALK-IN PICKUP">Walk-in</option>
-                              <option value="WAYBILL">Waybill</option>
-                              <option value="IN OFFICE">In Office</option>
-                              <option value="OFF OFFICE">Off Office</option>
-                            </select>
-                          </div>
-                          <div className="inline-action-row" style={{ marginTop: '8px' }}>
-                            <select
-                              value={draft.pickup_mode || 'BUYER'}
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={draft.amount_paid}
                               onChange={(event) => {
-                                const nextMode = event.target.value;
-                                updatePendingDraft(rowKey, 'pickup_mode', nextMode);
-                                if (String(nextMode).toUpperCase() !== 'REPRESENTATIVE') {
-                                  updatePendingDraft(rowKey, 'representative_name', '');
-                                  updatePendingDraft(rowKey, 'representative_phone', '');
-                                }
+                                const nextAmount = normalizeDigits(event.target.value);
+                                updatePendingDraft(rowKey, 'amount_paid', nextAmount);
                               }}
+                              placeholder="Amount paid"
                               disabled={rowBusy}
-                            >
-                              <option value="BUYER">Buyer pickup</option>
-                              <option value="REPRESENTATIVE">Representative</option>
-                            </select>
-                            <select
-                              value={draft.is_swap ? 'YES' : 'NO'}
-                              onChange={(event) => updatePendingDraft(rowKey, 'is_swap', event.target.value === 'YES')}
-                              disabled={rowBusy}
-                            >
-                              <option value="NO">No swap</option>
-                              <option value="YES">Swap deal</option>
-                            </select>
+                            />
                           </div>
-                          {String(draft.pickup_mode || '').toUpperCase() === 'REPRESENTATIVE' ? (
-                            <div className="inline-action-row" style={{ marginTop: '8px' }}>
-                              <input
-                                type="text"
-                                value={draft.representative_name || ''}
-                                onChange={(event) => updatePendingDraft(rowKey, 'representative_name', event.target.value)}
-                                placeholder="Rep name"
-                                disabled={rowBusy}
-                              />
-                              <input
-                                type="text"
-                                inputMode="tel"
-                                value={draft.representative_phone || ''}
-                                onChange={(event) => updatePendingDraft(rowKey, 'representative_phone', event.target.value)}
-                                placeholder="Rep phone"
-                                disabled={rowBusy}
-                              />
-                            </div>
-                          ) : null}
-                          {draft.is_swap ? (
-                            <>
-                              <div className="inline-action-row" style={{ marginTop: '8px' }}>
-                                <select
-                                  value={draft.swap_type || 'UPGRADE'}
-                                  onChange={(event) => updatePendingDraft(rowKey, 'swap_type', event.target.value)}
-                                  disabled={rowBusy}
-                                >
-                                  <option value="UPGRADE">Upgrade</option>
-                                  <option value="DOWNGRADE">Downgrade</option>
-                                </select>
-                                <input
-                                  type="text"
-                                  inputMode="numeric"
-                                  value={draft.swap_cash_amount || ''}
-                                  onChange={(event) => updatePendingDraft(rowKey, 'swap_cash_amount', normalizeDigits(event.target.value))}
-                                  placeholder="Swap cash amount"
-                                  disabled={rowBusy}
-                                />
-                              </div>
-                              <div style={{ marginTop: '8px' }}>
-                                <textarea
-                                  value={draft.swap_devices || ''}
-                                  onChange={(event) => updatePendingDraft(rowKey, 'swap_devices', event.target.value)}
-                                  rows={2}
-                                  placeholder="Swap details"
-                                  disabled={rowBusy}
-                                  style={{ width: '100%' }}
-                                />
-                              </div>
-                            </>
-                          ) : null}
                         </td>
                         <td data-label="Action">
                           <div className="inline-action-row">
                             <button
                               type="button"
                               className="primary-button"
-                              onClick={() => {
-                                const existingAmount = row.amount_paid || row.inventory_amount_paid || '';
-                                onUpdatePendingDealPayment(
-                                  row,
-                                  derivePendingStatusFromAmount(row, existingAmount, 'PAID'),
-                                  existingAmount
-                                );
-                              }}
+                              onClick={() => onUpdatePendingDealPayment(
+                                row,
+                                derivePendingStatusFromAmount(row, draft.amount_paid, draft.status),
+                                draft.amount_paid
+                              )}
                               disabled={rowBusy}
                             >
-                              {updatingPendingKey === rowKey ? 'Updating...' : 'Mark Paid'}
-                            </button>
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() => onUpdatePendingDealMeta(row, draft)}
-                              disabled={rowBusy}
-                            >
-                              {updatingPendingMetaKey === rowKey ? 'Saving...' : 'Save Details'}
+                              {updatingPendingKey === rowKey ? 'Updating...' : 'Apply'}
                             </button>
                             <button
                               type="button"
