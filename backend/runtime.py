@@ -3995,10 +3995,50 @@ class BackendRuntime:
         buyer_name_col = svc_stock_header_index(headers_upper, 'NAME', 'CLIENT NAME', 'CUSTOMER NAME')
         buyer_phone_col = svc_stock_header_index(headers_upper, 'PHONE NUMBER', 'PHONE', 'PHONE NO')
         description_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'MODEL', 'DEVICE', 'DESC')
+        paid_col = svc_stock_header_index(headers_upper, 'AMOUNT PAID', 'AMOUNT PAID ')
+        price_col = svc_stock_header_index(headers_upper, 'PRICE')
 
         imei_value = str(row[imei_col] if imei_col is not None and imei_col < len(row) else '').strip()
+        buyer_name = str(row[buyer_name_col] if buyer_name_col is not None and buyer_name_col < len(row) else '').strip().upper()
+        current_paid = clean_amount(row[paid_col] if paid_col is not None and paid_col < len(row) else '')
+        price_value = clean_amount(row[price_col] if price_col is not None and price_col < len(row) else '')
+        target_amount = clean_amount(amount_paid if amount_paid is not None else current_paid)
+
+        if target_amount < 0:
+            return {'error': 'Amount paid cannot be negative.'}
+        if price_value > 0 and target_amount > price_value:
+            return {'error': f'Amount paid cannot be greater than sale price. Max allowed is NGN {price_value:,}.'}
+        if target_amount < current_paid:
+            return {'error': 'This action only applies additional payments. To reduce a recorded payment, use Undo or the debtor payment tools.'}
+        if target_amount == current_paid:
+            return {
+                'main_row_num': row_num,
+                'applied_payment_amount': 0,
+                'target_amount_paid': target_amount,
+                'message': f'No payment change for inventory row #{row_num}.',
+            }
+        if not buyer_name:
+            return {'error': f'Customer name is missing for inventory row #{row_num}.'}
+
+        payment_delta = target_amount - current_paid
+        apply_result = self.apply_payment(
+            buyer_name,
+            payment_delta,
+            manual_service_row_idx=row_num - 1,
+            force_refresh=force_refresh,
+        )
+        if apply_result.get('error'):
+            return apply_result
+
+        resolved_status = 'UNPAID'
+        if target_amount > 0:
+            resolved_status = 'PAID' if price_value > 0 and target_amount >= price_value else 'PART PAYMENT'
+
         if not imei_value:
-            return self.update_service_pending_payment(row_num, payment_status, amount_paid=amount_paid, force_refresh=force_refresh)
+            apply_result['main_row_num'] = row_num
+            apply_result['applied_payment_amount'] = payment_delta
+            apply_result['target_amount_paid'] = target_amount
+            return apply_result
 
         stock_values, stock_header_row_idx, stock_headers, stock_headers_upper, _, _ = self._ensure_stock_required_columns(force_refresh=force_refresh)
         stock_buyer_col = svc_stock_header_index(stock_headers_upper, 'NAME OF BUYER')
@@ -4006,7 +4046,6 @@ class BackendRuntime:
         stock_imei_col = svc_stock_header_index(stock_headers_upper, 'IMEI')
         stock_desc_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
 
-        buyer_name = str(row[buyer_name_col] if buyer_name_col is not None and buyer_name_col < len(row) else '').strip().upper()
         buyer_phone = normalize_phone_number(row[buyer_phone_col] if buyer_phone_col is not None and buyer_phone_col < len(row) else '')
         description_value = str(row[description_col] if description_col is not None and description_col < len(row) else '').strip().upper()
 
@@ -4033,10 +4072,13 @@ class BackendRuntime:
         if not matched_stock_row:
             return {'error': f'Could not find the linked stock row for inventory row #{row_num}.'}
 
-        result = self.update_pending_deal_payment(matched_stock_row, payment_status, amount_paid=amount_paid, force_refresh=force_refresh)
+        result = self.update_pending_deal_payment(matched_stock_row, resolved_status, amount_paid=target_amount, force_refresh=force_refresh)
         if result.get('error'):
             return result
         result['main_row_num'] = row_num
+        result['applied_payment_amount'] = payment_delta
+        result['target_amount_paid'] = target_amount
+        result['payment_apply'] = apply_result
         return result
 
     def update_stock_row(self, row_num, values_by_header, force_refresh=False):

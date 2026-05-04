@@ -6079,9 +6079,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       if (selectedDebtor) {
         await loadSelectedDebtorDetails(selectedDebtor, true);
       }
-      setStatusText(`Updated payment for sales row #${rowNum}.`);
+      setStatusText(`Applied payment for sales row #${rowNum}.`);
     } catch (error) {
-      setStatusText(error.message || 'Could not update payment for this sales row.');
+      setStatusText(error.message || 'Could not apply payment for this sales row.');
       throw error;
     } finally {
       setServicesTodayBusy(false);
@@ -7491,7 +7491,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         || !item.swap_incoming_devices.length
         || item.swap_incoming_devices.some((device) => {
           const valuesByHeader = device?.values_by_header || {};
-          const description = getValueByHeaderAliases(valuesByHeader, ['DESCRIPTION', 'MODEL', 'DEVICE']);
+                          {isSavingPayment ? 'Applying...' : 'Apply Payment'}
           const imei = getValueByHeaderAliases(valuesByHeader, ['IMEI']);
           return !description || !imei;
         })
