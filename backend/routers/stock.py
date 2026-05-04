@@ -247,6 +247,18 @@ class StockLivePendingPaymentUpdateRequest(BaseModel):
     force_refresh: bool = False
 
 
+class StockLivePendingMetaUpdateRequest(BaseModel):
+    row_num: int
+    values_by_header: dict[str, Any] = Field(default_factory=dict)
+    force_refresh: bool = False
+
+
+class StockLiveServiceMetaUpdateRequest(BaseModel):
+    row_num: int
+    values_by_header: dict[str, Any] = Field(default_factory=dict)
+    force_refresh: bool = False
+
+
 class StockLiveServicePendingRequest(BaseModel):
     force_refresh: bool = False
 
@@ -258,6 +270,15 @@ class StockCartItem(BaseModel):
     sale_price: Any = None
     amount_paid: Any = None
     phone_expense: Any = None
+    payment_method: str = ''
+    fulfillment_method: str = ''
+    pickup_mode: str = ''
+    representative_name: str = ''
+    representative_phone: str = ''
+    is_swap: bool = False
+    swap_type: str = ''
+    swap_devices: str = ''
+    swap_cash_amount: Any = None
     stock_status: str = 'sold'
     inventory_status: str = 'UNPAID'
     availability_value: str = ''
@@ -504,6 +525,41 @@ def update_live_pending_payment(payload: StockLivePendingPaymentUpdateRequest, r
             payload.row_num,
             payload.payment_status,
             amount_paid=payload.amount_paid,
+            force_refresh=payload.force_refresh,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if result.get('error'):
+        raise HTTPException(status_code=400, detail=result['error'])
+    return result
+
+
+@router.post('/live/pending/meta')
+def update_live_pending_meta(payload: StockLivePendingMetaUpdateRequest, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
+    values_by_header = payload.values_by_header
+    if _is_staff_user(current_user):
+        values_by_header = _strip_cost_price_from_values_by_header(values_by_header)
+    try:
+        result = runtime.update_stock_row(
+            payload.row_num,
+            values_by_header,
+            force_refresh=payload.force_refresh,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if result.get('error'):
+        raise HTTPException(status_code=400, detail=result['error'])
+    return result
+
+
+@router.post('/live/service/meta')
+def update_live_service_meta(payload: StockLiveServiceMetaUpdateRequest, runtime=Depends(get_runtime)):
+    try:
+        result = runtime.update_main_sheet_row_fields(
+            payload.row_num,
+            payload.values_by_header,
             force_refresh=payload.force_refresh,
         )
     except RuntimeError as exc:

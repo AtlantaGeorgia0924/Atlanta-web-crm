@@ -1,7 +1,7 @@
 import React, { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
 import { getApiLabel } from './api/http';
-import { addServiceRecord, checkoutSaleCart, fetchPendingServiceDeals, fetchStockDashboard, returnServiceDeal, returnStockItem, updatePendingDealPayment, updateServiceDealPayment, updateStockRow } from './api/stock';
+import { addServiceRecord, checkoutSaleCart, fetchPendingServiceDeals, fetchStockDashboard, returnServiceDeal, returnStockItem, updatePendingDealMeta, updatePendingDealPayment, updatePendingServiceMeta, updateServiceDealPayment, updateStockRow } from './api/stock';
 import { createUser, fetchUsers, updateUser } from './api/users';
 import {
   addStockRecord,
@@ -602,6 +602,15 @@ function buildCartItemFromProductRow(row, headers) {
     sale_price: '',
     amount_paid: '',
     phone_expense: '',
+    payment_method: 'CASH',
+    fulfillment_method: 'WALK-IN PICKUP',
+    pickup_mode: 'BUYER',
+    representative_name: '',
+    representative_phone: '',
+    is_swap: false,
+    swap_type: 'UPGRADE',
+    swap_devices: '',
+    swap_cash_amount: '',
     payment_status: 'UNPAID',
     availability_choice: 'AUTO',
     availability_custom: '',
@@ -2362,6 +2371,7 @@ function ProductSummaryTable({
 
 function CartView({
   stockView,
+  stockViewRaw,
   productSearchText,
   setProductSearchText,
   filterMode,
@@ -2390,8 +2400,10 @@ function CartView({
   pendingDealEntries,
   onReturnPendingDeal,
   onUpdatePendingDealPayment,
+  onUpdatePendingDealMeta,
   returningPendingKey,
   updatingPendingKey,
+  updatingPendingMetaKey,
   clientNameOptions,
   sellerPhoneOptions,
   contactAutofillOptions,
@@ -2421,9 +2433,22 @@ function CartView({
     const status = rawStatus === 'PAID' || rawStatus === 'PART PAYMENT' || rawStatus === 'UNPAID'
       ? rawStatus
       : 'UNPAID';
+    const paymentMethod = String(row?.payment_method || '').trim().toUpperCase();
+    const fulfillmentMethod = String(row?.fulfillment_method || '').trim().toUpperCase();
+    const pickupMode = String(row?.pickup_mode || '').trim().toUpperCase();
+    const swapType = String(row?.swap_type || '').trim().toUpperCase();
     return {
       status,
       amount_paid: String(row?.inventory_amount_paid || '').trim(),
+      payment_method: paymentMethod || 'CASH',
+      fulfillment_method: fulfillmentMethod || 'WALK-IN PICKUP',
+      pickup_mode: pickupMode || 'BUYER',
+      representative_name: String(row?.representative_name || '').trim(),
+      representative_phone: String(row?.representative_phone || '').trim(),
+      is_swap: Boolean(String(swapType || '').trim()),
+      swap_type: swapType || 'UPGRADE',
+      swap_devices: String(row?.swap_detail || '').trim(),
+      swap_cash_amount: normalizeDigits(String(row?.swap_cash_amount || '').trim()),
     };
   }
 
@@ -2442,6 +2467,15 @@ function CartView({
       [key]: {
         status: current[key]?.status || 'UNPAID',
         amount_paid: current[key]?.amount_paid || '',
+        payment_method: current[key]?.payment_method || 'CASH',
+        fulfillment_method: current[key]?.fulfillment_method || 'WALK-IN PICKUP',
+        pickup_mode: current[key]?.pickup_mode || 'BUYER',
+        representative_name: current[key]?.representative_name || '',
+        representative_phone: current[key]?.representative_phone || '',
+        is_swap: Boolean(current[key]?.is_swap),
+        swap_type: current[key]?.swap_type || 'UPGRADE',
+        swap_devices: current[key]?.swap_devices || '',
+        swap_cash_amount: current[key]?.swap_cash_amount || '',
         [field]: value,
       },
     }));
@@ -2501,11 +2535,69 @@ function CartView({
         row.buyer_phone,
         row.phone,
         row.imei,
+        row.payment_method,
+        row.fulfillment_method,
+        row.pickup_mode,
+        row.representative_name,
+        row.representative_phone,
+        row.swap_type,
+        row.swap_detail,
         row.row_num,
       ].map((value) => String(value || '')).join(' ');
       return normalizeSearchValue(haystack).includes(query);
     });
   }, [pendingDealEntries, pendingSearchText]);
+
+  const [swapHistoryTypeFilter, setSwapHistoryTypeFilter] = React.useState('ALL');
+  const [swapHistoryDateFrom, setSwapHistoryDateFrom] = React.useState('');
+  const [swapHistoryDateTo, setSwapHistoryDateTo] = React.useState('');
+
+  const swapHistoryEntries = useMemo(() => {
+    const sourceHeaders = stockViewRaw?.headers || headers;
+    const sourceRows = stockViewRaw?.all_rows_cache || rows;
+    const entries = (sourceRows || []).map((row) => {
+      const swapType = String(getProductCellValue(row, sourceHeaders, ['SWAP TYPE']) || '').trim().toUpperCase();
+      const swapDetail = String(getProductCellValue(row, sourceHeaders, ['SWAP DETAIL', 'SWAP DETAILS']) || '').trim();
+      const swapCash = String(getProductCellValue(row, sourceHeaders, ['SWAP CASH AMOUNT', 'SWAP CASH']) || '').trim();
+      if (!swapType && !swapDetail && !swapCash) {
+        return null;
+      }
+
+      return {
+        row_num: row.row_num,
+        status: String(row.label || '').trim() || '—',
+        date: getProductCellValue(row, sourceHeaders, ['AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE']) || '—',
+        buyer_name: getProductCellValue(row, sourceHeaders, ['NAME OF BUYER']) || '—',
+        description: getProductCellValue(row, sourceHeaders, ['DESCRIPTION', 'MODEL', 'DEVICE']) || '—',
+        imei: getProductCellValue(row, sourceHeaders, ['IMEI']) || '—',
+        swap_type: swapType || '—',
+        swap_detail: swapDetail || '—',
+        swap_cash: swapCash || '—',
+      };
+    }).filter(Boolean);
+
+    let filtered = entries.sort((left, right) => Number(right.row_num || 0) - Number(left.row_num || 0));
+
+    if (swapHistoryTypeFilter !== 'ALL') {
+      filtered = filtered.filter((e) => e.swap_type === swapHistoryTypeFilter);
+    }
+
+    if (swapHistoryDateFrom) {
+      filtered = filtered.filter((e) => {
+        const d = String(e.date || '');
+        return d >= swapHistoryDateFrom;
+      });
+    }
+
+    if (swapHistoryDateTo) {
+      filtered = filtered.filter((e) => {
+        const d = String(e.date || '');
+        return d <= swapHistoryDateTo;
+      });
+    }
+
+    return filtered.slice(0, 40);
+  }, [headers, rows, stockViewRaw?.all_rows_cache, stockViewRaw?.headers, swapHistoryTypeFilter, swapHistoryDateFrom, swapHistoryDateTo]);
 
   return (
     <div className="workspace-stack">
@@ -2567,6 +2659,91 @@ function CartView({
 
         <div className="page-nav-wrap">
           <PageNavigator page={currentPage} totalPages={totalPages} onChange={setCartPage} />
+        </div>
+      </section>
+
+      <section className="content-panel content-panel--main content-panel--full">
+        <div className="panel-header">
+          <h3>Swap History</h3>
+          <p>Live history of swap deals showing source-to-target details, IMEIs, and any cash adjustment.</p>
+        </div>
+
+        <div className="panel-toolbar">
+          <div className="filter-tabs" role="tablist" aria-label="Swap type filter">
+            {['ALL', 'UPGRADE', 'DOWNGRADE'].map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                className={swapHistoryTypeFilter === tab ? 'filter-tab active' : 'filter-tab'}
+                onClick={() => setSwapHistoryTypeFilter(tab)}
+              >
+                {tab === 'ALL' ? 'All' : tab.charAt(0) + tab.slice(1).toLowerCase()}
+              </button>
+            ))}
+          </div>
+
+          <div className="search-group" style={{ flexDirection: 'row', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <label style={{ whiteSpace: 'nowrap' }}>From:</label>
+            <input
+              type="date"
+              value={swapHistoryDateFrom}
+              onChange={(e) => setSwapHistoryDateFrom(e.target.value)}
+              style={{ width: 'auto' }}
+            />
+            <label style={{ whiteSpace: 'nowrap' }}>To:</label>
+            <input
+              type="date"
+              value={swapHistoryDateTo}
+              onChange={(e) => setSwapHistoryDateTo(e.target.value)}
+              style={{ width: 'auto' }}
+            />
+            {(swapHistoryDateFrom || swapHistoryDateTo) && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => { setSwapHistoryDateFrom(''); setSwapHistoryDateTo(''); }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="table-wrap table-wrap--mobile-cards">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Row</th>
+                <th>Status</th>
+                <th>Date</th>
+                <th>Buyer</th>
+                <th>Sold Device</th>
+                <th>IMEI</th>
+                <th>Swap Type</th>
+                <th>Swap Cash</th>
+                <th>Swap Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {swapHistoryEntries.length ? swapHistoryEntries.map((entry) => (
+                <tr key={`swap-history-${entry.row_num}`}>
+                  <td data-label="Row">#{entry.row_num}</td>
+                  <td data-label="Status">{entry.status}</td>
+                  <td data-label="Date">{entry.date}</td>
+                  <td data-label="Buyer">{entry.buyer_name}</td>
+                  <td data-label="Sold Device">{entry.description}</td>
+                  <td data-label="IMEI">{entry.imei}</td>
+                  <td data-label="Swap Type">{entry.swap_type}</td>
+                  <td data-label="Swap Cash">{entry.swap_cash}</td>
+                  <td data-label="Swap Detail">{entry.swap_detail}</td>
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan={9} className="empty-state">No swap history found yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -2739,6 +2916,96 @@ function CartView({
                         />
                       </label>
 
+                      <label className="field-block">
+                        <span className="field-label">Payment Method</span>
+                        <select value={item.payment_method || 'CASH'} onChange={(event) => onUpdateCartItem(item.stock_row_num, 'payment_method', event.target.value)}>
+                          <option value="CASH">Cash</option>
+                          <option value="TRANSFER">Transfer</option>
+                        </select>
+                      </label>
+
+                      <label className="field-block">
+                        <span className="field-label">Fulfillment Method</span>
+                        <select value={item.fulfillment_method || 'WALK-IN PICKUP'} onChange={(event) => onUpdateCartItem(item.stock_row_num, 'fulfillment_method', event.target.value)}>
+                          <option value="WALK-IN PICKUP">Walk-in Pickup</option>
+                          <option value="WAYBILL">Waybill</option>
+                        </select>
+                      </label>
+
+                      <label className="field-block">
+                        <span className="field-label">Pickup By</span>
+                        <select value={item.pickup_mode || 'BUYER'} onChange={(event) => onUpdateCartItem(item.stock_row_num, 'pickup_mode', event.target.value)}>
+                          <option value="BUYER">Buyer</option>
+                          <option value="REPRESENTATIVE">Representative</option>
+                        </select>
+                      </label>
+
+                      {String(item.pickup_mode || '').toUpperCase() === 'REPRESENTATIVE' ? (
+                        <>
+                          <label className="field-block">
+                            <span className="field-label">Representative Name</span>
+                            <input
+                              type="text"
+                              value={item.representative_name || ''}
+                              onChange={(event) => onUpdateCartItem(item.stock_row_num, 'representative_name', event.target.value)}
+                              placeholder="Person sent to pick up"
+                            />
+                          </label>
+
+                          <label className="field-block">
+                            <span className="field-label">Representative Phone</span>
+                            <input
+                              type="text"
+                              inputMode="tel"
+                              value={item.representative_phone || ''}
+                              onChange={(event) => onUpdateCartItem(item.stock_row_num, 'representative_phone', event.target.value)}
+                              placeholder="080..., 234..., +234..."
+                            />
+                          </label>
+                        </>
+                      ) : null}
+
+                      <label className="field-block field-block--wide">
+                        <span className="field-label">Swap Deal</span>
+                        <select value={item.is_swap ? 'YES' : 'NO'} onChange={(event) => onUpdateCartItem(item.stock_row_num, 'is_swap', event.target.value === 'YES')}>
+                          <option value="NO">No</option>
+                          <option value="YES">Yes</option>
+                        </select>
+                      </label>
+
+                      {item.is_swap ? (
+                        <>
+                          <label className="field-block">
+                            <span className="field-label">Swap Type</span>
+                            <select value={item.swap_type || 'UPGRADE'} onChange={(event) => onUpdateCartItem(item.stock_row_num, 'swap_type', event.target.value)}>
+                              <option value="UPGRADE">Upgrade</option>
+                              <option value="DOWNGRADE">Downgrade</option>
+                            </select>
+                          </label>
+
+                          <label className="field-block">
+                            <span className="field-label">Swap Cash Amount</span>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={item.swap_cash_amount || ''}
+                              onChange={(event) => onUpdateCartItem(item.stock_row_num, 'swap_cash_amount', normalizeDigits(event.target.value))}
+                              placeholder={item.swap_type === 'DOWNGRADE' ? 'Cash given to customer' : 'Cash added by customer'}
+                            />
+                          </label>
+
+                          <label className="field-block field-block--wide">
+                            <span className="field-label">Incoming Swap Device(s)</span>
+                            <textarea
+                              value={item.swap_devices || ''}
+                              onChange={(event) => onUpdateCartItem(item.stock_row_num, 'swap_devices', event.target.value)}
+                              rows={4}
+                              placeholder={'One device per line: Description | IMEI | Value(optional)\nExample: iPhone 11 128GB | 3567... | 210000'}
+                            />
+                          </label>
+                        </>
+                      ) : null}
+
                       <label className="field-block field-block--wide">
                         <span className="field-label">Payment Status (Auto)</span>
                         <input type="text" value={item.payment_status || 'UNPAID'} readOnly />
@@ -2895,6 +3162,55 @@ function CartView({
               </label>
 
               <label className="field-block">
+                <span className="field-label">Payment Method</span>
+                <select value={serviceDraft.payment_method || 'CASH'} onChange={(event) => setServiceDraft((current) => ({ ...current, payment_method: event.target.value }))}>
+                  <option value="CASH">Cash</option>
+                  <option value="TRANSFER">Transfer</option>
+                </select>
+              </label>
+
+              <label className="field-block">
+                <span className="field-label">Pickup By</span>
+                <select
+                  value={serviceDraft.pickup_mode || 'BUYER'}
+                  onChange={(event) => setServiceDraft((current) => ({
+                    ...current,
+                    pickup_mode: event.target.value,
+                    representative_name: event.target.value === 'REPRESENTATIVE' ? current.representative_name : '',
+                    representative_phone: event.target.value === 'REPRESENTATIVE' ? current.representative_phone : '',
+                  }))}
+                >
+                  <option value="BUYER">Buyer</option>
+                  <option value="REPRESENTATIVE">Representative</option>
+                </select>
+              </label>
+
+              {String(serviceDraft.pickup_mode || '').toUpperCase() === 'REPRESENTATIVE' ? (
+                <>
+                  <label className="field-block">
+                    <span className="field-label">Representative Name</span>
+                    <input
+                      type="text"
+                      value={serviceDraft.representative_name || ''}
+                      onChange={(event) => setServiceDraft((current) => ({ ...current, representative_name: event.target.value }))}
+                      placeholder="Person sent by customer"
+                    />
+                  </label>
+
+                  <label className="field-block">
+                    <span className="field-label">Representative Phone</span>
+                    <input
+                      type="text"
+                      inputMode="tel"
+                      value={serviceDraft.representative_phone || ''}
+                      onChange={(event) => setServiceDraft((current) => ({ ...current, representative_phone: extractPhoneFromSuggestionText(event.target.value) }))}
+                      placeholder="080..., 234..., +234..."
+                    />
+                  </label>
+                </>
+              ) : null}
+
+              <label className="field-block">
                 <span className="field-label">Status</span>
                 <select value={serviceDraft.status} onChange={(event) => setServiceDraft((current) => ({ ...current, status: event.target.value }))}>
                   <option value="UNPAID">UNPAID</option>
@@ -2951,7 +3267,7 @@ function CartView({
                   {filteredPendingDeals.length ? filteredPendingDeals.map((row) => {
                     const draft = getPendingDraft(row);
                     const rowKey = `${row.kind || 'stock'}-${row.row_num}`;
-                    const rowBusy = returningPendingKey === rowKey || updatingPendingKey === rowKey;
+                    const rowBusy = returningPendingKey === rowKey || updatingPendingKey === rowKey || updatingPendingMetaKey === rowKey;
                     return (
                       <tr key={`cart-pending-${rowKey}`}>
                         <td data-label="Type">{row.kind === 'service' ? 'Service' : 'Stock'}</td>
@@ -2975,6 +3291,100 @@ function CartView({
                               disabled={rowBusy}
                             />
                           </div>
+                          <div className="inline-action-row" style={{ marginTop: '8px' }}>
+                            <select
+                              value={draft.payment_method || 'CASH'}
+                              onChange={(event) => updatePendingDraft(rowKey, 'payment_method', event.target.value)}
+                              disabled={rowBusy}
+                            >
+                              <option value="CASH">Cash</option>
+                              <option value="TRANSFER">Transfer</option>
+                            </select>
+                            <select
+                              value={draft.fulfillment_method || 'WALK-IN PICKUP'}
+                              onChange={(event) => updatePendingDraft(rowKey, 'fulfillment_method', event.target.value)}
+                              disabled={rowBusy}
+                            >
+                              <option value="WALK-IN PICKUP">Walk-in</option>
+                              <option value="WAYBILL">Waybill</option>
+                            </select>
+                          </div>
+                          <div className="inline-action-row" style={{ marginTop: '8px' }}>
+                            <select
+                              value={draft.pickup_mode || 'BUYER'}
+                              onChange={(event) => {
+                                const nextMode = event.target.value;
+                                updatePendingDraft(rowKey, 'pickup_mode', nextMode);
+                                if (String(nextMode).toUpperCase() !== 'REPRESENTATIVE') {
+                                  updatePendingDraft(rowKey, 'representative_name', '');
+                                  updatePendingDraft(rowKey, 'representative_phone', '');
+                                }
+                              }}
+                              disabled={rowBusy}
+                            >
+                              <option value="BUYER">Buyer pickup</option>
+                              <option value="REPRESENTATIVE">Representative</option>
+                            </select>
+                            <select
+                              value={draft.is_swap ? 'YES' : 'NO'}
+                              onChange={(event) => updatePendingDraft(rowKey, 'is_swap', event.target.value === 'YES')}
+                              disabled={rowBusy}
+                            >
+                              <option value="NO">No swap</option>
+                              <option value="YES">Swap deal</option>
+                            </select>
+                          </div>
+                          {String(draft.pickup_mode || '').toUpperCase() === 'REPRESENTATIVE' ? (
+                            <div className="inline-action-row" style={{ marginTop: '8px' }}>
+                              <input
+                                type="text"
+                                value={draft.representative_name || ''}
+                                onChange={(event) => updatePendingDraft(rowKey, 'representative_name', event.target.value)}
+                                placeholder="Rep name"
+                                disabled={rowBusy}
+                              />
+                              <input
+                                type="text"
+                                inputMode="tel"
+                                value={draft.representative_phone || ''}
+                                onChange={(event) => updatePendingDraft(rowKey, 'representative_phone', event.target.value)}
+                                placeholder="Rep phone"
+                                disabled={rowBusy}
+                              />
+                            </div>
+                          ) : null}
+                          {draft.is_swap ? (
+                            <>
+                              <div className="inline-action-row" style={{ marginTop: '8px' }}>
+                                <select
+                                  value={draft.swap_type || 'UPGRADE'}
+                                  onChange={(event) => updatePendingDraft(rowKey, 'swap_type', event.target.value)}
+                                  disabled={rowBusy}
+                                >
+                                  <option value="UPGRADE">Upgrade</option>
+                                  <option value="DOWNGRADE">Downgrade</option>
+                                </select>
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={draft.swap_cash_amount || ''}
+                                  onChange={(event) => updatePendingDraft(rowKey, 'swap_cash_amount', normalizeDigits(event.target.value))}
+                                  placeholder="Swap cash amount"
+                                  disabled={rowBusy}
+                                />
+                              </div>
+                              <div style={{ marginTop: '8px' }}>
+                                <textarea
+                                  value={draft.swap_devices || ''}
+                                  onChange={(event) => updatePendingDraft(rowKey, 'swap_devices', event.target.value)}
+                                  rows={2}
+                                  placeholder="Swap details"
+                                  disabled={rowBusy}
+                                  style={{ width: '100%' }}
+                                />
+                              </div>
+                            </>
+                          ) : null}
                         </td>
                         <td data-label="Action">
                           <div className="inline-action-row">
@@ -2989,6 +3399,14 @@ function CartView({
                               disabled={rowBusy}
                             >
                               {updatingPendingKey === rowKey ? 'Updating...' : 'Apply'}
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => onUpdatePendingDealMeta(row, draft)}
+                              disabled={rowBusy}
+                            >
+                              {updatingPendingMetaKey === rowKey ? 'Saving...' : 'Save Details'}
                             </button>
                             <button
                               type="button"
@@ -4495,12 +4913,17 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     price: '',
     service_expense: '',
     amount_paid: '',
+    payment_method: 'CASH',
+    pickup_mode: 'BUYER',
+    representative_name: '',
+    representative_phone: '',
     status: 'UNPAID',
   });
   const [serviceBusy, setServiceBusy] = useState(false);
   const [servicePendingDeals, setServicePendingDeals] = useState({ items: [], count: 0 });
   const [returningPendingKey, setReturningPendingKey] = useState('');
   const [updatingPendingKey, setUpdatingPendingKey] = useState('');
+  const [updatingPendingMetaKey, setUpdatingPendingMetaKey] = useState('');
   const [currentTimeLabel, setCurrentTimeLabel] = useState(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
 
   const [clientsData, setClientsData] = useState({ entries: [], registry: {}, stats: {} });
@@ -4820,6 +5243,14 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       imei: getProductCellValue(row, stockView?.headers || [], ['IMEI']) || '',
       price: getProductCellValue(row, stockView?.headers || [], ['PRICE', 'AMOUNT SOLD', 'SELLING PRICE']) || '',
       amount_paid: getProductCellValue(row, stockView?.headers || [], ['AMOUNT PAID']) || '',
+      payment_method: getProductCellValue(row, stockView?.headers || [], ['PAYMENT METHOD']) || '',
+      fulfillment_method: getProductCellValue(row, stockView?.headers || [], ['FULFILLMENT METHOD', 'DELIVERY METHOD']) || '',
+      pickup_mode: getProductCellValue(row, stockView?.headers || [], ['PICKUP MODE', 'PICKUP TYPE']) || '',
+      representative_name: getProductCellValue(row, stockView?.headers || [], ['REPRESENTATIVE NAME', 'PICKUP REPRESENTATIVE NAME']) || '',
+      representative_phone: getProductCellValue(row, stockView?.headers || [], ['REPRESENTATIVE PHONE', 'PICKUP REPRESENTATIVE PHONE']) || '',
+      swap_type: getProductCellValue(row, stockView?.headers || [], ['SWAP TYPE']) || '',
+      swap_detail: getProductCellValue(row, stockView?.headers || [], ['SWAP DETAIL', 'SWAP DETAILS']) || '',
+      swap_cash_amount: getProductCellValue(row, stockView?.headers || [], ['SWAP CASH AMOUNT', 'SWAP CASH']) || '',
       inventory_status: row.inventory_status,
       inventory_amount_paid: row.inventory_amount_paid,
     }));
@@ -6173,6 +6604,13 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       }
 
       const nextItem = { ...item, [field]: value };
+      if (field === 'pickup_mode' && String(value || '').toUpperCase() !== 'REPRESENTATIVE') {
+        nextItem.representative_name = '';
+        nextItem.representative_phone = '';
+      }
+      if (field === 'representative_phone') {
+        nextItem.representative_phone = extractPhoneFromSuggestionText(value);
+      }
       if (field === 'sale_price' || field === 'amount_paid') {
         const saleValue = parseAmountLike(nextItem.sale_price);
         const paidValue = parseAmountLike(nextItem.amount_paid);
@@ -6323,6 +6761,64 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
+  async function handleUpdatePendingDealMeta(entry, draft) {
+    const pendingKey = `${entry?.kind || 'stock'}-${entry?.row_num || entry}`;
+    const pickupMode = String(draft?.pickup_mode || 'BUYER').trim().toUpperCase();
+    const representativeName = String(draft?.representative_name || '').trim();
+    const representativePhone = extractPhoneFromSuggestionText(draft?.representative_phone || '');
+    const isSwap = Boolean(draft?.is_swap);
+    const swapType = String(draft?.swap_type || '').trim().toUpperCase();
+    const swapDevices = String(draft?.swap_devices || '').trim();
+
+    if (pickupMode === 'REPRESENTATIVE' && (!representativeName || !representativePhone)) {
+      setStatusText('Representative name and phone are required when pickup mode is REPRESENTATIVE.');
+      return;
+    }
+    if (isSwap && (!swapType || !swapDevices)) {
+      setStatusText('Swap type and swap details are required for swap deals.');
+      return;
+    }
+
+    setUpdatingPendingMetaKey(pendingKey);
+    try {
+      const valuesByHeader = {
+        'PAYMENT METHOD': String(draft?.payment_method || 'CASH').trim().toUpperCase(),
+        'FULFILLMENT METHOD': String(draft?.fulfillment_method || 'WALK-IN PICKUP').trim().toUpperCase(),
+        'PICKUP MODE': pickupMode,
+        'REPRESENTATIVE NAME': representativeName ? representativeName.toUpperCase() : '',
+        'REPRESENTATIVE PHONE': representativePhone,
+        'SWAP TYPE': isSwap ? swapType : '',
+        'SWAP DETAIL': isSwap ? swapDevices : '',
+        'SWAP CASH AMOUNT': isSwap ? String(normalizeDigits(draft?.swap_cash_amount || '')) : '',
+      };
+
+      if (entry?.kind === 'service') {
+        await updatePendingServiceMeta({
+          rowNum: entry.row_num,
+          valuesByHeader,
+          forceRefresh: false,
+        });
+      } else {
+        await updatePendingDealMeta({
+          rowNum: entry.row_num || entry,
+          valuesByHeader,
+          forceRefresh: false,
+        });
+      }
+
+      await Promise.all([loadStock(true), loadCoreWorkspace(false)]);
+      setStatusText(
+        entry?.kind === 'service'
+          ? `Service pending row #${entry.row_num} details updated.`
+          : `Stock pending row #${entry?.row_num || entry} details updated.`
+      );
+    } catch (error) {
+      setStatusText(error.message || 'Could not update pending-deal details.');
+    } finally {
+      setUpdatingPendingMetaKey('');
+    }
+  }
+
   async function handleOpenProductComposer() {
     setIsProductComposerOpen(true);
     if (!googleContactsLoadAttempted) {
@@ -6354,6 +6850,24 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       return;
     }
 
+    const invalidRepresentative = saleCartItems.find((item) => (
+      String(item.pickup_mode || '').toUpperCase() === 'REPRESENTATIVE'
+      && (!String(item.representative_name || '').trim() || !String(item.representative_phone || '').trim())
+    ));
+    if (invalidRepresentative) {
+      setStatusText(`Add representative name and phone for cart row #${invalidRepresentative.stock_row_num}.`);
+      return;
+    }
+
+    const invalidSwap = saleCartItems.find((item) => (
+      item.is_swap
+      && (!String(item.swap_type || '').trim() || !String(item.swap_devices || '').trim())
+    ));
+    if (invalidSwap) {
+      setStatusText(`Add swap type and incoming swap device details for cart row #${invalidSwap.stock_row_num}.`);
+      return;
+    }
+
     setCartBusy(true);
     try {
       const result = await checkoutSaleCart({
@@ -6375,6 +6889,15 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           sale_price: item.sale_price,
           amount_paid: item.amount_paid,
           phone_expense: item.phone_expense,
+          payment_method: item.payment_method,
+          fulfillment_method: item.fulfillment_method,
+          pickup_mode: item.pickup_mode,
+          representative_name: item.representative_name,
+          representative_phone: item.representative_phone,
+          is_swap: Boolean(item.is_swap),
+          swap_type: item.swap_type,
+          swap_devices: item.swap_devices,
+          swap_cash_amount: item.swap_cash_amount,
           stock_status: item.payment_status === 'PAID' ? 'Sold' : 'Pending Deal',
           inventory_status: item.payment_status,
         })),
@@ -6399,6 +6922,10 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     const serviceExpense = normalizeDigits(serviceDraft.service_expense || '');
     let amountPaid = normalizeDigits(serviceDraft.amount_paid || '');
     let status = String(serviceDraft.status || 'UNPAID').trim().toUpperCase();
+    const paymentMethod = String(serviceDraft.payment_method || 'CASH').trim().toUpperCase();
+    const pickupMode = String(serviceDraft.pickup_mode || 'BUYER').trim().toUpperCase();
+    const representativeName = String(serviceDraft.representative_name || '').trim().toUpperCase();
+    const representativePhone = normalizeWhatsappPhone(serviceDraft.representative_phone || '');
 
     if (!name) {
       setStatusText('Enter a customer name for the service.');
@@ -6418,6 +6945,10 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     if (status !== 'PAID' && status !== 'UNPAID') {
       status = 'UNPAID';
     }
+    if (pickupMode === 'REPRESENTATIVE' && (!representativeName || !representativePhone)) {
+      setStatusText('Enter representative name and phone for this service pickup.');
+      return;
+    }
 
     setServiceBusy(true);
     try {
@@ -6435,10 +6966,27 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           'SERVICE EXPENSE': serviceExpense || '0',
           'AMOUNT PAID': amountPaid,
           STATUS: status,
+          'PAYMENT METHOD': paymentMethod,
+          'PICKUP MODE': pickupMode,
+          'REPRESENTATIVE NAME': representativeName,
+          'REPRESENTATIVE PHONE': representativePhone,
         },
         forceRefresh: true,
       });
-      setServiceDraft({ name: '', phone: '', description: '', service_note: '', price: '', service_expense: '', amount_paid: '', status: 'UNPAID' });
+      setServiceDraft({
+        name: '',
+        phone: '',
+        description: '',
+        service_note: '',
+        price: '',
+        service_expense: '',
+        amount_paid: '',
+        payment_method: 'CASH',
+        pickup_mode: 'BUYER',
+        representative_name: '',
+        representative_phone: '',
+        status: 'UNPAID',
+      });
       await loadCoreWorkspace(false);
       // Pull latest cashflow sheet values so new service income/expense reflects immediately.
       if (isAdmin) {
@@ -6639,6 +7187,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       return (
         <CartView
           stockView={stockViewForDisplay}
+          stockViewRaw={stockView}
           productSearchText={stockSearchText}
           setProductSearchText={setStockSearchText}
           filterMode={cartFilterMode}
@@ -6667,8 +7216,10 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           pendingDealEntries={pendingDealEntries}
           onReturnPendingDeal={handleReturnPendingDeal}
           onUpdatePendingDealPayment={handleUpdatePendingDealPayment}
+          onUpdatePendingDealMeta={handleUpdatePendingDealMeta}
           returningPendingKey={returningPendingKey}
           updatingPendingKey={updatingPendingKey}
+          updatingPendingMetaKey={updatingPendingMetaKey}
           clientNameOptions={clientNameOptions}
           sellerPhoneOptions={sellerPhoneOptions}
           contactAutofillOptions={contactAutofillOptions}

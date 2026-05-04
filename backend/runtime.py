@@ -2842,6 +2842,14 @@ class BackendRuntime:
         price_col = svc_stock_header_index(headers_upper, 'PRICE')
         imei_col = svc_stock_header_index(headers_upper, 'IMEI')
         date_col = svc_stock_header_index(headers_upper, 'DATE')
+        payment_method_col = svc_stock_header_index(headers_upper, 'PAYMENT METHOD')
+        fulfillment_method_col = svc_stock_header_index(headers_upper, 'FULFILLMENT METHOD', 'DELIVERY METHOD')
+        pickup_mode_col = svc_stock_header_index(headers_upper, 'PICKUP MODE', 'PICKUP TYPE')
+        representative_name_col = svc_stock_header_index(headers_upper, 'REPRESENTATIVE NAME', 'PICKUP REPRESENTATIVE NAME')
+        representative_phone_col = svc_stock_header_index(headers_upper, 'REPRESENTATIVE PHONE', 'PICKUP REPRESENTATIVE PHONE')
+        swap_type_col = svc_stock_header_index(headers_upper, 'SWAP TYPE')
+        swap_detail_col = svc_stock_header_index(headers_upper, 'SWAP DETAIL', 'SWAP DETAILS')
+        swap_cash_col = svc_stock_header_index(headers_upper, 'SWAP CASH AMOUNT', 'SWAP CASH')
 
         if status_col is None:
             return {
@@ -2876,6 +2884,14 @@ class BackendRuntime:
                 'price': str(row[price_col] if price_col is not None and price_col < len(row) else '').strip(),
                 'balance': max(0, price_value - paid_value),
                 'date': str(row[date_col] if date_col is not None and date_col < len(row) else '').strip(),
+                'payment_method': str(row[payment_method_col] if payment_method_col is not None and payment_method_col < len(row) else '').strip(),
+                'fulfillment_method': str(row[fulfillment_method_col] if fulfillment_method_col is not None and fulfillment_method_col < len(row) else '').strip(),
+                'pickup_mode': str(row[pickup_mode_col] if pickup_mode_col is not None and pickup_mode_col < len(row) else '').strip(),
+                'representative_name': str(row[representative_name_col] if representative_name_col is not None and representative_name_col < len(row) else '').strip(),
+                'representative_phone': normalize_phone_number(row[representative_phone_col] if representative_phone_col is not None and representative_phone_col < len(row) else ''),
+                'swap_type': str(row[swap_type_col] if swap_type_col is not None and swap_type_col < len(row) else '').strip(),
+                'swap_detail': str(row[swap_detail_col] if swap_detail_col is not None and swap_detail_col < len(row) else '').strip(),
+                'swap_cash_amount': str(row[swap_cash_col] if swap_cash_col is not None and swap_cash_col < len(row) else '').strip(),
             })
 
         items.sort(key=lambda item: int(item.get('row_num') or 0), reverse=True)
@@ -4219,6 +4235,16 @@ class BackendRuntime:
 
         name_of_buyer_col = svc_stock_header_index(stock_headers_upper, 'NAME OF BUYER')
         phone_of_buyer_col = svc_stock_header_index(stock_headers_upper, 'PHONE NUMBER OF BUYER')
+        stock_payment_method_col = svc_stock_header_index(stock_headers_upper, 'PAYMENT METHOD')
+        stock_fulfillment_col = svc_stock_header_index(stock_headers_upper, 'FULFILLMENT METHOD', 'DELIVERY METHOD')
+        stock_pickup_mode_col = svc_stock_header_index(stock_headers_upper, 'PICKUP MODE', 'PICKUP TYPE')
+        stock_rep_name_col = svc_stock_header_index(stock_headers_upper, 'REPRESENTATIVE NAME', 'PICKUP REPRESENTATIVE NAME')
+        stock_rep_phone_col = svc_stock_header_index(stock_headers_upper, 'REPRESENTATIVE PHONE', 'PICKUP REPRESENTATIVE PHONE')
+        stock_swap_type_col = svc_stock_header_index(stock_headers_upper, 'SWAP TYPE')
+        stock_swap_detail_col = svc_stock_header_index(stock_headers_upper, 'SWAP DETAIL', 'SWAP DETAILS')
+        stock_swap_cash_col = svc_stock_header_index(stock_headers_upper, 'SWAP CASH AMOUNT', 'SWAP CASH')
+        name_of_seller_col = svc_stock_header_index(stock_headers_upper, 'NAME OF SELLER', 'SELLER NAME')
+        phone_of_seller_col = svc_stock_header_index(stock_headers_upper, 'PHONE NUMBER OF SELLER', 'SELLER PHONE')
         availability_col = svc_stock_header_index(stock_headers_upper, 'AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE')
         product_status_col = svc_stock_header_index(stock_headers_upper, 'PRODUCT STATUS', 'STATUS OF DEVICE', 'STOCK STATUS', 'ITEM STATUS')
         description_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
@@ -4228,9 +4254,57 @@ class BackendRuntime:
         main_status_col = svc_stock_header_index(main_headers_upper, 'STATUS')
         main_paid_col = svc_stock_header_index(main_headers_upper, 'AMOUNT PAID')
         main_price_col = svc_stock_header_index(main_headers_upper, 'PRICE')
+        main_payment_method_col = svc_stock_header_index(main_headers_upper, 'PAYMENT METHOD')
+        main_fulfillment_col = svc_stock_header_index(main_headers_upper, 'FULFILLMENT METHOD', 'DELIVERY METHOD')
+        main_pickup_mode_col = svc_stock_header_index(main_headers_upper, 'PICKUP MODE', 'PICKUP TYPE')
+        main_rep_name_col = svc_stock_header_index(main_headers_upper, 'REPRESENTATIVE NAME', 'PICKUP REPRESENTATIVE NAME')
+        main_rep_phone_col = svc_stock_header_index(main_headers_upper, 'REPRESENTATIVE PHONE', 'PICKUP REPRESENTATIVE PHONE')
+        main_swap_type_col = svc_stock_header_index(main_headers_upper, 'SWAP TYPE')
+        main_swap_detail_col = svc_stock_header_index(main_headers_upper, 'SWAP DETAIL', 'SWAP DETAILS')
+        main_swap_cash_col = svc_stock_header_index(main_headers_upper, 'SWAP CASH AMOUNT', 'SWAP CASH')
         main_record_id_col = svc_stock_header_index(main_headers_upper, 'RECORD_ID', 'RECORD ID')
         cost_price_col = svc_stock_header_index(stock_headers_upper, 'COST PRICE', 'COST', 'BUYING PRICE')
         sold_by_text = str(sold_by or '').strip()
+        next_stock_row = find_next_table_write_row(stock_values, stock_header_row_idx)
+
+        def _normalize_payment_method(value):
+            normalized = str(value or '').strip().upper()
+            if normalized in {'TRANSFER', 'BANK TRANSFER', 'TRF'}:
+                return 'TRANSFER'
+            return 'CASH' if normalized in {'', 'CASH'} else normalized
+
+        def _normalize_fulfillment_method(value):
+            normalized = str(value or '').strip().upper().replace('-', ' ').replace('_', ' ')
+            if normalized in {'WAYBILL', 'WAY BILL'}:
+                return 'WAYBILL'
+            if normalized in {'WALK IN PICKUP', 'WALK IN', 'PICKUP', 'WALK-IN PICKUP', ''}:
+                return 'WALK-IN PICKUP'
+            return normalized
+
+        def _normalize_pickup_mode(value):
+            normalized = str(value or '').strip().upper().replace('-', ' ').replace('_', ' ')
+            if normalized in {'REP', 'REPRESENTATIVE', 'SENT REPRESENTATIVE', 'SENT BY REPRESENTATIVE'}:
+                return 'REPRESENTATIVE'
+            return 'BUYER' if normalized in {'', 'BUYER', 'SELF', 'CAME HIMSELF'} else normalized
+
+        def _parse_swap_devices(raw_text):
+            parsed = []
+            for raw_line in str(raw_text or '').splitlines():
+                line = str(raw_line or '').strip()
+                if not line:
+                    continue
+                parts = [part.strip() for part in line.split('|')]
+                device_description = parts[0] if parts else ''
+                device_imei = parts[1] if len(parts) > 1 else ''
+                device_value = clean_amount(parts[2]) if len(parts) > 2 and str(parts[2]).strip() else 0
+                if not device_description and not device_imei:
+                    continue
+                parsed.append({
+                    'description': device_description,
+                    'imei': device_imei,
+                    'value': device_value,
+                })
+            return parsed
 
         for item in cart_items:
             row_num = int(item.get('stock_row_num') or 0)
@@ -4255,6 +4329,15 @@ class BackendRuntime:
             stock_status_choice = str(item.get('stock_status') or 'sold').strip()
             inventory_status = str(item.get('inventory_status') or 'UNPAID').strip().upper()
             availability_override = str(item.get('availability_value') or '').strip()
+            payment_method = _normalize_payment_method(item.get('payment_method'))
+            fulfillment_method = _normalize_fulfillment_method(item.get('fulfillment_method'))
+            pickup_mode = _normalize_pickup_mode(item.get('pickup_mode'))
+            representative_name = str(item.get('representative_name') or '').strip().upper()
+            representative_phone = normalize_phone_number(item.get('representative_phone') or '')
+            is_swap = bool(item.get('is_swap'))
+            swap_type = str(item.get('swap_type') or '').strip().upper()
+            swap_cash_amount = clean_amount(item.get('swap_cash_amount'))
+            swap_devices = _parse_swap_devices(item.get('swap_devices'))
 
             if not buyer_name:
                 return {'error': f'Buyer name is required for stock row {row_num}.'}
@@ -4262,6 +4345,31 @@ class BackendRuntime:
                 return {'error': f'Enter a valid sale price for stock row {row_num}.'}
             if not description:
                 return {'error': f'Stock row {row_num} is missing a description.'}
+            if pickup_mode == 'REPRESENTATIVE' and (not representative_name or not representative_phone):
+                return {'error': f'Representative name and phone are required for stock row {row_num} when pickup mode is REPRESENTATIVE.'}
+            if is_swap:
+                if swap_type not in {'UPGRADE', 'DOWNGRADE'}:
+                    return {'error': f'Swap type must be UPGRADE or DOWNGRADE for stock row {row_num}.'}
+                if not swap_devices:
+                    return {'error': f'Add at least one incoming swap device for stock row {row_num}.'}
+
+            swap_summary = ''
+            if is_swap:
+                swap_sources = []
+                for swap_device in swap_devices:
+                    src_desc = str(swap_device.get('description') or 'PHONE').strip()
+                    src_imei = str(swap_device.get('imei') or '').strip()
+                    if src_imei:
+                        swap_sources.append(f'{src_desc} (IMEI: {src_imei})')
+                    else:
+                        swap_sources.append(src_desc)
+                sold_ref = str(description or '').strip()
+                sold_imei = str(imei or '').strip()
+                sold_target = f'{sold_ref} (IMEI: {sold_imei})' if sold_imei else sold_ref
+                swap_summary = f'{swap_type} | Swapped from {" + ".join(swap_sources)} to {sold_target}'
+                if swap_cash_amount > 0:
+                    cash_direction = 'Customer Added Cash' if swap_type == 'UPGRADE' else 'Cash Returned To Customer'
+                    swap_summary = f'{swap_summary} | {cash_direction}: NGN {swap_cash_amount:,.0f}'
 
             # Payment status is derived automatically from paid amount vs sold amount.
             if raw_amount_paid < 0:
@@ -4306,6 +4414,22 @@ class BackendRuntime:
                 stock_cell_updates.append({'col': name_of_buyer_col + 1, 'value': '' if inventory_status == 'RETURNED' else buyer_name})
             if phone_of_buyer_col is not None:
                 stock_cell_updates.append({'col': phone_of_buyer_col + 1, 'value': '' if inventory_status == 'RETURNED' else buyer_phone})
+            if stock_payment_method_col is not None:
+                stock_cell_updates.append({'col': stock_payment_method_col + 1, 'value': '' if inventory_status == 'RETURNED' else payment_method})
+            if stock_fulfillment_col is not None:
+                stock_cell_updates.append({'col': stock_fulfillment_col + 1, 'value': '' if inventory_status == 'RETURNED' else fulfillment_method})
+            if stock_pickup_mode_col is not None:
+                stock_cell_updates.append({'col': stock_pickup_mode_col + 1, 'value': '' if inventory_status == 'RETURNED' else pickup_mode})
+            if stock_rep_name_col is not None:
+                stock_cell_updates.append({'col': stock_rep_name_col + 1, 'value': '' if inventory_status == 'RETURNED' else representative_name})
+            if stock_rep_phone_col is not None:
+                stock_cell_updates.append({'col': stock_rep_phone_col + 1, 'value': '' if inventory_status == 'RETURNED' else representative_phone})
+            if stock_swap_type_col is not None:
+                stock_cell_updates.append({'col': stock_swap_type_col + 1, 'value': '' if inventory_status == 'RETURNED' else (swap_type if is_swap else '')})
+            if stock_swap_detail_col is not None:
+                stock_cell_updates.append({'col': stock_swap_detail_col + 1, 'value': '' if inventory_status == 'RETURNED' else swap_summary})
+            if stock_swap_cash_col is not None:
+                stock_cell_updates.append({'col': stock_swap_cash_col + 1, 'value': '' if inventory_status == 'RETURNED' else (swap_cash_amount if swap_cash_amount > 0 else '')})
             if availability_col is not None:
                 stock_cell_updates.append({'col': availability_col + 1, 'value': availability_value})
             if product_status_col is not None:
@@ -4425,6 +4549,38 @@ class BackendRuntime:
                     )
                     queued_operation_ids.append(queue_price)
 
+                existing_extra_updates = []
+                if main_payment_method_col is not None:
+                    existing_extra_updates.append((main_payment_method_col + 1, payment_method))
+                if main_fulfillment_col is not None:
+                    existing_extra_updates.append((main_fulfillment_col + 1, fulfillment_method))
+                if main_pickup_mode_col is not None:
+                    existing_extra_updates.append((main_pickup_mode_col + 1, pickup_mode))
+                if main_rep_name_col is not None:
+                    existing_extra_updates.append((main_rep_name_col + 1, representative_name))
+                if main_rep_phone_col is not None:
+                    existing_extra_updates.append((main_rep_phone_col + 1, representative_phone))
+                if main_swap_type_col is not None:
+                    existing_extra_updates.append((main_swap_type_col + 1, swap_type if is_swap else ''))
+                if main_swap_detail_col is not None:
+                    existing_extra_updates.append((main_swap_detail_col + 1, swap_summary))
+                if main_swap_cash_col is not None:
+                    existing_extra_updates.append((main_swap_cash_col + 1, swap_cash_amount if swap_cash_amount > 0 else ''))
+
+                for col_number, value in existing_extra_updates:
+                    queue_meta = self._enqueue_db_first_operation(
+                        'sales',
+                        'main_update_meta',
+                        {
+                            'kind': 'main_update_cell',
+                            'row': updated_existing_row,
+                            'col': col_number,
+                            'value': value,
+                        },
+                        cache_apply_callable=lambda rn=updated_existing_row, cn=col_number, nv=value: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                    )
+                    queued_operation_ids.append(queue_meta)
+
                 item_results.append({
                     'stock_row_num': row_num,
                     'inventory_row_num': updated_existing_row,
@@ -4463,6 +4619,14 @@ class BackendRuntime:
                     'PRICE': sale_price,
                     'AMOUNT PAID': amount_paid,
                     'STATUS': inventory_status,
+                    'PAYMENT METHOD': payment_method,
+                    'FULFILLMENT METHOD': fulfillment_method,
+                    'PICKUP MODE': pickup_mode,
+                    'REPRESENTATIVE NAME': representative_name,
+                    'REPRESENTATIVE PHONE': representative_phone,
+                    'SWAP TYPE': swap_type if is_swap else '',
+                    'SWAP DETAIL': swap_summary,
+                    'SWAP CASH AMOUNT': swap_cash_amount if swap_cash_amount > 0 else '',
                     'RECORD_ID': record_id,
                     'SUN S/N': str(next_sun_serial),
                 }
@@ -4508,6 +4672,47 @@ class BackendRuntime:
                         sold_by=sold_by_text,
                     )
 
+                next_main_row += 1
+                next_sun_serial += 1
+
+            if is_swap and inventory_status != 'RETURNED':
+                for swap_device in swap_devices:
+                    incoming_desc = str(swap_device.get('description') or '').strip()
+                    incoming_imei = str(swap_device.get('imei') or '').strip()
+                    incoming_value = clean_amount(swap_device.get('value'))
+                    incoming_summary = f'Swapped from {incoming_desc or "PHONE"} ({incoming_imei or "NO IMEI"}) to {str(description or "").strip()} ({str(imei or "").strip() or "NO IMEI"})'
+                    incoming_values_by_header = {
+                        'DESCRIPTION': incoming_summary,
+                        'IMEI': incoming_imei,
+                        'PRODUCT STATUS': 'AVAILABLE',
+                        'AVAILABILITY/DATE SOLD': 'AVAILABLE',
+                        'NAME OF SELLER': buyer_name,
+                        'PHONE NUMBER OF SELLER': buyer_phone,
+                        'SWAP TYPE': swap_type,
+                        'SWAP DETAIL': swap_summary,
+                        'SWAP CASH AMOUNT': swap_cash_amount if swap_cash_amount > 0 else '',
+                        'COST PRICE': incoming_value if incoming_value > 0 else '',
+                    }
+                    if name_of_seller_col is not None:
+                        incoming_values_by_header['NAME OF SELLER'] = buyer_name
+                    if phone_of_seller_col is not None:
+                        incoming_values_by_header['PHONE NUMBER OF SELLER'] = buyer_phone
+
+                    incoming_row_values, _ = build_stock_row_values(stock_headers, incoming_values_by_header)
+                    queue_id = self._enqueue_db_first_operation(
+                        'stock',
+                        'stock_write_row',
+                        {
+                            'kind': 'stock_write_row',
+                            'stock_sheet_id': stock_sheet_id,
+                            'row': next_stock_row,
+                            'row_values': incoming_row_values,
+                        },
+                        cache_apply_callable=lambda row=next_stock_row, values=incoming_row_values: self.postgres_sync_manager.replace_cached_table_row('stock_values', row, values),
+                    )
+                    queued_operation_ids.append(queue_id)
+                    next_stock_row += 1
+
             if phone_expense > 0:
                 try:
                     self.append_cashflow_expense_record(
@@ -4519,9 +4724,6 @@ class BackendRuntime:
                     )
                 except Exception as cashflow_exc:
                     self.logger.warning('Failed to write phone sale expense to cashflow sheet: %s', cashflow_exc)
-
-                next_main_row += 1
-                next_sun_serial += 1
 
         return {
             'processed_count': len(item_results),
@@ -4851,6 +5053,94 @@ class BackendRuntime:
             'queued_operation_ids': queue_ids,
             'updates_count': len(queue_ids),
             'row_num': sheet_row,
+        }
+
+    def update_main_sheet_row_fields(self, row_num, updates_by_header, force_refresh=False):
+        values = self.get_main_values(force_refresh=force_refresh)
+        if not values:
+            return {'error': 'No data in sheet.'}
+
+        header_row_idx = detect_sheet_header_row(values)
+        if header_row_idx < 0 or header_row_idx >= len(values):
+            return {'error': 'Sheet header row not found.'}
+
+        headers = [str(cell or '').strip() for cell in (values[header_row_idx] if header_row_idx < len(values) else [])]
+        if not headers:
+            return {'error': 'Sheet headers are missing.'}
+
+        try:
+            row_num = int(row_num)
+        except Exception:
+            return {'error': 'Invalid row number.'}
+
+        first_data_row = header_row_idx + 2
+        if row_num < first_data_row or row_num > len(values):
+            return {'error': f'Row {row_num} is not available in main sheet.'}
+
+        current_row = list(values[row_num - 1]) if row_num - 1 < len(values) else []
+        padded_current = current_row + [''] * max(0, len(headers) - len(current_row))
+        header_to_col = {str(header or '').strip().upper(): index for index, header in enumerate(headers)}
+
+        queue_ids = []
+        updates = []
+        for raw_header, raw_value in (updates_by_header or {}).items():
+            normalized_header = str(raw_header or '').strip().upper()
+            if not normalized_header:
+                continue
+            col_index = header_to_col.get(normalized_header)
+            if col_index is None:
+                continue
+
+            next_value = '' if raw_value is None else str(raw_value)
+            current_value = str(padded_current[col_index] if col_index < len(padded_current) else '')
+            if current_value == next_value:
+                continue
+
+            col_number = col_index + 1
+            queue_ids.append(
+                self._enqueue_db_first_operation(
+                    'main_row_update',
+                    'main_update_cell',
+                    {
+                        'kind': 'main_update_cell',
+                        'row': row_num,
+                        'col': col_number,
+                        'value': next_value,
+                    },
+                    cache_apply_callable=lambda rn=row_num, fn=headers[col_index], cn=col_number, nv=next_value: (
+                        self.postgres_sync_manager.update_cached_main_record_field(rn, fn, nv),
+                        self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                    ),
+                )
+            )
+            updates.append({
+                'header': headers[col_index],
+                'col': col_number,
+                'old_value': current_value,
+                'new_value': next_value,
+            })
+
+        if not updates:
+            return {
+                'queued_operation_ids': [],
+                'updates_count': 0,
+                'updates': [],
+                'row_num': row_num,
+            }
+
+        try:
+            replay = self.replay_pending_queue_now(limit=max(20, len(queue_ids) * 4))
+        except Exception as exc:
+            return {'error': f'Could not apply update right now: {exc}'}
+
+        if replay and replay.get('failed', 0) > 0:
+            return {'error': 'Update was queued but not fully applied. Please retry.'}
+
+        return {
+            'queued_operation_ids': queue_ids,
+            'updates_count': len(queue_ids),
+            'updates': updates,
+            'row_num': row_num,
         }
 
     def undo_last_payment(self):

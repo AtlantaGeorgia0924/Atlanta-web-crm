@@ -95,3 +95,25 @@ export async function updatePendingDealPayment({ rowNum, paymentStatus, amountPa
     },
   });
 }
+
+export async function updatePendingDealMeta({ rowNum, valuesByHeader, forceRefresh = false }) {
+  return requestJson('/api/stock/live/pending/meta', {
+    method: 'POST',
+    body: {
+      row_num: rowNum,
+      values_by_header: valuesByHeader,
+      force_refresh: forceRefresh,
+    },
+  });
+}
+
+export async function updatePendingServiceMeta({ rowNum, valuesByHeader, forceRefresh = false }) {
+  return requestJson('/api/stock/live/service/meta', {
+    method: 'POST',
+    body: {
+      row_num: rowNum,
+      values_by_header: valuesByHeader,
+      force_refresh: forceRefresh,
+    },
+  });
+}
