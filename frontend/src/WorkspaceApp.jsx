@@ -523,9 +523,17 @@ function buildProductFormValues(formConfig) {
   const defaults = formConfig?.defaults || {};
   const values = {};
   for (const header of formConfig?.visible_headers || []) {
+    if (isPlaceholderStockColumnHeader(header)) {
+      continue;
+    }
     values[header] = defaults[header.toUpperCase()] || '';
   }
   return values;
+}
+
+function isPlaceholderStockColumnHeader(header) {
+  const text = String(header || '').trim().toUpperCase();
+  return /^COLUMN\s*\d+$/.test(text) || /^COL\s*\d+$/.test(text);
 }
 
 function normalizeHeaderName(value) {
@@ -1829,7 +1837,7 @@ function ProductComposerModal({
   onSubmitProduct,
   onResetProductForm,
 }) {
-  const visibleHeaders = stockForm?.visible_headers || [];
+  const visibleHeaders = (stockForm?.visible_headers || []).filter((header) => !isPlaceholderStockColumnHeader(header));
   const [draftValues, setDraftValues] = useState({});
   const [stolenImeiCheck, setStolenImeiCheck] = useState(null);
   const [checkingStolenImei, setCheckingStolenImei] = useState(false);

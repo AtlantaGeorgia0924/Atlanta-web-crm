@@ -128,6 +128,11 @@ export async function requestJson(path, {
 		if (signal?.aborted) {
 			throw error;
 		}
+		const hostname = typeof window !== 'undefined' ? String(window.location.hostname || '').trim().toLowerCase() : '';
+		const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1';
+		if (!getApiBaseUrl() && hostname && !isLocalHost) {
+			throw new Error('Could not reach the API. Set VITE_API_BASE_URL in your frontend deployment to your backend URL, then redeploy.');
+		}
 		throw new Error('Could not reach the API. Make sure the backend is running, then refresh and try again.');
 	} finally {
 		if (timeoutId) {
