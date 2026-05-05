@@ -3283,6 +3283,16 @@ function CartView({
                         </label>
                       ) : null}
 
+                      <label className="field-block field-block--wide">
+                        <span className="field-label">Internal Note</span>
+                        <input
+                          type="text"
+                          value={item.internal_note || ''}
+                          onChange={(event) => onUpdateCartItem(item.stock_row_num, 'internal_note', event.target.value)}
+                          placeholder="Optional internal note"
+                        />
+                      </label>
+
                       <label className="field-block">
                         <span className="field-label">Pickup By</span>
                         <select value={item.pickup_mode || 'BUYER'} onChange={(event) => onUpdateCartItem(item.stock_row_num, 'pickup_mode', event.target.value)}>
@@ -7528,6 +7538,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           pickup_mode: item.pickup_mode,
           representative_name: item.representative_name,
           representative_phone: item.representative_phone,
+          deal_location: item.deal_location,
+          internal_note: item.internal_note,
           is_swap: Boolean(item.is_swap),
           swap_type: item.swap_type,
           swap_devices: item.swap_incoming_devices,

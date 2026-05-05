@@ -295,6 +295,8 @@ class StockCartItem(BaseModel):
     pickup_mode: str = ''
     representative_name: str = ''
     representative_phone: str = ''
+    deal_location: str = ''
+    internal_note: str = ''
     is_swap: bool = False
     swap_type: str = ''
     swap_devices: Any = None
