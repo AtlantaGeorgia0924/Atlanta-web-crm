@@ -3176,6 +3176,17 @@ class BackendRuntime:
             or 0
         )
 
+        price_amount = clean_amount(merged_values.get('PRICE') or 0)
+        paid_amount = clean_amount(merged_values.get('AMOUNT PAID') or 0)
+        if price_amount > 0 and paid_amount > price_amount:
+            return {'error': 'Amount paid cannot be greater than amount charged for this service.'}
+        if paid_amount <= 0:
+            merged_values['STATUS'] = 'UNPAID'
+        elif price_amount > 0 and paid_amount < price_amount:
+            merged_values['STATUS'] = 'PART PAYMENT'
+        else:
+            merged_values['STATUS'] = 'PAID'
+
         fulfillment_method = str(merged_values.get('FULFILLMENT METHOD') or '').strip().upper().replace('-', ' ')
         deal_location = str(merged_values.get('DEAL LOCATION') or '').strip()
         if fulfillment_method in {'OFF OFFICE', 'OFFOFFICE'} and not deal_location:

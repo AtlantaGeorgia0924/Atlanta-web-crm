@@ -3606,10 +3606,17 @@ function CartView({
 
               <label className="field-block">
                 <span className="field-label">Status</span>
-                <select value={serviceDraft.status} onChange={(event) => setServiceDraft((current) => ({ ...current, status: event.target.value }))}>
-                  <option value="UNPAID">UNPAID</option>
-                  <option value="PAID">PAID</option>
-                </select>
+                <input
+                  type="text"
+                  readOnly
+                  value={(() => {
+                    const priceValue = Number.parseInt(serviceDraft.price || '0', 10) || 0;
+                    const paidValue = Number.parseInt(serviceDraft.amount_paid || '0', 10) || 0;
+                    if (paidValue <= 0) return 'UNPAID';
+                    if (priceValue > 0 && paidValue < priceValue) return 'PART PAYMENT';
+                    return 'PAID';
+                  })()}
+                />
               </label>
             </div>
 
@@ -7603,6 +7610,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     const pickupMode = String(serviceDraft.pickup_mode || 'BUYER').trim().toUpperCase();
     const representativeName = String(serviceDraft.representative_name || '').trim().toUpperCase();
     const representativePhone = normalizeWhatsappPhone(serviceDraft.representative_phone || '');
+    const priceAmount = Number.parseInt(price || '0', 10) || 0;
 
     if (!name) {
       setStatusText('Enter a customer name for the service.');
@@ -7623,8 +7631,17 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     if (!amountPaid) {
       amountPaid = '0';
     }
-    if (status !== 'PAID' && status !== 'UNPAID') {
+    const amountPaidValue = Number.parseInt(amountPaid || '0', 10) || 0;
+    if (amountPaidValue > priceAmount) {
+      setStatusText('Amount paid cannot be greater than amount charged.');
+      return;
+    }
+    if (amountPaidValue <= 0) {
       status = 'UNPAID';
+    } else if (amountPaidValue < priceAmount) {
+      status = 'PART PAYMENT';
+    } else {
+      status = 'PAID';
     }
     if (pickupMode === 'REPRESENTATIVE' && (!representativeName || !representativePhone)) {
       setStatusText('Enter representative name and phone for this service pickup.');
