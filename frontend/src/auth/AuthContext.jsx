@@ -140,9 +140,7 @@ export function AuthProvider({ children }) {
   }, [token, refreshToken]);
 
   useEffect(() => {
-    setUnauthorizedHandler(() => {
-      void refreshSession();
-    });
+    setUnauthorizedHandler(() => refreshSession());
 
     return () => {
       setUnauthorizedHandler(null);

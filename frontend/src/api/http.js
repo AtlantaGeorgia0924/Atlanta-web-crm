@@ -1,5 +1,6 @@
 let authToken = '';
 let unauthorizedHandler = null;
+let refreshInFlight = null;
 
 function getApiBaseUrl() {
 	const base = String(import.meta.env.VITE_API_BASE_URL || '').trim();
@@ -20,6 +21,23 @@ export function setAuthToken(token) {
 
 export function setUnauthorizedHandler(handler) {
 	unauthorizedHandler = typeof handler === 'function' ? handler : null;
+}
+
+async function runUnauthorizedHandlerOnce() {
+	if (!unauthorizedHandler) {
+		return false;
+	}
+	if (refreshInFlight) {
+		return refreshInFlight;
+	}
+	refreshInFlight = Promise.resolve()
+		.then(() => unauthorizedHandler())
+		.then((result) => Boolean(result))
+		.catch(() => false)
+		.finally(() => {
+			refreshInFlight = null;
+		});
+	return refreshInFlight;
 }
 
 function buildUrl(path, query = null) {
@@ -55,6 +73,7 @@ export async function requestJson(path, {
 	timeoutMs = 0,
 	auth = true,
 	skipUnauthorizedHandler = false,
+	retryOnUnauthorized = true,
 } = {}) {
 	const nextHeaders = {
 		Accept: 'application/json',
@@ -124,8 +143,21 @@ export async function requestJson(path, {
 	const payload = isJson ? await response.json().catch(() => ({})) : await response.text().catch(() => '');
 
 	if (!response.ok) {
-		if (!skipUnauthorizedHandler && response.status === 401 && unauthorizedHandler) {
-			unauthorizedHandler();
+		if (!skipUnauthorizedHandler && response.status === 401 && retryOnUnauthorized && unauthorizedHandler) {
+			const refreshed = await runUnauthorizedHandlerOnce();
+			if (refreshed) {
+				return requestJson(path, {
+					method,
+					query,
+					body,
+					headers,
+					signal,
+					timeoutMs,
+					auth,
+					skipUnauthorizedHandler,
+					retryOnUnauthorized: false,
+				});
+			}
 		}
 
 		const detail = isJson
