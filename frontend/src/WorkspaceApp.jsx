@@ -5375,6 +5375,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [undoEnabled, setUndoEnabled] = useState(false);
   const [redoEnabled, setRedoEnabled] = useState(false);
   const [whatsappHistoryByName, setWhatsappHistoryByName] = useState({});
+  const stockPreloadStartedRef = useRef(false);
+  const stockFormPreloadStartedRef = useRef(false);
   const [unpaidTodaySummary, setUnpaidTodaySummary] = useState({ count: 0, with_phone_count: 0, customers: [] });
   const [servicesTodayData, setServicesTodayData] = useState({ services: [], count: 0 });
   const [servicesTodayDate, setServicesTodayDate] = useState(formatDateForInput());
@@ -6398,6 +6400,19 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   }, [activeView, productFilterMode, cartFilterMode]);
 
   useEffect(() => {
+    if (stockPreloadStartedRef.current) {
+      return;
+    }
+    if (stockView?.all_rows_cache?.length) {
+      stockPreloadStartedRef.current = true;
+      return;
+    }
+
+    stockPreloadStartedRef.current = true;
+    loadStock(false, false);
+  }, [stockView]);
+
+  useEffect(() => {
     if (!isAdmin) {
       return;
     }
@@ -6426,6 +6441,19 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
     loadStockForm(false, false);
   }, [activeView]);
+
+  useEffect(() => {
+    if (stockFormPreloadStartedRef.current) {
+      return;
+    }
+    if (stockForm && typeof stockForm === 'object') {
+      stockFormPreloadStartedRef.current = true;
+      return;
+    }
+
+    stockFormPreloadStartedRef.current = true;
+    loadStockForm(false, false);
+  }, [stockForm]);
 
   useEffect(() => {
     if (activeView !== 'clients' && activeView !== 'cart') {
