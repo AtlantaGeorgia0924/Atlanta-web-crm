@@ -1832,72 +1832,18 @@ function ProductComposerModal({
   sellerPhoneOptions,
   currentTimeLabel,
   dropdownOptions,
-  onCheckStolenImei,
   onClose,
   onSubmitProduct,
   onResetProductForm,
 }) {
   const visibleHeaders = (stockForm?.visible_headers || []).filter((header) => !isPlaceholderStockColumnHeader(header));
   const [draftValues, setDraftValues] = useState({});
-  const [stolenImeiCheck, setStolenImeiCheck] = useState(null);
-  const [checkingStolenImei, setCheckingStolenImei] = useState(false);
-  const [allowStolenWarningOverride, setAllowStolenWarningOverride] = useState(false);
 
   useEffect(() => {
     setDraftValues(productFormValues || {});
   }, [productFormValues]);
 
-  const imeiDraftValue = getValueByHeaderAliases(draftValues, ['IMEI']);
-
-  useEffect(() => {
-    const imeiDigits = String(imeiDraftValue || '').replace(/\D/g, '');
-    setAllowStolenWarningOverride(false);
-
-    if (!imeiDigits) {
-      setStolenImeiCheck(null);
-      setCheckingStolenImei(false);
-      return undefined;
-    }
-
-    if (imeiDigits.length !== 15) {
-      setStolenImeiCheck(null);
-      setCheckingStolenImei(false);
-      return undefined;
-    }
-
-    let active = true;
-    const timerId = window.setTimeout(async () => {
-      setCheckingStolenImei(true);
-      try {
-        const result = await onCheckStolenImei?.(imeiDraftValue);
-        if (active) {
-          setStolenImeiCheck(result || null);
-        }
-      } catch (error) {
-        if (active) {
-          setStolenImeiCheck({
-            status: 'error',
-            message: error.message || 'Could not check the stolen-device registry right now.',
-            record: null,
-            can_override: false,
-          });
-        }
-      } finally {
-        if (active) {
-          setCheckingStolenImei(false);
-        }
-      }
-    }, 240);
-
-    return () => {
-      active = false;
-      window.clearTimeout(timerId);
-    };
-  }, [imeiDraftValue, onCheckStolenImei]);
-
-  const canSubmitProduct = !isAddingProduct
-    && stolenImeiCheck?.status !== 'blocked'
-    && (stolenImeiCheck?.status !== 'warning' || allowStolenWarningOverride);
+  const canSubmitProduct = !isAddingProduct;
 
   function renderProductField(header) {
     const key = String(header || '').toUpperCase();
@@ -2061,37 +2007,7 @@ function ProductComposerModal({
         </div>
 
         {visibleHeaders.length ? (
-          <form className="form-stack" onSubmit={(event) => onSubmitProduct(event, draftValues, { allowStolenWarningOverride })}>
-            {checkingStolenImei ? (
-              <div className="notice compact">Checking stolen-device registry...</div>
-            ) : null}
-            {stolenImeiCheck?.status === 'blocked' ? (
-              <div className="notice notice-error">
-                {stolenImeiCheck.message}
-                {stolenImeiCheck.record?.imei_raw ? ` Saved as: ${stolenImeiCheck.record.imei_raw}.` : ''}
-              </div>
-            ) : null}
-            {stolenImeiCheck?.status === 'warning' ? (
-              <div className="notice" style={{ borderColor: '#c97a12', background: '#fff5df', color: '#6f4b00' }}>
-                <p style={{ margin: 0 }}>{stolenImeiCheck.message}</p>
-                <p style={{ margin: '8px 0 0' }}>
-                  Matched record: {stolenImeiCheck.record?.phone_name || 'Unknown phone'} | Saved IMEI: {stolenImeiCheck.record?.imei_raw || '—'}
-                </p>
-                <label className="field-block" style={{ marginTop: '10px' }}>
-                  <span className="field-label">Override Warning</span>
-                  <select
-                    value={allowStolenWarningOverride ? 'YES' : 'NO'}
-                    onChange={(event) => setAllowStolenWarningOverride(event.target.value === 'YES')}
-                  >
-                    <option value="NO">Do not override</option>
-                    <option value="YES">Override and allow add</option>
-                  </select>
-                </label>
-              </div>
-            ) : null}
-            {stolenImeiCheck?.status === 'error' ? (
-              <div className="notice notice-error">{stolenImeiCheck.message}</div>
-            ) : null}
+          <form className="form-stack" onSubmit={(event) => onSubmitProduct(event, draftValues)}>
             <div className="form-grid form-grid--modal">
               {visibleHeaders.map((header) => (
                 <label key={header} className="field-block">

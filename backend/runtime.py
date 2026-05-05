@@ -3009,15 +3009,15 @@ class BackendRuntime:
             if not str(normalized_values.get(status_header, '')).strip():
                 normalized_values[status_header] = 'AVAILABLE'
 
-        imei_value = self._extract_stock_imei_value(normalized_values, headers=headers, headers_upper=headers_upper)
-        stolen_check = self.check_stolen_device_imei(imei_value)
-        if stolen_check.get('status') == 'blocked':
-            return {'error': stolen_check.get('message') or 'This IMEI is flagged as stolen.', 'stolen_check': stolen_check}
-        if stolen_check.get('status') == 'warning' and not allow_stolen_warning_override:
-            return {
-                'error': stolen_check.get('message') or 'This IMEI matches a stolen-device warning and requires override.',
-                'stolen_check': stolen_check,
-            }
+        # Temporary bypass: stock add should not depend on stolen-device registry.
+        stolen_check = {
+            'available': True,
+            'status': 'clear',
+            'can_override': False,
+            'match_type': 'disabled',
+            'record': None,
+            'message': '',
+        }
 
         row_values, non_empty_count = build_stock_row_values(headers, normalized_values)
         validation_error = validate_stock_row(row_values, headers_upper)
