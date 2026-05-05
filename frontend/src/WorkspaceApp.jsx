@@ -7491,6 +7491,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         || !item.swap_incoming_devices.length
         || item.swap_incoming_devices.some((device) => {
           const valuesByHeader = device?.values_by_header || {};
+          const description = getValueByHeaderAliases(valuesByHeader, ['DESCRIPTION', 'MODEL', 'DEVICE']);
           const imei = getValueByHeaderAliases(valuesByHeader, ['IMEI']);
           return !description || !imei;
         })
