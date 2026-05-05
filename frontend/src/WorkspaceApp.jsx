@@ -3778,6 +3778,7 @@ function ProductsView({
   sellerPhoneOptions,
   sellerNameOptions,
   sellerPhoneByName,
+  onCheckStolenImei,
   currentTimeLabel,
   summaryColumns,
 }) {
@@ -3894,7 +3895,7 @@ function ProductsView({
           sellerPhoneByName={sellerPhoneByName}
           currentTimeLabel={currentTimeLabel}
           dropdownOptions={stockForm?.dropdown_options}
-          onCheckStolenImei={handleCheckStolenImei}
+          onCheckStolenImei={onCheckStolenImei}
         />
       ) : null}
 
@@ -7809,6 +7810,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           sellerPhoneOptions={sellerPhoneOptions}
           sellerNameOptions={sellerNameOptions}
           sellerPhoneByName={sellerPhoneByName}
+          onCheckStolenImei={handleCheckStolenImei}
           currentTimeLabel={currentTimeLabel}
           summaryColumns={productSummaryColumns}
         />
@@ -7845,6 +7847,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           sellerPhoneOptions={sellerPhoneOptions}
           sellerNameOptions={sellerNameOptions}
           sellerPhoneByName={sellerPhoneByName}
+          onCheckStolenImei={handleCheckStolenImei}
           currentTimeLabel={currentTimeLabel}
           summaryColumns={productSummaryColumns}
         />
