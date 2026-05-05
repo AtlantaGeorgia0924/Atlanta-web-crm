@@ -3042,6 +3042,17 @@ class BackendRuntime:
             cache_apply_callable=lambda: self.postgres_sync_manager.replace_cached_table_row('stock_values', target_row, row_values),
         )
 
+        # Flush queued stock write quickly so Add Product reflects in the
+        # Google Sheet without waiting for the background poll cycle.
+        try:
+            threading.Thread(
+                target=lambda: self.replay_pending_queue_now(limit=40),
+                name='stock-add-immediate-queue-flush',
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
         return {
             'queued_operation_id': queue_id,
             'row_values': row_values,
