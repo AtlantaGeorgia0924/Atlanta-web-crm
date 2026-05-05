@@ -99,6 +99,84 @@ class BackendRuntime:
             'sheet_error': '',
         }
 
+    @staticmethod
+    def _normalize_optional_header_name(value):
+        return ' '.join(str(value or '').strip().upper().replace('_', ' ').replace('-', ' ').split())
+
+    def _header_indexes_by_name(self, headers, target_header):
+        normalized_target = self._normalize_optional_header_name(target_header)
+        return [
+            index for index, header in enumerate(list(headers or []))
+            if self._normalize_optional_header_name(header) == normalized_target
+        ]
+
+    def _dedupe_stock_optional_columns(self, worksheet, stock_sheet_id, values, header_row_idx, headers, required_headers):
+        if not values or not required_headers:
+            return values, headers, False
+
+        cell_updates = []
+        delete_indexes = []
+        changed = False
+
+        for required_header in required_headers:
+            matching_indexes = self._header_indexes_by_name(headers, required_header)
+            if not matching_indexes:
+                continue
+
+            keep_index = matching_indexes[0]
+            if keep_index < len(headers) and str(headers[keep_index] or '').strip() != required_header:
+                cell_updates.append({
+                    'range': f'{column_index_to_letter(keep_index)}{header_row_idx + 1}',
+                    'values': [[required_header]],
+                })
+                changed = True
+
+            for duplicate_index in matching_indexes[1:]:
+                for row_num in range(header_row_idx + 2, len(values) + 1):
+                    row = values[row_num - 1] if row_num - 1 < len(values) else []
+                    keep_value = str(row[keep_index] or '').strip() if keep_index < len(row) else ''
+                    duplicate_value = str(row[duplicate_index] or '').strip() if duplicate_index < len(row) else ''
+                    if keep_value or not duplicate_value:
+                        continue
+                    cell_updates.append({
+                        'range': f'{column_index_to_letter(keep_index)}{row_num}',
+                        'values': [[duplicate_value]],
+                    })
+                    changed = True
+                delete_indexes.append(duplicate_index)
+
+        if cell_updates:
+            with self._sheet_lock:
+                worksheet.batch_update(cell_updates, value_input_option='USER_ENTERED')
+
+        if delete_indexes:
+            request_body = {
+                'requests': [{
+                    'deleteDimension': {
+                        'range': {
+                            'sheetId': worksheet.id,
+                            'dimension': 'COLUMNS',
+                            'startIndex': index,
+                            'endIndex': index + 1,
+                        }
+                    }
+                } for index in sorted(set(delete_indexes), reverse=True)]
+            }
+            with self._sheet_lock:
+                self.sheets_api_service.spreadsheets().batchUpdate(
+                    spreadsheetId=stock_sheet_id,
+                    body=request_body,
+                ).execute()
+            changed = True
+
+        if not changed:
+            return values, headers, False
+
+        with self._sheet_lock:
+            values = worksheet.get_all_values()
+        headers = [str(cell or '').strip() for cell in (values[header_row_idx] if header_row_idx < len(values) else [])]
+        return values, headers, True
+
     def _load_config(self):
         defaults = {
             'sheet_id': '',
@@ -1955,7 +2033,7 @@ class BackendRuntime:
         return values, header_row_idx, headers, headers_upper, True
 
     def _ensure_main_optional_columns(self, force_refresh=False, required_headers=None):
-        required_headers = [str(header or '').strip().upper() for header in (required_headers or []) if str(header or '').strip()]
+        required_headers = [self._normalize_optional_header_name(header) for header in (required_headers or []) if str(header or '').strip()]
         values = self.get_main_values(force_refresh=force_refresh)
         if not values or not required_headers:
             return values, detect_sheet_header_row(values), [str(cell or '').strip() for cell in (values[detect_sheet_header_row(values)] if values and detect_sheet_header_row(values) < len(values) else [])], [str(cell or '').strip().upper() for cell in (values[detect_sheet_header_row(values)] if values and detect_sheet_header_row(values) < len(values) else [])], []
@@ -1969,7 +2047,7 @@ class BackendRuntime:
             return values, header_row_idx, headers, headers_upper, inserted_headers
 
         for required_header in required_headers:
-            if required_header in headers_upper:
+            if self._header_indexes_by_name(headers, required_header):
                 continue
             insert_index = len(headers)
             request_body = {
@@ -2012,7 +2090,7 @@ class BackendRuntime:
 
     def _ensure_stock_optional_columns(self, force_refresh=False, required_headers=None):
         values, header_row_idx, headers, headers_upper, inserted_cost_price, inserted_product_status = self._ensure_stock_required_columns_base(force_refresh=force_refresh)
-        required_headers = [str(header or '').strip().upper() for header in (required_headers or []) if str(header or '').strip()]
+        required_headers = [self._normalize_optional_header_name(header) for header in (required_headers or []) if str(header or '').strip()]
         inserted_headers = []
         stock_sheet_id = self._resolve_stock_sheet_id()
         if not stock_sheet_id or not required_headers:
@@ -2024,8 +2102,22 @@ class BackendRuntime:
             self.logger.warning('Could not resolve stock worksheet while ensuring optional columns: %s', exc)
             return values, header_row_idx, headers, headers_upper, inserted_cost_price, inserted_product_status, inserted_headers
 
+        try:
+            values, headers, deduped = self._dedupe_stock_optional_columns(
+                worksheet,
+                stock_sheet_id,
+                values,
+                header_row_idx,
+                headers,
+                required_headers,
+            )
+            if deduped:
+                headers_upper = [header.upper() for header in headers]
+        except Exception as exc:
+            self.logger.warning('Could not dedupe stock optional columns: %s', exc)
+
         for required_header in required_headers:
-            if required_header in headers_upper:
+            if self._header_indexes_by_name(headers, required_header):
                 continue
             insert_index = len(headers)
             request_body = {
