@@ -52,6 +52,7 @@ export async function requestJson(path, {
 	body = null,
 	headers = {},
 	signal,
+	timeoutMs = 0,
 	auth = true,
 	skipUnauthorizedHandler = false,
 } = {}) {
@@ -68,12 +69,55 @@ export async function requestJson(path, {
 		nextHeaders.Authorization = `Bearer ${authToken}`;
 	}
 
-	const response = await fetch(buildUrl(path, query), {
-		method,
-		headers: nextHeaders,
-		body: body !== null && body !== undefined ? JSON.stringify(body) : undefined,
-		signal,
-	});
+	const timeout = Number(timeoutMs || 0);
+	const hasTimeout = Number.isFinite(timeout) && timeout > 0;
+	const timeoutController = hasTimeout ? new AbortController() : null;
+	const timeoutId = hasTimeout
+		? globalThis.setTimeout(() => {
+			timeoutController.abort('timeout');
+		}, timeout)
+		: null;
+	let abortFromCaller = null;
+
+	const combinedSignal = timeoutController
+		? (() => {
+			if (!signal) {
+				return timeoutController.signal;
+			}
+			if (signal.aborted) {
+				timeoutController.abort(signal.reason);
+				return timeoutController.signal;
+			}
+			abortFromCaller = () => timeoutController.abort(signal.reason);
+			signal.addEventListener('abort', abortFromCaller, { once: true });
+			return timeoutController.signal;
+		})()
+		: signal;
+
+	let response;
+	try {
+		response = await fetch(buildUrl(path, query), {
+			method,
+			headers: nextHeaders,
+			body: body !== null && body !== undefined ? JSON.stringify(body) : undefined,
+			signal: combinedSignal,
+		});
+	} catch (error) {
+		if (timeoutController?.signal?.aborted && timeoutController.signal.reason === 'timeout') {
+			throw new Error('Request timed out while contacting the API. Please try again.');
+		}
+		if (signal?.aborted) {
+			throw error;
+		}
+		throw new Error('Could not reach the API. Make sure the backend is running, then refresh and try again.');
+	} finally {
+		if (timeoutId) {
+			globalThis.clearTimeout(timeoutId);
+		}
+		if (abortFromCaller && signal) {
+			signal.removeEventListener('abort', abortFromCaller);
+		}
+	}
 
 	const contentType = String(response.headers.get('content-type') || '').toLowerCase();
 	const isJson = contentType.includes('application/json');

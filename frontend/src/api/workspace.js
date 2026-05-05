@@ -321,6 +321,7 @@ export function fetchStockForm({ forceRefresh = false, signal } = {}) {
 export function addStockRecord({ valuesByHeader, forceRefresh = false, allowStolenWarningOverride = false }) {
   return requestJson('/api/stock/live/add', {
     method: 'POST',
+    timeoutMs: 30000,
     body: {
       values_by_header: valuesByHeader,
       force_refresh: forceRefresh,
@@ -332,6 +333,7 @@ export function addStockRecord({ valuesByHeader, forceRefresh = false, allowStol
 export function checkStolenDeviceImei({ imei }) {
   return requestJson('/api/stock/live/stolen-devices/check', {
     method: 'POST',
+    timeoutMs: 8000,
     body: { imei },
   });
 }
