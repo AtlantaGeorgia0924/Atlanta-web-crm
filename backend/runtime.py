@@ -1374,7 +1374,7 @@ class BackendRuntime:
         weekly_reserve_amount = max(0.0, weekly_available_before_reserve) * reserve_percentage
         weekly_available_after_reserve = weekly_available_before_reserve - weekly_reserve_amount
 
-        allowance_percentage = 0.25
+        allowance_percentage = self._normalized_allowance_percentage()
         raw_allowance = max(0.0, allowance_base_net_profit) * allowance_percentage
         # Allowance must not exceed usable cash after reserve.
         # Use the stronger of month-to-date and week-to-date cash bases.
