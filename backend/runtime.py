@@ -623,7 +623,6 @@ class BackendRuntime:
         }
 
     def _append_cashflow_sheet_record(self, *, amount, category='', description='', date_text='', created_by='', source='expense', payment_status='', entry_type='', cost_price='', payment_date_text=''):
-        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
         resolved_source = str(source or '').strip() or 'expense'
         if resolved_source == 'income':
             resolved_payment_status = str(payment_status or '').strip().upper()
@@ -654,13 +653,26 @@ class BackendRuntime:
             resolved_cost_price,
             resolved_payment_date,
         ]
+
+        if self.postgres_ready:
+            self._enqueue_db_first_operation(
+                'cashflow',
+                'cashflow_append_row',
+                {
+                    'kind': 'cashflow_append_row',
+                    'row_values': row_values,
+                },
+                cache_apply_callable=lambda: self._append_cached_cashflow_row(row_values),
+            )
+            cached_rows = self._load_cached_rows('cashflow_expense_values')
+            row_num = len(cached_rows) if cached_rows else None
+            self.logger.info('write_source=postgres_primary kind=cashflow_append_row row_num=%s', row_num)
+            return self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+
+        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
         with self._sheet_lock:
             worksheet.append_row(row_values, value_input_option='USER_ENTERED')
-            if self.postgres_ready:
-                try:
-                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', worksheet.get_all_values())
-                except Exception as exc:
-                    self.logger.warning('Failed to refresh cashflow sheet cache after append: %s', exc)
+        self.logger.info('write_source=google_sheets_fallback kind=cashflow_append_row')
         return self._normalize_cashflow_expense_row(row_values)
 
     @staticmethod
@@ -728,7 +740,7 @@ class BackendRuntime:
                         'items': sheet_entries,
                         'count': len(sheet_entries),
                         'total': total,
-                        'source': 'sheet',
+                        'source': 'postgres_cache',
                         'sheet_title': sheet_title,
                     }
 
@@ -786,48 +798,61 @@ class BackendRuntime:
         )
 
     def undo_last_weekly_allowance_withdrawal(self):
-        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
         today = datetime.now(timezone.utc).date()
         latest_allowance_row = None
-
-        with self._sheet_lock:
-            values = worksheet.get_all_values()
-            for row_num in range(len(values), 1, -1):
-                row_values = values[row_num - 1] if row_num - 1 < len(values) else []
-                normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
-                source = str(normalized.get('source') or '').strip().lower()
-                category = str(normalized.get('category') or '').strip().upper()
-                amount = clean_amount(normalized.get('amount'))
-                if source != 'expense':
-                    continue
-                if 'WEEKLY ALLOWANCE' not in category:
-                    continue
-                if amount <= 0:
-                    continue
-                latest_allowance_row = normalized
-                break
-
-            if latest_allowance_row is None:
-                return {'error': 'No weekly allowance withdrawal record found to undo.'}
-
-            latest_date = parse_sheet_date(latest_allowance_row.get('date'))
-            if latest_date != today:
-                return {
-                    'error': 'Undo is only allowed for today\'s latest weekly allowance withdrawal.',
-                    'latest_allowance_date': str(latest_allowance_row.get('date') or ''),
-                }
-
-            target_row_num = int(latest_allowance_row.get('row_num') or 0)
-            if target_row_num <= 1:
-                return {'error': 'Could not resolve the latest weekly allowance row to undo.'}
-
-            worksheet.delete_rows(target_row_num)
-
+        values = self._load_cached_rows('cashflow_expense_values') if self.postgres_ready else []
+        if not values:
+            worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+            with self._sheet_lock:
+                values = worksheet.get_all_values()
             if self.postgres_ready:
-                try:
-                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', worksheet.get_all_values())
-                except Exception as exc:
-                    self.logger.warning('Failed to refresh cashflow sheet cache after allowance undo: %s', exc)
+                self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', values)
+
+        for row_num in range(len(values), 1, -1):
+            row_values = values[row_num - 1] if row_num - 1 < len(values) else []
+            normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+            source = str(normalized.get('source') or '').strip().lower()
+            category = str(normalized.get('category') or '').strip().upper()
+            amount = clean_amount(normalized.get('amount'))
+            if source != 'expense':
+                continue
+            if 'WEEKLY ALLOWANCE' not in category:
+                continue
+            if amount <= 0:
+                continue
+            latest_allowance_row = normalized
+            break
+
+        if latest_allowance_row is None:
+            return {'error': 'No weekly allowance withdrawal record found to undo.'}
+
+        latest_date = parse_sheet_date(latest_allowance_row.get('date'))
+        if latest_date != today:
+            return {
+                'error': 'Undo is only allowed for today\'s latest weekly allowance withdrawal.',
+                'latest_allowance_date': str(latest_allowance_row.get('date') or ''),
+            }
+
+        target_row_num = int(latest_allowance_row.get('row_num') or 0)
+        if target_row_num <= 1:
+            return {'error': 'Could not resolve the latest weekly allowance row to undo.'}
+
+        if self.postgres_ready:
+            self._enqueue_db_first_operation(
+                'cashflow',
+                'cashflow_delete_row',
+                {
+                    'kind': 'cashflow_delete_row',
+                    'row': target_row_num,
+                },
+                cache_apply_callable=lambda: self._delete_cached_cashflow_row(target_row_num),
+            )
+            self.logger.info('write_source=postgres_primary kind=cashflow_delete_row row=%s', target_row_num)
+        else:
+            worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+            with self._sheet_lock:
+                worksheet.delete_rows(target_row_num)
+            self.logger.info('write_source=google_sheets_fallback kind=cashflow_delete_row row=%s', target_row_num)
 
         return {
             'undone': True,
@@ -947,97 +972,104 @@ class BackendRuntime:
         }
 
     def mark_cashflow_income_paid(self, *, entry_type, description='', created_by='', payment_date_text='', amount=None, cost_price=None):
-        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
         target_payment_date = str(payment_date_text or datetime.now(timezone.utc).date().isoformat()).strip()
         target_type = str(entry_type or '').strip().lower() or 'service'
-        with self._sheet_lock:
-            values = worksheet.get_all_values()
-            target_row_num = None
-            target_values = None
-            for row_num in range(len(values), 1, -1):
-                row_values = values[row_num - 1] if row_num - 1 < len(values) else []
-                normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
-                if str(normalized.get('source') or '').strip().lower() != 'income':
-                    continue
-                if str(normalized.get('payment_status') or '').strip().upper() != 'OWING':
-                    continue
-                if str(normalized.get('type') or '').strip().lower() != target_type:
-                    continue
-                if description and not self._cashflow_row_match(normalized.get('description'), description):
-                    continue
-                if created_by and not self._cashflow_row_match(normalized.get('created_by'), created_by):
-                    continue
-                target_row_num = row_num
-                target_values = list(row_values or [])
-                break
-
-            if target_row_num is None:
-                return None
-
-            if len(target_values) < 10:
-                target_values = target_values + [''] * (10 - len(target_values))
-            target_values[0] = target_payment_date
-            target_values[6] = 'PAID'
-            target_values[7] = target_type
-            target_values[9] = target_payment_date
-            if amount is not None:
-                target_values[2] = str(amount)
-            if cost_price is not None:
-                target_values[8] = str(cost_price)
-
-            worksheet.update(f'A{target_row_num}:J{target_row_num}', [target_values], value_input_option='USER_ENTERED')
-
+        values = self._load_cached_rows('cashflow_expense_values') if self.postgres_ready else []
+        if not values:
+            worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+            with self._sheet_lock:
+                values = worksheet.get_all_values()
             if self.postgres_ready:
-                try:
-                    self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', worksheet.get_all_values())
-                except Exception as exc:
-                    self.logger.warning('Failed to refresh cashflow sheet cache after payment status update: %s', exc)
+                self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', values)
+
+        target_row_num = None
+        target_values = None
+        for row_num in range(len(values), 1, -1):
+            row_values = values[row_num - 1] if row_num - 1 < len(values) else []
+            normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+            if str(normalized.get('source') or '').strip().lower() != 'income':
+                continue
+            if str(normalized.get('payment_status') or '').strip().upper() != 'OWING':
+                continue
+            if str(normalized.get('type') or '').strip().lower() != target_type:
+                continue
+            if description and not self._cashflow_row_match(normalized.get('description'), description):
+                continue
+            if created_by and not self._cashflow_row_match(normalized.get('created_by'), created_by):
+                continue
+            target_row_num = row_num
+            target_values = list(row_values or [])
+            break
+
+        if target_row_num is None:
+            return None
+
+        if len(target_values) < 10:
+            target_values = target_values + [''] * (10 - len(target_values))
+        target_values[0] = target_payment_date
+        target_values[6] = 'PAID'
+        target_values[7] = target_type
+        target_values[9] = target_payment_date
+        if amount is not None:
+            target_values[2] = str(amount)
+        if cost_price is not None:
+            target_values[8] = str(cost_price)
+
+        if self.postgres_ready:
+            self._enqueue_db_first_operation(
+                'cashflow',
+                'cashflow_update_row',
+                {
+                    'kind': 'cashflow_update_row',
+                    'row': target_row_num,
+                    'row_values': target_values,
+                },
+                cache_apply_callable=lambda: self._update_cached_cashflow_row(target_row_num, target_values),
+            )
+            self.logger.info('write_source=postgres_primary kind=cashflow_update_row row=%s', target_row_num)
+        else:
+            worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+            with self._sheet_lock:
+                worksheet.update(f'A{target_row_num}:J{target_row_num}', [target_values], value_input_option='USER_ENTERED')
+            self.logger.info('write_source=google_sheets_fallback kind=cashflow_update_row row=%s', target_row_num)
 
         return self._normalize_cashflow_expense_row(target_values, row_num=target_row_num)
 
     def has_cashflow_income_owing_record(self, *, entry_type, description='', created_by=''):
-        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
         target_type = str(entry_type or '').strip().lower() or 'service'
-        with self._sheet_lock:
-            values = worksheet.get_all_values()
-            for row_num in range(len(values), 1, -1):
-                row_values = values[row_num - 1] if row_num - 1 < len(values) else []
-                normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
-                if str(normalized.get('source') or '').strip().lower() != 'income':
-                    continue
-                if str(normalized.get('payment_status') or '').strip().upper() != 'OWING':
-                    continue
-                if str(normalized.get('type') or '').strip().lower() != target_type:
-                    continue
-                if description and not self._cashflow_row_match(normalized.get('description'), description):
-                    continue
-                if created_by and not self._cashflow_row_match(normalized.get('created_by'), created_by):
-                    continue
-                return True
+        items = self.get_cashflow_sheet_records(force_refresh=False).get('items') or []
+        for normalized in items:
+            if str(normalized.get('source') or '').strip().lower() != 'income':
+                continue
+            if str(normalized.get('payment_status') or '').strip().upper() != 'OWING':
+                continue
+            if str(normalized.get('type') or '').strip().lower() != target_type:
+                continue
+            if description and not self._cashflow_row_match(normalized.get('description'), description):
+                continue
+            if created_by and not self._cashflow_row_match(normalized.get('created_by'), created_by):
+                continue
+            return True
         return False
 
     def has_cashflow_income_paid_record(self, *, entry_type, description='', created_by='', payment_date_text=''):
-        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
         target_type = str(entry_type or '').strip().lower() or 'service'
         target_payment_date = str(payment_date_text or '').strip()
-        with self._sheet_lock:
-            values = worksheet.get_all_values()
-            for row_num in range(len(values), 1, -1):
-                row_values = values[row_num - 1] if row_num - 1 < len(values) else []
-                normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
-                if str(normalized.get('source') or '').strip().lower() != 'income':
-                    continue
-                if str(normalized.get('payment_status') or '').strip().upper() != 'PAID':
-                    continue
-                if str(normalized.get('type') or '').strip().lower() != target_type:
-                    continue
-                if description and not self._cashflow_row_match(normalized.get('description'), description):
-                    continue
-                if created_by and not self._cashflow_row_match(normalized.get('created_by'), created_by):
-                    continue
-                if target_payment_date and not self._cashflow_row_match(normalized.get('payment_date'), target_payment_date):
-                    continue
-                return True
+        items = self.get_cashflow_sheet_records(force_refresh=False).get('items') or []
+        for normalized in items:
+            if str(normalized.get('source') or '').strip().lower() != 'income':
+                continue
+            if str(normalized.get('payment_status') or '').strip().upper() != 'PAID':
+                continue
+            if str(normalized.get('type') or '').strip().lower() != target_type:
+                continue
+            if description and not self._cashflow_row_match(normalized.get('description'), description):
+                continue
+            if created_by and not self._cashflow_row_match(normalized.get('created_by'), created_by):
+                continue
+            if target_payment_date and not self._cashflow_row_match(normalized.get('payment_date'), target_payment_date):
+                continue
+            return True
         return False
 
     def get_cashflow_sheet_records(self, force_refresh=False):
@@ -1059,10 +1091,11 @@ class BackendRuntime:
                     sheet_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
                 if sheet_entries:
                     sheet_entries.reverse()
+                    self.logger.info('read_source=postgres_cache table=cashflow_expense_values rows=%s', len(sheet_entries))
                     return {
                         'items': sheet_entries,
                         'count': len(sheet_entries),
-                        'source': 'sheet',
+                        'source': 'postgres_cache',
                         'sheet_title': sheet_title,
                     }
 
@@ -1087,6 +1120,7 @@ class BackendRuntime:
                 sheet_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
 
         sheet_entries.reverse()
+        self.logger.info('read_source=google_sheets table=cashflow_expense_values rows=%s', len(sheet_entries))
         return {
             'items': sheet_entries,
             'count': len(sheet_entries),
@@ -2401,6 +2435,57 @@ class BackendRuntime:
             self.logger.warning('Failed to load cached payload for %s: %s', sheet_key, exc)
             return None
 
+    def _append_cached_cashflow_row(self, row_values):
+        if not self.postgres_ready:
+            return False
+        cached = self._load_cached_rows('cashflow_expense_values')
+        rows = list(cached or [])
+        if not rows:
+            rows = [[
+                'DATE',
+                'CATEGORY',
+                'AMOUNT',
+                'DESCRIPTION',
+                'CREATED BY',
+                'SOURCE',
+                'PAYMENT_STATUS',
+                'TYPE',
+                'COST_PRICE',
+                'PAYMENT_DATE',
+            ]]
+        normalized_row = ['' if value is None else str(value) for value in (row_values or [])]
+        if len(normalized_row) < 10:
+            normalized_row += [''] * (10 - len(normalized_row))
+        rows.append(normalized_row)
+        return self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', rows)
+
+    def _update_cached_cashflow_row(self, row_num, row_values):
+        if not self.postgres_ready:
+            return False
+        target_row = int(row_num or 0)
+        if target_row <= 1:
+            return False
+        rows = list(self._load_cached_rows('cashflow_expense_values') or [])
+        if target_row - 1 >= len(rows):
+            return False
+        normalized_row = ['' if value is None else str(value) for value in (row_values or [])]
+        if len(normalized_row) < 10:
+            normalized_row += [''] * (10 - len(normalized_row))
+        rows[target_row - 1] = normalized_row
+        return self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', rows)
+
+    def _delete_cached_cashflow_row(self, row_num):
+        if not self.postgres_ready:
+            return False
+        target_row = int(row_num or 0)
+        if target_row <= 1:
+            return False
+        rows = list(self._load_cached_rows('cashflow_expense_values') or [])
+        if target_row - 1 >= len(rows):
+            return False
+        rows.pop(target_row - 1)
+        return self.postgres_sync_manager.upsert_sheet_cache('cashflow_expense_values', rows)
+
     def _get_main_sheet_columns(self, force_refresh=False):
         values = self.get_main_values(force_refresh=force_refresh)
         if not values:
@@ -2607,9 +2692,34 @@ class BackendRuntime:
                 self._resolve_stock_worksheet(stock_sheet_id).append_row(row_values, value_input_option='USER_ENTERED')
                 return
 
+            if kind == 'cashflow_append_row':
+                row_values = payload.get('row_values') or []
+                worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+                worksheet.append_row(row_values, value_input_option='USER_ENTERED')
+                return
+
+            if kind == 'cashflow_update_row':
+                row = int(payload.get('row', 0))
+                row_values = payload.get('row_values') or []
+                if row <= 1:
+                    raise RuntimeError('Invalid cashflow_update_row payload')
+                if len(row_values) < 10:
+                    row_values = list(row_values) + [''] * (10 - len(row_values))
+                worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+                worksheet.update(f'A{row}:J{row}', [row_values], value_input_option='USER_ENTERED')
+                return
+
+            if kind == 'cashflow_delete_row':
+                row = int(payload.get('row', 0))
+                if row <= 1:
+                    raise RuntimeError('Invalid cashflow_delete_row payload')
+                worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+                worksheet.delete_rows(row)
+                return
+
         raise RuntimeError(f'Unsupported queue operation kind: {kind}')
 
-    def _enqueue_db_first_operation(self, entity_name, operation, payload, cache_apply_callable=None):
+    def _enqueue_db_first_operation(self, entity_name, operation, payload, cache_apply_callable=None, cache_rollback_callable=None):
         if not self.postgres_ready:
             # Fallback path for deployments without PostgreSQL:
             # execute the write directly against Google Sheets so core workflows
@@ -2621,6 +2731,7 @@ class BackendRuntime:
                 raise RuntimeError(self.sync_state.get('sheet_error') or 'Google Sheets connection unavailable')
 
             self._replay_queue_operation({'payload_json': payload})
+            self.logger.info('write_source=google_sheets_direct kind=%s reason=postgres_not_ready', payload.get('kind', ''))
             return 'direct-sheet-write'
 
         queue_id = self.postgres_sync_manager.enqueue_operation(entity_name, operation, payload)
@@ -2630,9 +2741,19 @@ class BackendRuntime:
         if cache_apply_callable is not None:
             try:
                 cache_apply_callable()
+                self.logger.info('write_source=postgres_cache kind=%s queue_id=%s', payload.get('kind', ''), queue_id)
             except Exception as exc:
                 try:
                     self.postgres_sync_manager.mark_operation_failed(queue_id, f'Cache apply failed: {exc}')
+                except Exception:
+                    pass
+                if cache_rollback_callable is not None:
+                    try:
+                        cache_rollback_callable()
+                    except Exception as rollback_exc:
+                        self.logger.warning('Cache rollback failed for queue_id=%s: %s', queue_id, rollback_exc)
+                try:
+                    self.postgres_sync_manager.delete_operation(queue_id)
                 except Exception:
                     pass
                 raise
@@ -2654,9 +2775,11 @@ class BackendRuntime:
                 self._replay_queue_operation(item)
                 self.postgres_sync_manager.mark_operation_done(item['id'])
                 processed += 1
+                self.logger.info('backup_sync_status=success queue_id=%s kind=%s', item.get('id'), (item.get('payload_json') or {}).get('kind', ''))
             except Exception as exc:
                 self.postgres_sync_manager.mark_operation_failed(item['id'], str(exc))
                 failed += 1
+                self.logger.warning('backup_sync_status=failed queue_id=%s kind=%s error=%s', item.get('id'), (item.get('payload_json') or {}).get('kind', ''), exc)
 
         remaining = len(self.postgres_sync_manager.fetch_pending_operations(limit=500))
         return {
@@ -2670,6 +2793,7 @@ class BackendRuntime:
         if not force_refresh:
             cached = self._load_cached_rows('main_records')
             if cached:
+                self.logger.info('read_source=postgres_cache table=main_records rows=%s', len(cached))
                 return cached
 
         if self.postgres_ready:
@@ -2677,6 +2801,7 @@ class BackendRuntime:
                 self.pull_once()
                 cached = self._load_cached_rows('main_records')
                 if cached:
+                    self.logger.info('read_source=postgres_cache table=main_records rows=%s mode=after_pull', len(cached))
                     return cached
             except Exception as exc:
                 self.logger.warning('Backend main_records pull refresh failed: %s', exc)
@@ -2686,6 +2811,7 @@ class BackendRuntime:
 
         with self._sheet_lock:
             records = self.main_sheet.get_all_records()
+        self.logger.info('read_source=google_sheets table=main_records rows=%s', len(records))
         if self.postgres_ready:
             try:
                 self.postgres_sync_manager.upsert_sheet_cache('main_records', records)
@@ -2728,6 +2854,7 @@ class BackendRuntime:
         cached = self._load_cached_rows('stock_values')
         if not force_refresh:
             if cached:
+                self.logger.info('read_source=postgres_cache table=stock_values rows=%s', len(cached))
                 return cached
 
         if self.postgres_ready:
@@ -2735,6 +2862,7 @@ class BackendRuntime:
                 self.pull_once()
                 cached = self._load_cached_rows('stock_values')
                 if cached:
+                    self.logger.info('read_source=postgres_cache table=stock_values rows=%s mode=after_pull', len(cached))
                     return cached
             except Exception as exc:
                 self.logger.warning('Backend stock_values pull refresh failed: %s', exc)
@@ -2749,6 +2877,7 @@ class BackendRuntime:
         except Exception as exc:
             self.logger.warning('Backend stock_values direct sheet read failed: %s', exc)
             return cached or []
+        self.logger.info('read_source=google_sheets table=stock_values rows=%s', len(values))
         if self.postgres_ready:
             try:
                 self.postgres_sync_manager.upsert_sheet_cache('stock_values', values)

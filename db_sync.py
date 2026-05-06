@@ -497,6 +497,15 @@ class PostgresSyncManager:
                 cur.execute(sql, (str(error_text or '')[:2000], queue_id))
         return True
 
+    def delete_operation(self, queue_id):
+        if not self.ready or queue_id is None:
+            return False
+        sql = "DELETE FROM sync_queue WHERE id=%s"
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (queue_id,))
+        return True
+
     def fetch_pending_operations(self, limit=50, max_retry=20):
         if not self.ready:
             return []
