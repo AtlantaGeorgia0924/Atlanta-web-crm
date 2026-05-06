@@ -528,7 +528,10 @@ class BackendRuntime:
             raise RuntimeError(f'PostgreSQL startup verification failed: {details}')
 
         if 'supabase.' not in host_text:
-            message = f'Expected Supabase PostgreSQL host, got: {host_text}'
+            message = (
+                f'Expected Supabase PostgreSQL host, got: {host_text}. '
+                'Set POSTGRES_DSN to Supabase DSN; do not rely on local/service DATABASE_URL injection.'
+            )
             self.logger.error(message)
             raise RuntimeError(message)
 
@@ -2961,6 +2964,15 @@ class BackendRuntime:
             except Exception as exc:
                 self.logger.warning('Backend main_records pull refresh failed: %s', exc)
 
+            cached_after_pull = self._load_cached_rows('main_records')
+            if cached_after_pull:
+                self.logger.info('read_source=postgres_cache table=main_records rows=%s mode=after_failed_pull', len(cached_after_pull))
+                return cached_after_pull
+
+            if not force_refresh:
+                self.logger.warning('read_source=postgres_cache table=main_records rows=0 mode=no_sheet_fallback')
+                return []
+
         if not self._ensure_sheet_connection():
             return []
 
@@ -2988,6 +3000,13 @@ class BackendRuntime:
                     return cached
             except Exception as exc:
                 self.logger.warning('Backend main_values pull refresh failed: %s', exc)
+
+            cached_after_pull = self._load_cached_rows('main_values')
+            if cached_after_pull:
+                return cached_after_pull
+
+            if not force_refresh:
+                return cached or []
 
         if not self._ensure_sheet_connection():
             return cached or []
@@ -3021,6 +3040,15 @@ class BackendRuntime:
                     return cached
             except Exception as exc:
                 self.logger.warning('Backend stock_values pull refresh failed: %s', exc)
+
+            cached_after_pull = self._load_cached_rows('stock_values')
+            if cached_after_pull:
+                self.logger.info('read_source=postgres_cache table=stock_values rows=%s mode=after_failed_pull', len(cached_after_pull))
+                return cached_after_pull
+
+            if not force_refresh:
+                self.logger.warning('read_source=postgres_cache table=stock_values rows=0 mode=no_sheet_fallback')
+                return cached or []
 
         stock_sheet_id = self._resolve_stock_sheet_id()
         if not stock_sheet_id:

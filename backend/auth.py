@@ -123,7 +123,13 @@ class AuthService:
                 raise RuntimeError('PostgreSQL DSN is required at startup. Set POSTGRES_DSN or DATABASE_URL.')
 
             if not self._is_supabase_host():
-                raise RuntimeError(f'PostgreSQL host must be Supabase. Resolved host={self._postgres_host() or "unknown"}')
+                resolved_host = self._postgres_host() or 'unknown'
+                raise RuntimeError(
+                    'PostgreSQL host must be Supabase. '
+                    f'Resolved host={resolved_host}. '
+                    'Set POSTGRES_DSN to your Supabase connection string. '
+                    'If Render injects DATABASE_URL for a local Postgres service, do not rely on it for this app.'
+                )
 
             if not self._initialize_postgres_storage():
                 raise RuntimeError(f'PostgreSQL auth initialization failed: {self._last_postgres_error or "unknown error"}')
