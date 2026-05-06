@@ -1,5 +1,6 @@
 import base64
 import glob
+import hashlib
 import json
 import logging
 import mimetypes
@@ -778,12 +779,6 @@ class BackendRuntime:
         if not force_refresh:
             cached_values = self._load_cached_rows('cashflow_expense_values')
             if cached_values:
-                try:
-                    worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=False)
-                    if worksheet is not None:
-                        sheet_title = worksheet.title or sheet_title
-                except Exception:
-                    pass
                 for row_num, row_values in enumerate(cached_values[1:], start=2):
                     if not row_values or not any(str(cell or '').strip() for cell in row_values):
                         continue
@@ -1137,12 +1132,6 @@ class BackendRuntime:
         if not force_refresh:
             cached_values = self._load_cached_rows('cashflow_expense_values')
             if cached_values:
-                try:
-                    worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=False)
-                    if worksheet is not None:
-                        sheet_title = worksheet.title or sheet_title
-                except Exception:
-                    pass
                 for row_num, row_values in enumerate(cached_values[1:], start=2):
                     if not row_values or not any(str(cell or '').strip() for cell in row_values):
                         continue
@@ -2493,6 +2482,124 @@ class BackendRuntime:
             self.logger.warning('Failed to load cached payload for %s: %s', sheet_key, exc)
             return None
 
+    @staticmethod
+    def _mirror_text(value):
+        return str(value or '').strip()
+
+    @staticmethod
+    def _mirror_hash(payload):
+        payload_text = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+        return hashlib.sha256(payload_text.encode('utf-8')).hexdigest()
+
+    def _build_operational_billing_rows(self, main_records):
+        rows = []
+        for index, record in enumerate(list(main_records or []), start=2):
+            payload = dict(record or {})
+            customer_name = self._mirror_text(
+                self._record_value(payload, 'NAME', 'CLIENT NAME', 'CUSTOMER NAME', 'NAME OF BUYER')
+            )
+            payment_status = self._mirror_text(
+                self._record_value(payload, 'STATUS', 'PAYMENT STATUS')
+            ).upper()
+            payment_date = self._mirror_text(
+                self._record_value(payload, 'PAYMENT DATE', 'PAID DATE', 'DATE')
+            )
+            imei = self._mirror_text(self._record_value(payload, 'IMEI'))
+            record_id = self._mirror_text(self._record_value(payload, 'RECORD_ID'))
+            source_hash = self._mirror_hash(payload)
+            rows.append({
+                'sheet_row_num': index,
+                'record_id': record_id,
+                'imei': imei,
+                'customer_name': customer_name,
+                'payment_status': payment_status,
+                'payment_date': payment_date,
+                'payload_json': payload,
+                'source_hash': source_hash,
+            })
+        return rows
+
+    def _build_operational_stock_rows(self, stock_values):
+        rows = []
+        values = list(stock_values or [])
+        if not values:
+            return rows
+
+        header_row_idx, headers, headers_upper = detect_stock_headers(values)
+        for data_index, row_values in enumerate(values[header_row_idx + 1:], start=header_row_idx + 2):
+            row = list(row_values or [])
+            payload = {
+                str(headers[col_index]): (row[col_index] if col_index < len(row) else '')
+                for col_index in range(len(headers))
+            }
+            customer_name = self._mirror_text(
+                self._record_value(payload, 'NAME OF BUYER', 'NAME', 'CLIENT NAME', 'CUSTOMER NAME')
+            )
+            payment_status = self._mirror_text(
+                self._record_value(payload, 'PAYMENT STATUS', 'STATUS', 'INVENTORY STATUS', 'PRODUCT STATUS')
+            ).upper()
+            payment_date = self._mirror_text(
+                self._record_value(payload, 'PAYMENT DATE', 'PAID DATE', 'DATE SOLD', 'AVAILABILITY/DATE SOLD')
+            )
+            imei = self._mirror_text(self._record_value(payload, 'IMEI'))
+            record_id = self._mirror_text(self._record_value(payload, 'RECORD_ID'))
+            source_hash = self._mirror_hash(payload)
+            rows.append({
+                'sheet_row_num': data_index,
+                'record_id': record_id,
+                'imei': imei,
+                'customer_name': customer_name,
+                'payment_status': payment_status,
+                'payment_date': payment_date,
+                'payload_json': payload,
+                'source_hash': source_hash,
+            })
+        return rows
+
+    def _build_operational_cashflow_rows(self, cashflow_values):
+        rows = []
+        values = list(cashflow_values or [])
+        if not values:
+            return rows
+
+        for row_num, row_values in enumerate(values[1:], start=2):
+            normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+            payload = dict(normalized)
+            customer_name = self._mirror_text(normalized.get('created_by'))
+            payment_status = self._mirror_text(normalized.get('payment_status')).upper()
+            payment_date = self._mirror_text(normalized.get('payment_date') or normalized.get('date'))
+            source_hash = self._mirror_hash(payload)
+            rows.append({
+                'sheet_row_num': row_num,
+                'record_id': '',
+                'imei': '',
+                'customer_name': customer_name,
+                'payment_status': payment_status,
+                'payment_date': payment_date,
+                'payload_json': payload,
+                'source_hash': source_hash,
+            })
+        return rows
+
+    def _refresh_operational_mirrors(self, main_records, stock_values, cashflow_expense_values):
+        if not self.postgres_ready:
+            return
+        try:
+            billing_rows = self._build_operational_billing_rows(main_records)
+            stock_rows = self._build_operational_stock_rows(stock_values)
+            cashflow_rows = self._build_operational_cashflow_rows(cashflow_expense_values)
+            self.postgres_sync_manager.replace_operational_rows('operational_billing_rows', billing_rows)
+            self.postgres_sync_manager.replace_operational_rows('operational_stock_rows', stock_rows)
+            self.postgres_sync_manager.replace_operational_rows('operational_cashflow_rows', cashflow_rows)
+            self.logger.info(
+                'operational_mirror_refresh=success billing=%s stock=%s cashflow=%s',
+                len(billing_rows),
+                len(stock_rows),
+                len(cashflow_rows),
+            )
+        except Exception as exc:
+            self.logger.warning('operational_mirror_refresh=failed error=%s', exc)
+
     def _append_cached_cashflow_row(self, row_values):
         if not self.postgres_ready:
             return False
@@ -2614,6 +2721,7 @@ class BackendRuntime:
                     )
 
             self.postgres_sync_manager.upsert_cache_payload('stock_color_status_map', stock_color_status_map)
+            self._refresh_operational_mirrors(main_records, stock_values, cashflow_expense_values)
             self.postgres_sync_manager.set_meta('sync_runtime', {
                 'mode': 'sheet_wins',
                 'startup_mode': self.config.get('startup_mode', 'cache_then_sync'),

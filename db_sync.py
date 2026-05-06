@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import threading
 import time
@@ -217,6 +218,70 @@ class PostgresSyncManager:
         CREATE UNIQUE INDEX IF NOT EXISTS uq_stolen_devices_imei_raw_active
             ON stolen_devices(imei_raw)
             WHERE is_active = TRUE;
+
+        CREATE TABLE IF NOT EXISTS operational_stock_rows (
+            id BIGSERIAL PRIMARY KEY,
+            sheet_row_num INTEGER NOT NULL,
+            record_id TEXT,
+            imei TEXT,
+            customer_name TEXT,
+            payment_status TEXT,
+            payment_date TEXT,
+            payload_json JSONB NOT NULL,
+            source_hash TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS operational_billing_rows (
+            id BIGSERIAL PRIMARY KEY,
+            sheet_row_num INTEGER,
+            record_id TEXT,
+            imei TEXT,
+            customer_name TEXT,
+            payment_status TEXT,
+            payment_date TEXT,
+            payload_json JSONB NOT NULL,
+            source_hash TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS operational_cashflow_rows (
+            id BIGSERIAL PRIMARY KEY,
+            sheet_row_num INTEGER,
+            record_id TEXT,
+            imei TEXT,
+            customer_name TEXT,
+            payment_status TEXT,
+            payment_date TEXT,
+            payload_json JSONB NOT NULL,
+            source_hash TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_operational_stock_source_hash ON operational_stock_rows(source_hash);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_operational_billing_source_hash ON operational_billing_rows(source_hash);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_operational_cashflow_source_hash ON operational_cashflow_rows(source_hash);
+
+        CREATE INDEX IF NOT EXISTS idx_operational_stock_imei ON operational_stock_rows(imei);
+        CREATE INDEX IF NOT EXISTS idx_operational_stock_payment_status ON operational_stock_rows(payment_status);
+        CREATE INDEX IF NOT EXISTS idx_operational_stock_payment_date ON operational_stock_rows(payment_date);
+        CREATE INDEX IF NOT EXISTS idx_operational_stock_created_at ON operational_stock_rows(created_at);
+        CREATE INDEX IF NOT EXISTS idx_operational_stock_customer_name ON operational_stock_rows(customer_name);
+
+        CREATE INDEX IF NOT EXISTS idx_operational_billing_imei ON operational_billing_rows(imei);
+        CREATE INDEX IF NOT EXISTS idx_operational_billing_payment_status ON operational_billing_rows(payment_status);
+        CREATE INDEX IF NOT EXISTS idx_operational_billing_payment_date ON operational_billing_rows(payment_date);
+        CREATE INDEX IF NOT EXISTS idx_operational_billing_created_at ON operational_billing_rows(created_at);
+        CREATE INDEX IF NOT EXISTS idx_operational_billing_customer_name ON operational_billing_rows(customer_name);
+
+        CREATE INDEX IF NOT EXISTS idx_operational_cashflow_imei ON operational_cashflow_rows(imei);
+        CREATE INDEX IF NOT EXISTS idx_operational_cashflow_payment_status ON operational_cashflow_rows(payment_status);
+        CREATE INDEX IF NOT EXISTS idx_operational_cashflow_payment_date ON operational_cashflow_rows(payment_date);
+        CREATE INDEX IF NOT EXISTS idx_operational_cashflow_created_at ON operational_cashflow_rows(created_at);
+        CREATE INDEX IF NOT EXISTS idx_operational_cashflow_customer_name ON operational_cashflow_rows(customer_name);
         """
 
         with self._connect() as conn:
@@ -464,6 +529,26 @@ class PostgresSyncManager:
         if not self.ready:
             return None
 
+        normalized_payload = payload_obj or {}
+        payload_text = json.dumps(normalized_payload, sort_keys=True, separators=(',', ':'))
+
+        existing_sql = """
+        SELECT id
+        FROM sync_queue
+        WHERE entity_name = %s
+          AND operation = %s
+          AND payload_json = %s::jsonb
+          AND status IN ('pending', 'failed')
+        ORDER BY id ASC
+        LIMIT 1
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(existing_sql, (entity_name, operation, payload_text))
+                existing = cur.fetchone()
+                if existing:
+                    return int(existing[0])
+
         sql = """
         INSERT INTO sync_queue (entity_name, operation, record_id, payload_json, status, retry_count, updated_at)
         VALUES (%s, %s, %s, %s, 'pending', 0, NOW())
@@ -471,9 +556,63 @@ class PostgresSyncManager:
         """
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, (entity_name, operation, record_id, Json(payload_obj or {})))
+                cur.execute(sql, (entity_name, operation, record_id, Json(normalized_payload)))
                 row = cur.fetchone()
         return int(row[0]) if row else None
+
+    def replace_operational_rows(self, table_name, rows):
+        if not self.ready:
+            return False
+
+        valid_tables = {
+            'operational_stock_rows',
+            'operational_billing_rows',
+            'operational_cashflow_rows',
+        }
+        if table_name not in valid_tables:
+            raise ValueError(f'Unsupported operational table: {table_name}')
+
+        normalized_rows = list(rows or [])
+        delete_sql = f"DELETE FROM {table_name}"
+        insert_sql = f"""
+        INSERT INTO {table_name} (
+            sheet_row_num,
+            record_id,
+            imei,
+            customer_name,
+            payment_status,
+            payment_date,
+            payload_json,
+            source_hash,
+            created_at,
+            updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        """
+
+        with self._db_lock:
+            with self._connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(delete_sql)
+                    for row in normalized_rows:
+                        payload = row.get('payload_json') or {}
+                        payload_text = json.dumps(payload, sort_keys=True, separators=(',', ':'))
+                        source_hash = str(row.get('source_hash') or '').strip()
+                        if not source_hash:
+                            source_hash = hashlib.sha256(payload_text.encode('utf-8')).hexdigest()
+                        cur.execute(
+                            insert_sql,
+                            (
+                                row.get('sheet_row_num'),
+                                row.get('record_id'),
+                                row.get('imei'),
+                                row.get('customer_name'),
+                                row.get('payment_status'),
+                                row.get('payment_date'),
+                                Json(payload),
+                                source_hash,
+                            ),
+                        )
+        return True
 
     def mark_operation_done(self, queue_id):
         if not self.ready or queue_id is None:
@@ -535,7 +674,7 @@ class PostgresSyncManager:
             })
         return output
 
-    def start_background_queue_worker(self, process_item_callable, interval_sec=3):
+    def start_background_queue_worker(self, process_item_callable, interval_sec=3, operation_timeout_sec=30):
         if not self.ready:
             return False
         if self._queue_thread and self._queue_thread.is_alive():
@@ -550,7 +689,21 @@ class PostgresSyncManager:
                     if items:
                         for item in items:
                             try:
-                                process_item_callable(item)
+                                result_holder = {'error': None}
+
+                                def _run_item():
+                                    try:
+                                        process_item_callable(item)
+                                    except Exception as inner_exc:
+                                        result_holder['error'] = inner_exc
+
+                                worker = threading.Thread(target=_run_item, name=f"sync-queue-item-{item.get('id')}", daemon=True)
+                                worker.start()
+                                worker.join(timeout=max(5, int(operation_timeout_sec or 30)))
+                                if worker.is_alive():
+                                    raise TimeoutError(f"Queue item timed out after {int(operation_timeout_sec or 30)}s")
+                                if result_holder['error'] is not None:
+                                    raise result_holder['error']
                                 self.mark_operation_done(item['id'])
                             except Exception as item_exc:
                                 self.mark_operation_failed(item['id'], str(item_exc))

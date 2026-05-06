@@ -413,6 +413,8 @@ def build_live_stock_view(
     filter_text: str = '',
     filter_mode: str = 'all',
     force_refresh: bool = False,
+    page: int = 1,
+    page_size: int = 0,
     runtime=Depends(get_runtime),
     current_user=Depends(get_current_user),
 ):
@@ -424,6 +426,17 @@ def build_live_stock_view(
         ))
         if _is_staff_user(current_user):
             stock_view = _sanitize_stock_view_for_staff(stock_view)
+
+        all_rows = list(stock_view.get('all_rows_cache') or [])
+        stock_view['total_rows'] = len(all_rows)
+        if int(page_size or 0) > 0:
+            safe_page_size = max(1, min(int(page_size), 1000))
+            safe_page = max(1, int(page or 1))
+            start = (safe_page - 1) * safe_page_size
+            end = start + safe_page_size
+            stock_view['page'] = safe_page
+            stock_view['page_size'] = safe_page_size
+            stock_view['all_rows_cache'] = all_rows[start:end]
         return stock_view
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
