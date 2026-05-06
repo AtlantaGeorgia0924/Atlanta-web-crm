@@ -189,9 +189,7 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
 @router.get('/weekly-allowance', dependencies=[Depends(require_admin)])
 def get_weekly_allowance(runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        summary = runtime.financial_data_service.get_weekly_allowance_summary(
-            actor_role=str((current_user or {}).get('role') or ''),
-        )
+        summary = runtime.get_weekly_allowance_from_sheet(force_refresh=False)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
