@@ -1413,6 +1413,58 @@ function CashFlowView({
   });
 
   const recentExpenses = Array.isArray(expenses) ? expenses.slice(0, 8) : [];
+  const weekExpenseAudit = useMemo(() => {
+    const allExpenses = Array.isArray(expenses) ? expenses : [];
+    const counted = [];
+    const outsideWeek = [];
+    const invalidDate = [];
+
+    allExpenses.forEach((expense) => {
+      const rawDate = expense?.payment_date || expense?.date || '';
+      const parsedDate = parse_date_approx(rawDate);
+      const amountValue = Number(expense?.amount || 0) || 0;
+      const categoryText = String(expense?.category || '');
+      const isBusinessOnly = categoryText.toLowerCase().includes('business only');
+      const row = {
+        date: rawDate,
+        category: categoryText,
+        description: String(expense?.description || ''),
+        amount: amountValue,
+        created_by: String(expense?.created_by || ''),
+        allowance_impact: isBusinessOnly ? 'business_only' : 'personal_allowance',
+      };
+
+      if (!(parsedDate instanceof Date) || Number.isNaN(parsedDate.getTime())) {
+        invalidDate.push({ ...row, reason: 'invalid_or_missing_date' });
+        return;
+      }
+
+      if (parsedDate >= weekStart && parsedDate <= weekEnd) {
+        counted.push(row);
+        return;
+      }
+
+      outsideWeek.push({
+        ...row,
+        parsed_date: parsedDate.toISOString().slice(0, 10),
+        reason: 'outside_current_week_window',
+      });
+    });
+
+    const countTotals = (rows) => ({
+      total: roundCurrency(rows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0)),
+      personal: roundCurrency(rows.filter((row) => row.allowance_impact !== 'business_only').reduce((sum, row) => sum + (Number(row.amount) || 0), 0)),
+      business_only: roundCurrency(rows.filter((row) => row.allowance_impact === 'business_only').reduce((sum, row) => sum + (Number(row.amount) || 0), 0)),
+    });
+
+    return {
+      counted,
+      outsideWeek,
+      invalidDate,
+      countedTotals: countTotals(counted),
+      outsideTotals: countTotals(outsideWeek),
+    };
+  }, [expenses, weekStart, weekEnd]);
 
   async function handleSubmitExpense(event) {
     event.preventDefault();
@@ -1486,12 +1538,23 @@ function CashFlowView({
   }
 
   const weekGrossProfit = (summary.current_week_phone_profit || 0) + (summary.current_week_service_profit || 0);
+  const weekProfitDoneThisWeek = Number(summary.current_week_profit_done_this_week || 0);
+  const weekProfitPrevPaidThisWeek = Number(summary.current_week_profit_previous_weeks_paid_this_week || 0);
+  const weekProfitCombined = weekProfitDoneThisWeek + weekProfitPrevPaidThisWeek;
   const allowanceFormulaCards = [
     {
       key: 'allowance-formula-profit',
-      label: 'Realized Profit (Week)',
-      value: formatCurrency(weekGrossProfit),
-      note: `Phone ${formatCurrency(summary.current_week_phone_profit || 0)} + services ${formatCurrency(summary.current_week_service_profit || 0)}.`,
+      label: 'Profit Done This Week',
+      value: formatCurrency(weekProfitDoneThisWeek),
+      note: `Phone ${formatCurrency(summary.current_week_phone_profit || 0)} + service work done this week ${formatCurrency(summary.current_week_service_profit_done_this_week || 0)}.` + (summary.current_week_service_profit_reconciled_delta > 0
+        ? ` Includes ${formatCurrency(summary.current_week_service_profit_reconciled_delta || 0)} paid this week for ${formatCount(summary.current_week_service_profit_reconciled_rows || 0)} older service row(s).`
+        : ''),
+    },
+    {
+      key: 'allowance-formula-prev-paid',
+      label: 'Previous Weeks Paid This Week',
+      value: formatCurrency(weekProfitPrevPaidThisWeek),
+      note: 'Profit from older work received this week (added to this week profit).',
     },
     {
       key: 'allowance-formula-expenses',
@@ -1503,7 +1566,7 @@ function CashFlowView({
       key: 'allowance-formula-base',
       label: 'Allowance Base',
       value: formatCurrency(summary.allowance_base_net_profit || 0),
-      note: 'Allowance base = realized profit minus allowance expenses.',
+      note: `Allowance base = (${formatCurrency(weekProfitDoneThisWeek)} + ${formatCurrency(weekProfitPrevPaidThisWeek)}) - ${formatCurrency(summary.current_week_allowance_expenses || 0)}.`,
     },
     {
       key: 'allowance-formula-final',
@@ -1550,8 +1613,8 @@ function CashFlowView({
     {
       key: 'week-gross',
       label: 'This Week Realized Profit',
-      value: formatCurrency(weekGrossProfit),
-      note: `Phone realized profit ${formatCurrency(summary.current_week_phone_profit || 0)} + service realized profit ${formatCurrency(summary.current_week_service_profit || 0)}. Click to view.`,
+      value: formatCurrency(weekProfitCombined || weekGrossProfit),
+      note: `Profit done this week ${formatCurrency(weekProfitDoneThisWeek)} + previous weeks paid this week ${formatCurrency(weekProfitPrevPaidThisWeek)}. Click to view.`,
       className: '',
       onClick: () => openDrillDown('This Week Realized Profit — Phones & Services', (tx) => tx.source === 'income' && tx.payment_status !== 'OWING' && txIsThisWeek(tx, weekStart, weekEnd)),
     },
@@ -1978,6 +2041,61 @@ function CashFlowView({
         ) : (
           <div className="notice" style={{ marginTop: '12px' }}>
             No expenses recorded yet.
+          </div>
+        )}
+      </section>
+
+      <section className="summary-frame">
+        <h3>Week Expense Audit</h3>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          Week window: {weekStart.toISOString().slice(0, 10)} to {weekEnd.toISOString().slice(0, 10)}. This explains what is counted in this week expenses and what is excluded.
+        </p>
+        <div className="summary-grid summary-grid--home" style={{ marginTop: '12px' }}>
+          <article className="metric-card metric-card--home">
+            <span className="metric-label">Counted This Week</span>
+            <strong className="metric-value">{formatCurrency(weekExpenseAudit.countedTotals.total)}</strong>
+            <span className="metric-note">Personal {formatCurrency(weekExpenseAudit.countedTotals.personal)} | Business-only {formatCurrency(weekExpenseAudit.countedTotals.business_only)}</span>
+          </article>
+          <article className="metric-card metric-card--home">
+            <span className="metric-label">Excluded (Outside Week)</span>
+            <strong className="metric-value">{formatCurrency(weekExpenseAudit.outsideTotals.total)}</strong>
+            <span className="metric-note">Rows: {formatCount(weekExpenseAudit.outsideWeek.length)}</span>
+          </article>
+          <article className="metric-card metric-card--home">
+            <span className="metric-label">Excluded (Invalid Date)</span>
+            <strong className="metric-value">{formatCount(weekExpenseAudit.invalidDate.length)}</strong>
+            <span className="metric-note">These need a valid date to be included.</span>
+          </article>
+        </div>
+
+        {(weekExpenseAudit.outsideWeek.length || weekExpenseAudit.invalidDate.length) ? (
+          <div className="table-wrap table-wrap--mobile-cards" style={{ marginTop: '12px' }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Reason</th>
+                  <th>Date</th>
+                  <th>Category</th>
+                  <th>Description</th>
+                  <th>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...weekExpenseAudit.outsideWeek, ...weekExpenseAudit.invalidDate].slice(0, 24).map((row, index) => (
+                  <tr key={`expense-audit-${index}-${row.date}-${row.amount}`}>
+                    <td data-label="Reason">{row.reason === 'outside_current_week_window' ? 'Outside Week' : 'Invalid Date'}</td>
+                    <td data-label="Date">{row.date || '—'}</td>
+                    <td data-label="Category">{row.category || 'Expense'}</td>
+                    <td data-label="Description">{row.description || '—'}</td>
+                    <td data-label="Amount">{formatCurrency(row.amount || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="notice" style={{ marginTop: '12px' }}>
+            No excluded expense rows detected for this week.
           </div>
         )}
       </section>
@@ -6080,6 +6198,14 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       current_week_expenses: 0,
       current_week_phone_profit: 0,
       current_week_service_profit: 0,
+      current_week_service_profit_done_this_week: 0,
+      current_week_service_profit_previous_weeks_paid_this_week: 0,
+      current_week_profit_done_this_week: 0,
+      current_week_profit_previous_weeks_paid_this_week: 0,
+      current_week_service_profit_cashflow: 0,
+      current_week_service_profit_reconciled_total: 0,
+      current_week_service_profit_reconciled_delta: 0,
+      current_week_service_profit_reconciled_rows: 0,
       current_week_net_cash_flow: 0,
       current_week_net_profit: 0,
       allowance_base_net_profit: 0,

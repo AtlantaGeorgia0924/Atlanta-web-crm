@@ -1455,6 +1455,8 @@ class BackendRuntime:
         current_week_business_only_expenses = 0.0
         current_week_phone_profit = 0.0
         current_week_service_profit = 0.0
+        current_week_service_profit_done_this_week = 0.0
+        current_week_service_profit_previous_weeks_paid_this_week = 0.0
 
         # Month-level support metrics.
         monthly_allowance_paid = 0.0
@@ -1536,7 +1538,9 @@ class BackendRuntime:
                     bucket_week_start = entry_date - timedelta(days=(entry_date.weekday() + 1) % 7)
                     week_key = bucket_week_start.isoformat()
                     bucket = weekly_month_buckets.setdefault(week_key, {'realized_income': 0.0, 'allowance_expenses': 0.0})
-                    realized_income_for_allowance = amount if entry_type != 'phone' else phone_realized_amount
+                    # Weekly allowance should be based on paid profit without
+                    # reducing phone income by stocking cost.
+                    realized_income_for_allowance = amount
                     bucket['realized_income'] += realized_income_for_allowance
 
             if entry_date is not None and current_week_start <= entry_date <= current_week_end_date:
@@ -1544,8 +1548,10 @@ class BackendRuntime:
                     current_week_paid_income += amount
                     if entry_type == 'service' or ('service' in category and entry_type not in ('phone', 'service')):
                         current_week_service_profit += amount
+                        current_week_service_profit_done_this_week += amount
                     else:
-                        current_week_phone_profit += phone_realized_amount
+                        # Keep this week's phone profit on paid amount basis.
+                        current_week_phone_profit += amount
                 elif not is_income:
                     current_week_expenses += amount
                     if is_business_only_expense:
@@ -1568,7 +1574,11 @@ class BackendRuntime:
         # Reconcile weekly service profit directly from main records using
         # payment date + amount paid so older services paid this week are
         # included even if legacy cashflow rows were missed.
+        current_week_service_profit_cashflow = round(current_week_service_profit, 2)
         reconciled_current_week_service_profit = 0.0
+        reconciled_current_week_service_rows = 0
+        reconciled_current_week_service_done_this_week = 0.0
+        reconciled_current_week_service_previous_weeks_paid_this_week = 0.0
         try:
             main_records = self.get_main_records(force_refresh=force_refresh)
             for record in main_records or []:
@@ -1588,15 +1598,32 @@ class BackendRuntime:
                 realized_value = paid_value if paid_value > 0 else (price_value if status_text == 'PAID' else 0.0)
                 if realized_value > 0:
                     reconciled_current_week_service_profit += realized_value
+                    reconciled_current_week_service_rows += 1
+                    service_work_date = parse_sheet_date(
+                        self._record_value(record, 'DATE', 'SERVICE DATE')
+                    )
+                    if service_work_date is not None and service_work_date < current_week_start:
+                        reconciled_current_week_service_previous_weeks_paid_this_week += realized_value
+                    else:
+                        reconciled_current_week_service_done_this_week += realized_value
         except Exception as reconcile_exc:
             self.logger.warning('Failed to reconcile weekly service profit from main records: %s', reconcile_exc)
 
+        current_week_service_profit_reconciled_delta = 0.0
         if reconciled_current_week_service_profit > current_week_service_profit:
             missing_service_profit_delta = round(reconciled_current_week_service_profit - current_week_service_profit, 2)
+            current_week_service_profit_reconciled_delta = missing_service_profit_delta
             current_week_service_profit = round(reconciled_current_week_service_profit, 2)
+            current_week_service_profit_done_this_week = round(reconciled_current_week_service_done_this_week, 2)
+            current_week_service_profit_previous_weeks_paid_this_week = round(reconciled_current_week_service_previous_weeks_paid_this_week, 2)
             current_week_paid_income = round(current_week_paid_income + missing_service_profit_delta, 2)
+        else:
+            current_week_service_profit_done_this_week = round(current_week_service_profit_done_this_week, 2)
+            current_week_service_profit_previous_weeks_paid_this_week = 0.0
 
-        weekly_realized_profit = round(current_week_phone_profit + current_week_service_profit, 2)
+        current_week_profit_done_this_week = round(current_week_phone_profit + current_week_service_profit_done_this_week, 2)
+        current_week_profit_previous_weeks_paid_this_week = round(current_week_service_profit_previous_weeks_paid_this_week, 2)
+        weekly_realized_profit = round(current_week_profit_done_this_week + current_week_profit_previous_weeks_paid_this_week, 2)
         current_week_net_cash_flow = round(current_week_paid_income - current_week_expenses, 2)
         current_week_net_profit = round(weekly_realized_profit - current_week_expenses, 2)
         allowance_base_net_profit = round(weekly_realized_profit - current_week_allowance_expenses, 2)
@@ -1686,6 +1713,14 @@ class BackendRuntime:
             'current_week_expenses': round(current_week_expenses, 2),
             'current_week_phone_profit': round(current_week_phone_profit, 2),
             'current_week_service_profit': round(current_week_service_profit, 2),
+            'current_week_service_profit_done_this_week': round(current_week_service_profit_done_this_week, 2),
+            'current_week_service_profit_previous_weeks_paid_this_week': round(current_week_service_profit_previous_weeks_paid_this_week, 2),
+            'current_week_profit_done_this_week': current_week_profit_done_this_week,
+            'current_week_profit_previous_weeks_paid_this_week': current_week_profit_previous_weeks_paid_this_week,
+            'current_week_service_profit_cashflow': current_week_service_profit_cashflow,
+            'current_week_service_profit_reconciled_total': round(reconciled_current_week_service_profit, 2),
+            'current_week_service_profit_reconciled_delta': round(current_week_service_profit_reconciled_delta, 2),
+            'current_week_service_profit_reconciled_rows': int(reconciled_current_week_service_rows),
             'weekly_realized_profit': weekly_realized_profit,
             'current_week_net_cash_flow': current_week_net_cash_flow,
             'current_week_net_profit': current_week_net_profit,
