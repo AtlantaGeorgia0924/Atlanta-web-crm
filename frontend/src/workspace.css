@@ -150,6 +150,13 @@ textarea:focus {
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.06);
 }
 
+.content-panel,
+.summary-frame,
+.graph-panel {
+  content-visibility: auto;
+  contain-intrinsic-size: 420px;
+}
+
 .sidebar-frame {
   padding: 24px 22px;
   position: sticky;
@@ -528,6 +535,52 @@ textarea:focus {
   border-radius: 20px;
   border: 1px solid rgba(61, 46, 26, 0.08);
   background: rgba(255, 253, 248, 0.9);
+  contain: layout paint inline-size;
+}
+
+.table-wrap--loading {
+  position: relative;
+}
+
+.table-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(255, 253, 248, 0.55);
+  backdrop-filter: blur(1px);
+  pointer-events: none;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: rgba(51, 39, 22, 0.86);
+}
+
+.loading-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 2px solid rgba(51, 39, 22, 0.25);
+  border-top-color: rgba(51, 39, 22, 0.85);
+  animation: table-spinner-rotate 0.75s linear infinite;
+}
+
+@keyframes table-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.table-wrap--windowed {
+  max-height: min(72vh, 860px);
+  overscroll-behavior: contain;
+}
+
+.table-spacer-row td {
+  padding: 0 !important;
+  border-bottom: none !important;
+  background: transparent !important;
 }
 
 .table-wrap--narrow {

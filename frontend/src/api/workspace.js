@@ -1,9 +1,14 @@
 import { requestJson } from './http';
 
+const SHORT_CACHE_MS = 8_000;
+const MEDIUM_CACHE_MS = 20_000;
+const LONG_CACHE_MS = 60_000;
+
 export function fetchLiveDebtors({ forceRefresh = false, signal } = {}) {
   return requestJson('/api/billing/debtors/live', {
     query: { force_refresh: forceRefresh },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
   });
 }
 
@@ -11,6 +16,7 @@ export function fetchLiveSalesSnapshot({ forceRefresh = false, signal } = {}) {
   return requestJson('/api/billing/sales-snapshot/live', {
     query: { force_refresh: forceRefresh },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
   });
 }
 
@@ -18,6 +24,7 @@ export function fetchHomeBootstrap({ forceRefresh = false, signal } = {}) {
   return requestJson('/api/billing/home-bootstrap', {
     query: { force_refresh: forceRefresh },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
   });
 }
 
@@ -25,6 +32,7 @@ export function fetchOutstandingItems(nameInput, { forceRefresh = false, signal 
   return requestJson(`/api/billing/outstanding-items/live/${encodeURIComponent(nameInput)}`, {
     query: { force_refresh: forceRefresh },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
   });
 }
 
@@ -32,6 +40,7 @@ export function fetchLiveBill(nameInput, { forceRefresh = false, signal } = {}) 
   return requestJson(`/api/billing/bill/live/${encodeURIComponent(nameInput)}`, {
     query: { force_refresh: forceRefresh },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
   });
 }
 
@@ -116,6 +125,7 @@ export function fetchWhatsappHistory({ forceRefresh = false, signal } = {}) {
   return requestJson('/api/billing/whatsapp/history/live', {
     query: { force_refresh: forceRefresh },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : MEDIUM_CACHE_MS,
   });
 }
 
@@ -143,6 +153,7 @@ export function fetchUnpaidToday({ forceRefresh = false, signal } = {}) {
   return requestJson('/api/billing/unpaid-today/live', {
     query: { force_refresh: forceRefresh },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
   });
 }
 
@@ -150,6 +161,7 @@ export function fetchUnpaidTodayBills({ forceRefresh = false, signal } = {}) {
   return requestJson('/api/billing/unpaid-today/live-bills', {
     query: { force_refresh: forceRefresh },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
   });
 }
 
@@ -160,6 +172,7 @@ export function fetchServicesToday({ forceRefresh = false, targetDate = '', sign
       target_date: targetDate,
     },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
   });
 }
 
@@ -170,17 +183,19 @@ export function searchServices({ query = '', forceRefresh = false, signal } = {}
       force_refresh: forceRefresh,
     },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : 2_000,
   });
 }
 
 export function fetchFoundationCashflowSummary({ signal } = {}) {
-  return requestJson('/api/foundation/cashflow-summary', { signal });
+  return requestJson('/api/foundation/cashflow-summary', { signal, cacheTtlMs: SHORT_CACHE_MS });
 }
 
 export function fetchFoundationWeeklyAllowance({ signal, cashflowPin = '' } = {}) {
   return requestJson('/api/foundation/weekly-allowance', {
     signal,
     headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
+    cacheTtlMs: SHORT_CACHE_MS,
   });
 }
 
@@ -189,6 +204,7 @@ export function fetchFoundationCashflowDashboard({ forceRefresh = false, signal,
     query: { force_refresh: forceRefresh },
     signal,
     headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
   });
 }
 
@@ -228,6 +244,7 @@ export function fetchClients({ forceReload = false, signal } = {}) {
   return requestJson('/api/clients/live', {
     query: { force_reload: forceReload },
     signal,
+    cacheTtlMs: forceReload ? 0 : MEDIUM_CACHE_MS,
   });
 }
 
@@ -269,6 +286,7 @@ export function fetchGoogleContacts({ search = '', forceRefresh = false, signal 
       force_refresh: forceRefresh,
     },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : LONG_CACHE_MS,
   });
 }
 
@@ -280,13 +298,14 @@ export function syncGoogleContacts({ search = '' } = {}) {
 }
 
 export function fetchDashboardLogo({ signal, auth = true } = {}) {
-  return requestJson('/api/assets/logo', { signal, auth });
+  return requestJson('/api/assets/logo', { signal, auth, cacheTtlMs: LONG_CACHE_MS });
 }
 
 export function fetchNameFixes({ forceRefresh = false, signal } = {}) {
   return requestJson('/api/name-fix/live', {
     query: { force_refresh: forceRefresh },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : MEDIUM_CACHE_MS,
   });
 }
 
@@ -315,6 +334,7 @@ export function fetchStockForm({ forceRefresh = false, signal } = {}) {
   return requestJson('/api/stock/form/live', {
     query: { force_refresh: forceRefresh },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : LONG_CACHE_MS,
   });
 }
 
@@ -342,6 +362,7 @@ export function fetchStolenDevices({ includeInactive = false, signal } = {}) {
   return requestJson('/api/stock/live/stolen-devices', {
     query: { include_inactive: includeInactive },
     signal,
+    cacheTtlMs: MEDIUM_CACHE_MS,
   });
 }
 
@@ -371,7 +392,7 @@ export function updateStolenDevice({ recordId, phoneName = null, note = null, so
 }
 
 export function fetchSyncStatus({ signal } = {}) {
-  return requestJson('/api/sync/status', { signal });
+  return requestJson('/api/sync/status', { signal, cacheTtlMs: SHORT_CACHE_MS });
 }
 
 export function pullNow() {

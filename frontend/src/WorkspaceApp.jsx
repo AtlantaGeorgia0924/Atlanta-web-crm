@@ -261,6 +261,131 @@ function formatShortStamp(dateValue) {
   }).format(parsedDate);
 }
 
+function useRenderTiming(label, detailValue) {
+  const startedAt = performance.now();
+
+  useEffect(() => {
+    const durationMs = performance.now() - startedAt;
+    if (durationMs > 12) {
+      console.info(`[render-timing] ${label} ${Math.round(durationMs)}ms detail=${detailValue}`);
+    }
+  }, [label, detailValue, startedAt]);
+}
+
+function useDebouncedValue(value, delayMs = 120) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => setDebouncedValue(value), Math.max(0, Number(delayMs) || 0));
+    return () => window.clearTimeout(timeoutId);
+  }, [value, delayMs]);
+
+  return debouncedValue;
+}
+
+function getStockFilterDiagnosticsStore() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  if (!window.__ATLANTA_STOCK_FILTER_DIAGNOSTICS__) {
+    window.__ATLANTA_STOCK_FILTER_DIAGNOSTICS__ = {
+      events: [],
+      staleDrops: 0,
+    };
+  }
+  return window.__ATLANTA_STOCK_FILTER_DIAGNOSTICS__;
+}
+
+function recordStockFilterDiagnostic(event) {
+  const store = getStockFilterDiagnosticsStore();
+  const payload = {
+    ...event,
+    at: new Date().toISOString(),
+  };
+
+  if (store) {
+    store.events = [payload, ...(store.events || [])].slice(0, 120);
+    if (payload.outcome === 'stale_drop') {
+      store.staleDrops = Number(store.staleDrops || 0) + 1;
+    }
+  }
+
+  if (payload.outcome === 'stale_drop' || payload.durationMs > 250) {
+    console.info(
+      `[stock-filter] mode=${payload.filterMode} outcome=${payload.outcome} duration=${Math.round(payload.durationMs || 0)}ms staleDrops=${payload.staleDrops || 0}`
+    );
+  }
+}
+
+function useIsCompactViewport(maxWidth = 768) {
+  const [isCompact, setIsCompact] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return false;
+    }
+    return window.matchMedia(`(max-width: ${maxWidth}px)`).matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return undefined;
+    }
+    const mediaQuery = window.matchMedia(`(max-width: ${maxWidth}px)`);
+    const handleChange = (event) => setIsCompact(Boolean(event.matches));
+    handleChange(mediaQuery);
+    mediaQuery.addEventListener('change', handleChange);
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }, [maxWidth]);
+
+  return isCompact;
+}
+
+function useWindowedRows(items, { containerRef, enabled, rowHeight = 58, overscan = 6 } = {}) {
+  const [scrollState, setScrollState] = useState({ scrollTop: 0, height: 0 });
+
+  useEffect(() => {
+    if (!enabled || !containerRef.current) {
+      return undefined;
+    }
+
+    const node = containerRef.current;
+    const updateState = () => {
+      setScrollState({
+        scrollTop: node.scrollTop,
+        height: node.clientHeight,
+      });
+    };
+
+    updateState();
+    node.addEventListener('scroll', updateState, { passive: true });
+    window.addEventListener('resize', updateState);
+    return () => {
+      node.removeEventListener('scroll', updateState);
+      window.removeEventListener('resize', updateState);
+    };
+  }, [containerRef, enabled]);
+
+  if (!enabled) {
+    return {
+      visibleItems: items,
+      topSpacerHeight: 0,
+      bottomSpacerHeight: 0,
+    };
+  }
+
+  const totalItems = items.length;
+  const viewportCount = Math.max(1, Math.ceil((scrollState.height || rowHeight * 8) / rowHeight));
+  const startIndex = Math.max(0, Math.floor(scrollState.scrollTop / rowHeight) - overscan);
+  const endIndex = Math.min(totalItems, startIndex + viewportCount + overscan * 2);
+  const topSpacerHeight = startIndex * rowHeight;
+  const bottomSpacerHeight = Math.max(0, (totalItems - endIndex) * rowHeight);
+
+  return {
+    visibleItems: items.slice(startIndex, endIndex),
+    topSpacerHeight,
+    bottomSpacerHeight,
+  };
+}
+
 function formatDateForInput(dateValue = new Date()) {
   const year = dateValue.getFullYear();
   const month = String(dateValue.getMonth() + 1).padStart(2, '0');
@@ -2273,9 +2398,28 @@ function ProductSummaryTable({
   onReturnPendingDeal,
   updatingPendingKey = '',
   returningPendingKey = '',
+  isOverlayLoading = false,
 }) {
   const cartRowSet = new Set(cartRowNumbers);
   const [pendingDrafts, setPendingDrafts] = useState({});
+  const tableWrapRef = useRef(null);
+  const tableScrollRef = useRef({ top: 0, left: 0 });
+
+  useEffect(() => {
+    if (!tableWrapRef.current) {
+      return;
+    }
+    if (isOverlayLoading) {
+      tableScrollRef.current = {
+        top: tableWrapRef.current.scrollTop,
+        left: tableWrapRef.current.scrollLeft,
+      };
+      return;
+    }
+
+    tableWrapRef.current.scrollTop = tableScrollRef.current.top || 0;
+    tableWrapRef.current.scrollLeft = tableScrollRef.current.left || 0;
+  }, [isOverlayLoading, rows.length]);
 
   function deriveRowPendingStatus(row, amountText, fallbackStatus = 'UNPAID') {
     const normalizedText = String(amountText || '').trim();
@@ -2326,7 +2470,7 @@ function ProductSummaryTable({
   }
 
   return (
-    <div className="table-wrap table-wrap--mobile-cards">
+    <div ref={tableWrapRef} className={isOverlayLoading ? 'table-wrap table-wrap--mobile-cards table-wrap--loading' : 'table-wrap table-wrap--mobile-cards'}>
       <table className="data-table data-table--products">
         <thead>
           <tr>
@@ -2421,9 +2565,17 @@ function ProductSummaryTable({
           )}
         </tbody>
       </table>
+      {isOverlayLoading ? (
+        <div className="table-loading-overlay" role="status" aria-live="polite" aria-label="Loading filtered products">
+          <span className="loading-spinner" aria-hidden="true" />
+          <span>Updating filter...</span>
+        </div>
+      ) : null}
     </div>
   );
 }
+
+const MemoProductSummaryTable = React.memo(ProductSummaryTable);
 
 function SwapIncomingDevicesModal({
   open,
@@ -2903,7 +3055,7 @@ function CartView({
         {errorText ? <div className="notice notice-error">{errorText}</div> : null}
         {isLoading ? <div className="notice">Loading stock for the cart...</div> : null}
 
-        <ProductSummaryTable
+        <MemoProductSummaryTable
           headers={headers}
           rows={pagedRows}
           emptyText="No stock items are ready for the current cart filter."
@@ -2916,6 +3068,7 @@ function CartView({
           onReturnPendingDeal={onReturnPendingDeal}
           updatingPendingKey={updatingPendingKey}
           returningPendingKey={returningPendingKey}
+          isOverlayLoading={isRefreshing}
         />
 
         <div className="page-nav-wrap">
@@ -3783,12 +3936,13 @@ function ProductsView({
         {errorText ? <div className="notice notice-error">{errorText}</div> : null}
         {isLoading ? <div className="notice">Loading products...</div> : null}
 
-        <ProductSummaryTable
+        <MemoProductSummaryTable
           headers={headers}
           rows={pagedRows}
           emptyText="No products matched the current filters."
           summaryColumns={summaryColumns}
           onOpenDetails={onOpenProductDetails}
+          isOverlayLoading={isRefreshing}
         />
 
         <div className="page-nav-wrap">
@@ -4556,6 +4710,7 @@ function FixView({ mismatches, selectedMismatch, correctName, setCorrectName, on
 }
 
 function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesTodayBusy, onChangeDate, onLoadDate, onUpdateServiceEntry, onUpdateServicePayment }) {
+  useRenderTiming('ServicesTodayView', `${servicesTodayData?.count || 0}:${servicesTodayBusy ? 'busy' : 'idle'}`);
   const items = servicesTodayData?.services || [];
   const [editingRowNum, setEditingRowNum] = useState(null);
   const [editingName, setEditingName] = useState('');
@@ -4569,6 +4724,8 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchCount, setSearchCount] = useState(null);
   const searchAbortRef = React.useRef(null);
+  const tableContainerRef = useRef(null);
+  const isCompactViewport = useIsCompactViewport();
 
   function beginEdit(entry) {
     setEditingRowNum(entry?.row_num || null);
@@ -4675,10 +4832,28 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
 
   function handleSearchInput(value) {
     setSearchQuery(value);
-    runSearch(value);
   }
 
+  useEffect(() => {
+    if (!searchMode) {
+      return undefined;
+    }
+    const delayId = window.setTimeout(() => {
+      runSearch(searchQuery);
+    }, 220);
+    return () => {
+      window.clearTimeout(delayId);
+    };
+  }, [searchMode, searchQuery]);
+
   const displayItems = searchMode ? searchResults : items;
+  const shouldWindowRows = !isCompactViewport && !expandedRowNum && !editingRowNum && displayItems.length > 40;
+  const { visibleItems, topSpacerHeight, bottomSpacerHeight } = useWindowedRows(displayItems, {
+    containerRef: tableContainerRef,
+    enabled: shouldWindowRows,
+    rowHeight: 58,
+    overscan: 8,
+  });
 
   return (
     <section className="workspace-stack">
@@ -4744,7 +4919,7 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
             : `Total services for ${servicesTodayDate || 'selected date'}: ${formatCount(servicesTodayData?.count || 0)}`}
         </div>
 
-        <div className="table-wrap table-wrap--mobile-cards">
+        <div ref={tableContainerRef} className={shouldWindowRows ? 'table-wrap table-wrap--mobile-cards table-wrap--windowed' : 'table-wrap table-wrap--mobile-cards'}>
           <table className="data-table">
             <thead>
               <tr>
@@ -4763,7 +4938,13 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
             </thead>
             <tbody>
               {displayItems.length ? (
-                displayItems.map((entry) => {
+                <>
+                {shouldWindowRows && topSpacerHeight > 0 ? (
+                  <tr className="table-spacer-row" aria-hidden="true">
+                    <td colSpan={11} style={{ height: `${topSpacerHeight}px` }} />
+                  </tr>
+                ) : null}
+                {visibleItems.map((entry) => {
                   const isEditing = Number(editingRowNum) === Number(entry.row_num);
                   const isSaving = Number(savingRowNum) === Number(entry.row_num);
                   const isExpanded = Number(expandedRowNum) === Number(entry.row_num);
@@ -4843,6 +5024,13 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
                   </React.Fragment>
                 );
                 })
+                }
+                {shouldWindowRows && bottomSpacerHeight > 0 ? (
+                  <tr className="table-spacer-row" aria-hidden="true">
+                    <td colSpan={11} style={{ height: `${bottomSpacerHeight}px` }} />
+                  </tr>
+                ) : null}
+                </>
               ) : (
                 <tr>
                   <td colSpan={11} className="empty-state">
@@ -4859,6 +5047,8 @@ function ServicesTodayView({ servicesTodayData, servicesTodayDate, servicesToday
     </section>
   );
 }
+
+const MemoServicesTodayView = React.memo(ServicesTodayView);
 
 function StolenDevicesView({ data, busy, form, onFormChange, onLoad, onCreate, onToggleActive }) {
   const items = data?.items || [];
@@ -5141,6 +5331,8 @@ function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onR
   );
 }
 
+const MemoSettingsView = React.memo(SettingsView);
+
 function UsersView({
   users,
   usersLoading,
@@ -5281,6 +5473,8 @@ function UsersView({
   );
 }
 
+const MemoClientsView = React.memo(ClientsView);
+
 function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const isAdmin = String(currentUser?.role || '').toLowerCase() === 'admin';
   const [activeView, setActiveView] = useState('products');
@@ -5309,6 +5503,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [whatsappHistoryByName, setWhatsappHistoryByName] = useState({});
   const stockPreloadStartedRef = useRef(false);
   const stockFormPreloadStartedRef = useRef(false);
+  const stockRequestSeqRef = useRef(0);
+  const stockAbortControllerRef = useRef(null);
+  const stockStaleDropCountRef = useRef(0);
   const [unpaidTodaySummary, setUnpaidTodaySummary] = useState({ count: 0, with_phone_count: 0, customers: [] });
   const [servicesTodayData, setServicesTodayData] = useState({ services: [], count: 0 });
   const [servicesTodayDate, setServicesTodayDate] = useState(formatDateForInput());
@@ -5324,6 +5521,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const deferredStockSearchText = useDeferredValue(stockSearchText);
   const [productFilterMode, setProductFilterMode] = useState('available');
   const [cartFilterMode, setCartFilterMode] = useState('available');
+  const debouncedProductFilterMode = useDebouncedValue(productFilterMode, 140);
+  const debouncedCartFilterMode = useDebouncedValue(cartFilterMode, 140);
   const [stockView, setStockView] = useState(null);
   const [stockForm, setStockForm] = useState({ visible_headers: [], defaults: {} });
   const [productFormValues, setProductFormValues] = useState({});
@@ -5410,6 +5609,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     role: 'staff',
     is_active: true,
   });
+
+  useRenderTiming('WorkspaceApp', `${activeView}:${coreLoading ? 'core' : userLoading ? 'loading' : 'ready'}`);
 
   const allowedViews = useMemo(() => {
     if (isAdmin) {
@@ -5766,24 +5967,20 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     setCoreLoading(false);
 
     // Keep first paint fast: hydrate clients/whatsapp/unpaid and the secondary workspace data in the background.
-    Promise.allSettled([
-      fetchPendingServiceDeals({ forceRefresh }),
-      fetchServicesToday({ forceRefresh, targetDate: servicesTodayDate }),
-      fetchClients({ forceReload: true }),
-      fetchWhatsappHistory({ forceRefresh }),
-      fetchUnpaidToday({ forceRefresh }),
-    ]).then(([
+    window.setTimeout(() => {
+      Promise.allSettled([
+        fetchPendingServiceDeals({ forceRefresh }),
+        fetchClients({ forceReload: forceRefresh }),
+        fetchWhatsappHistory({ forceRefresh }),
+        fetchUnpaidToday({ forceRefresh }),
+      ]).then(([
       pendingServicesResult,
-      servicesTodayResult,
       clientsResult,
       whatsappHistoryResult,
       unpaidTodayResult,
     ]) => {
       if (pendingServicesResult.status === 'fulfilled') {
         setServicePendingDeals(pendingServicesResult.value || { items: [], count: 0 });
-      }
-      if (servicesTodayResult.status === 'fulfilled') {
-        setServicesTodayData(servicesTodayResult.value || { services: [], count: 0 });
       }
       if (clientsResult.status === 'fulfilled') {
         setClientsData(normalizeClientsPayload(clientsResult.value));
@@ -5794,7 +5991,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       if (unpaidTodayResult.status === 'fulfilled') {
         setUnpaidTodaySummary(unpaidTodayResult.value || { count: 0, with_phone_count: 0, customers: [] });
       }
-    });
+      });
+    }, 180);
   }
 
   async function loadNameFixes({ forceRefresh = false, silent = false } = {}) {
@@ -6108,7 +6306,17 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
-  async function loadStock(forceRefresh = false, showLoader = true) {
+  async function loadStock(forceRefresh = false, showLoader = true, explicitFilterMode = '') {
+    const activeFilterMode = explicitFilterMode || (activeView === 'cart' ? cartFilterMode : productFilterMode);
+    const requestSeq = stockRequestSeqRef.current + 1;
+    stockRequestSeqRef.current = requestSeq;
+    if (stockAbortControllerRef.current) {
+      stockAbortControllerRef.current.abort();
+    }
+    const abortController = new AbortController();
+    stockAbortControllerRef.current = abortController;
+    const startedAt = performance.now();
+
     setStockErrorText('');
     if (showLoader) {
       if (stockView) {
@@ -6119,13 +6327,23 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
 
     try {
-      const activeFilterMode = activeView === 'cart' ? cartFilterMode : productFilterMode;
       const result = await fetchStockDashboard({
         // Text search is filtered locally to keep typing instant.
         filterText: '',
         filterMode: activeFilterMode,
         forceRefresh,
+        signal: abortController.signal,
       });
+      if (requestSeq !== stockRequestSeqRef.current) {
+        stockStaleDropCountRef.current += 1;
+        recordStockFilterDiagnostic({
+          filterMode: activeFilterMode,
+          durationMs: performance.now() - startedAt,
+          outcome: 'stale_drop',
+          staleDrops: stockStaleDropCountRef.current,
+        });
+        return;
+      }
       setStockView(result);
       try {
         sessionStorage.setItem(STOCK_VIEW_CACHE_KEY, JSON.stringify(result));
@@ -6133,8 +6351,38 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         // Ignore cache storage failures.
       }
       setLastLoadedAt(new Date());
-      setStatusText(forceRefresh ? 'Products refreshed.' : 'Ready');
+      if (forceRefresh) {
+        setStatusText('Products refreshed.');
+      }
+      recordStockFilterDiagnostic({
+        filterMode: activeFilterMode,
+        durationMs: performance.now() - startedAt,
+        outcome: 'success',
+        staleDrops: stockStaleDropCountRef.current,
+      });
     } catch (error) {
+      if (requestSeq !== stockRequestSeqRef.current) {
+        stockStaleDropCountRef.current += 1;
+        recordStockFilterDiagnostic({
+          filterMode: activeFilterMode,
+          durationMs: performance.now() - startedAt,
+          outcome: 'stale_drop',
+          staleDrops: stockStaleDropCountRef.current,
+        });
+        return;
+      }
+
+      const aborted = error?.name === 'AbortError' || String(error?.message || '').toLowerCase().includes('abort');
+      if (aborted) {
+        recordStockFilterDiagnostic({
+          filterMode: activeFilterMode,
+          durationMs: performance.now() - startedAt,
+          outcome: 'aborted',
+          staleDrops: stockStaleDropCountRef.current,
+        });
+        return;
+      }
+
       const message = error.message || 'Could not load products.';
       if (stockView?.all_rows_cache?.length) {
         // Keep last loaded data visible during transient API/quota failures.
@@ -6144,9 +6392,20 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         setStockErrorText(message);
         setStatusText(message);
       }
+      recordStockFilterDiagnostic({
+        filterMode: activeFilterMode,
+        durationMs: performance.now() - startedAt,
+        outcome: 'error',
+        staleDrops: stockStaleDropCountRef.current,
+      });
     } finally {
-      setIsStockLoading(false);
-      setIsStockRefreshing(false);
+      if (stockAbortControllerRef.current === abortController) {
+        stockAbortControllerRef.current = null;
+      }
+      if (requestSeq === stockRequestSeqRef.current) {
+        setIsStockLoading(false);
+        setIsStockRefreshing(false);
+      }
     }
   }
 
@@ -6322,14 +6581,15 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       return undefined;
     }
 
+    const requestedFilterMode = activeView === 'cart' ? debouncedCartFilterMode : debouncedProductFilterMode;
     const delay = window.setTimeout(() => {
-      loadStock(false, false);
-    }, 80);
+      loadStock(false, true, requestedFilterMode);
+    }, 40);
 
     return () => {
       window.clearTimeout(delay);
     };
-  }, [activeView, productFilterMode, cartFilterMode]);
+  }, [activeView, debouncedProductFilterMode, debouncedCartFilterMode]);
 
   useEffect(() => {
     if (stockPreloadStartedRef.current) {
@@ -6411,8 +6671,20 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       return;
     }
 
-    loadCashflowDashboard(true);
+    loadCashflowDashboard(false);
   }, [activeView, isAdmin]);
+
+  useEffect(() => {
+    if (activeView !== 'services_today') {
+      return;
+    }
+
+    if (servicesTodayData?.count || servicesTodayBusy) {
+      return;
+    }
+
+    loadServicesTodayForDate(servicesTodayDate, false);
+  }, [activeView]);
 
   useEffect(() => {
     if (activeView === 'products') {
@@ -7858,7 +8130,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
     if (activeView === 'clients') {
       return (
-        <ClientsView
+        <MemoClientsView
           clients={filteredClients}
           clientPage={clientPage}
           setClientPage={setClientPage}
@@ -7940,7 +8212,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
     if (activeView === 'services_today') {
       return (
-        <ServicesTodayView
+        <MemoServicesTodayView
           servicesTodayData={servicesTodayData}
           servicesTodayDate={servicesTodayDate}
           servicesTodayBusy={servicesTodayBusy}
@@ -7999,7 +8271,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
     if (activeView === 'settings') {
       return (
-        <SettingsView
+        <MemoSettingsView
           syncStatus={syncStatus}
           syncBusy={syncBusy}
           onPullNow={handlePullNow}

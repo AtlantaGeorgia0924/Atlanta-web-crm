@@ -9,6 +9,7 @@ export async function fetchStockDashboard({ filterText = '', filterMode = 'all',
     }
     ,
     signal,
+    cacheTtlMs: forceRefresh ? 0 : 15_000,
   });
 }
 
@@ -49,6 +50,7 @@ export async function fetchPendingServiceDeals({ forceRefresh = false, signal } 
       force_refresh: forceRefresh,
     },
     signal,
+    cacheTtlMs: forceRefresh ? 0 : 10_000,
   });
 }
 

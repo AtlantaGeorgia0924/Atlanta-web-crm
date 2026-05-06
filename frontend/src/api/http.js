@@ -1,6 +1,91 @@
 let authToken = '';
 let unauthorizedHandler = null;
 let refreshInFlight = null;
+const responseCache = new Map();
+const inFlightRequests = new Map();
+
+function getApiDiagnosticsStore() {
+	if (typeof window === 'undefined') {
+		return null;
+	}
+	if (!window.__ATLANTA_API_DIAGNOSTICS__) {
+		window.__ATLANTA_API_DIAGNOSTICS__ = {
+			requests: [],
+			largestPayloads: [],
+			slowRequests: [],
+		};
+	}
+	return window.__ATLANTA_API_DIAGNOSTICS__;
+}
+
+function stableSerialize(value) {
+	if (value === null || value === undefined) {
+		return '';
+	}
+	if (Array.isArray(value)) {
+		return `[${value.map((item) => stableSerialize(item)).join(',')}]`;
+	}
+	if (typeof value === 'object') {
+		return `{${Object.keys(value).sort().map((key) => `${key}:${stableSerialize(value[key])}`).join(',')}}`;
+	}
+	return String(value);
+}
+
+function clonePayload(payload) {
+	if (typeof structuredClone === 'function') {
+		return structuredClone(payload);
+	}
+	return JSON.parse(JSON.stringify(payload));
+}
+
+function makeRequestKey({ method, path, query, body, auth }) {
+	return [method, path, stableSerialize(query), stableSerialize(body), auth ? 'auth' : 'public'].join('::');
+}
+
+function clearApiCache(prefix = '') {
+	if (!prefix) {
+		responseCache.clear();
+		return;
+	}
+	for (const key of responseCache.keys()) {
+		if (key.includes(prefix)) {
+			responseCache.delete(key);
+		}
+	}
+}
+
+function recordApiTiming({ method, path, durationMs, payloadSize, status, source }) {
+	const store = getApiDiagnosticsStore();
+	const entry = {
+		method,
+		path,
+		durationMs: Math.round(durationMs * 100) / 100,
+		payloadSize,
+		status,
+		source,
+		at: new Date().toISOString(),
+	};
+
+	if (store) {
+		store.requests = [entry, ...(store.requests || [])].slice(0, 100);
+		store.largestPayloads = [entry, ...(store.largestPayloads || [])]
+			.sort((left, right) => (right.payloadSize || 0) - (left.payloadSize || 0))
+			.slice(0, 20);
+		if (durationMs > 300) {
+			store.slowRequests = [entry, ...(store.slowRequests || [])].slice(0, 50);
+		}
+	}
+
+	if (durationMs > 300 || payloadSize > 50_000) {
+		console.info(
+			`[api-timing] ${method} ${path} ${Math.round(durationMs)}ms payload=${payloadSize}B source=${source} status=${status}`,
+		);
+	}
+}
+
+export function invalidateApiCache(prefix = '') {
+	clearApiCache(prefix);
+}
 
 function getApiBaseUrl() {
 	const base = String(import.meta.env.VITE_API_BASE_URL || '').trim();
@@ -74,7 +159,33 @@ export async function requestJson(path, {
 	auth = true,
 	skipUnauthorizedHandler = false,
 	retryOnUnauthorized = true,
+	cacheTtlMs = 0,
+	cacheKey = '',
+	dedupeKey = '',
 } = {}) {
+	const methodUpper = String(method || 'GET').toUpperCase();
+	const requestKey = cacheKey || dedupeKey || makeRequestKey({ method: methodUpper, path, query, body, auth });
+	const now = Date.now();
+
+	if (methodUpper === 'GET' && cacheTtlMs > 0) {
+		const cached = responseCache.get(requestKey);
+		if (cached && cached.expiresAt > now) {
+			recordApiTiming({
+				method: methodUpper,
+				path,
+				durationMs: 0,
+				payloadSize: cached.payloadSize || 0,
+				status: 200,
+				source: 'memory_cache',
+			});
+			return clonePayload(cached.payload);
+		}
+	}
+
+	if (inFlightRequests.has(requestKey)) {
+		return inFlightRequests.get(requestKey);
+	}
+
 	const nextHeaders = {
 		Accept: 'application/json',
 		...headers,
@@ -113,9 +224,13 @@ export async function requestJson(path, {
 		})()
 		: signal;
 
+	const requestUrl = buildUrl(path, query);
+	const startedAt = performance.now();
+
+	const executeRequest = (async () => {
 	let response;
 	try {
-		response = await fetch(buildUrl(path, query), {
+		response = await fetch(requestUrl, {
 			method,
 			headers: nextHeaders,
 			body: body !== null && body !== undefined ? JSON.stringify(body) : undefined,
@@ -146,8 +261,26 @@ export async function requestJson(path, {
 	const contentType = String(response.headers.get('content-type') || '').toLowerCase();
 	const isJson = contentType.includes('application/json');
 	const payload = isJson ? await response.json().catch(() => ({})) : await response.text().catch(() => '');
+	const payloadSize = (() => {
+		if (typeof payload === 'string') {
+			return payload.length;
+		}
+		try {
+			return JSON.stringify(payload).length;
+		} catch {
+			return 0;
+		}
+	})();
 
 	if (!response.ok) {
+		recordApiTiming({
+			method: methodUpper,
+			path,
+			durationMs: performance.now() - startedAt,
+			payloadSize,
+			status: response.status,
+			source: 'network_error',
+		});
 		if (!skipUnauthorizedHandler && response.status === 401 && retryOnUnauthorized && unauthorizedHandler) {
 			const refreshed = await runUnauthorizedHandlerOnce();
 			if (refreshed) {
@@ -171,5 +304,32 @@ export async function requestJson(path, {
 		throw new Error(String(detail || `Request failed (${response.status})`));
 	}
 
+	recordApiTiming({
+		method: methodUpper,
+		path,
+		durationMs: performance.now() - startedAt,
+		payloadSize,
+		status: response.status,
+		source: 'network',
+	});
+
+	if (methodUpper === 'GET' && cacheTtlMs > 0) {
+		responseCache.set(requestKey, {
+			expiresAt: now + cacheTtlMs,
+			payload,
+			payloadSize,
+		});
+	} else if (methodUpper !== 'GET') {
+		clearApiCache();
+	}
+
 	return payload;
+	})();
+
+	inFlightRequests.set(requestKey, executeRequest);
+	try {
+		return await executeRequest;
+	} finally {
+		inFlightRequests.delete(requestKey);
+	}
 }
