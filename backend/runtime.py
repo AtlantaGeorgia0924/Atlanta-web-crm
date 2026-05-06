@@ -3941,27 +3941,28 @@ class BackendRuntime:
         except Exception:
             pass
 
-        # When a pending service becomes PAID, reflect realized service income in cashflow immediately.
+        # Reflect realized service income from any positive payment delta immediately.
+        # This includes older services that are paid this week.
         try:
-            if status_text == 'PAID' and resolved_amount > 0:
+            payment_delta = round(max(0.0, float(resolved_amount) - float(current_paid)), 2)
+            if payment_delta > 0 and status_text in {'PAID', 'PART PAYMENT'}:
                 payment_date_iso = datetime.now(timezone.utc).date().isoformat()
                 service_description = str(row[description_col] if description_col is not None and description_col < len(row) else '').strip()
-                if not self.has_cashflow_income_paid_record(
+                cashflow_description = service_description
+                if cashflow_description:
+                    cashflow_description = f'{cashflow_description} [ROW {row_num}]'
+                else:
+                    cashflow_description = f'SERVICE [ROW {row_num}]'
+                self.append_cashflow_income_record(
+                    amount=payment_delta,
+                    category='SERVICE PROFIT',
+                    description=cashflow_description,
+                    date_text=payment_date_iso,
+                    created_by=customer_name or 'service',
+                    payment_status='PAID',
                     entry_type='service',
-                    description=service_description,
-                    created_by=customer_name,
                     payment_date_text=payment_date_iso,
-                ):
-                    self.append_cashflow_income_record(
-                        amount=resolved_amount,
-                        category='SERVICE PROFIT',
-                        description=service_description,
-                        date_text=payment_date_iso,
-                        created_by=customer_name or 'service',
-                        payment_status='PAID',
-                        entry_type='service',
-                        payment_date_text=payment_date_iso,
-                    )
+                )
         except Exception as cashflow_exc:
             self.logger.warning('Failed to sync service pending payment to cashflow rows: %s', cashflow_exc)
 
