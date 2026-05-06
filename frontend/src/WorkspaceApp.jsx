@@ -1486,6 +1486,32 @@ function CashFlowView({
   }
 
   const weekGrossProfit = (summary.current_week_phone_profit || 0) + (summary.current_week_service_profit || 0);
+  const allowanceFormulaCards = [
+    {
+      key: 'allowance-formula-profit',
+      label: 'Realized Profit (Week)',
+      value: formatCurrency(weekGrossProfit),
+      note: `Phone ${formatCurrency(summary.current_week_phone_profit || 0)} + services ${formatCurrency(summary.current_week_service_profit || 0)}.`,
+    },
+    {
+      key: 'allowance-formula-expenses',
+      label: 'Allowance Expenses (Week)',
+      value: formatCurrency(summary.current_week_allowance_expenses || 0),
+      note: 'Only expenses marked to affect allowance are deducted here. Phone cost is not treated as an expense line.',
+    },
+    {
+      key: 'allowance-formula-base',
+      label: 'Allowance Base',
+      value: formatCurrency(summary.allowance_base_net_profit || 0),
+      note: 'Allowance base = realized profit minus allowance expenses.',
+    },
+    {
+      key: 'allowance-formula-final',
+      label: 'Next Week Allowance',
+      value: formatCurrency(allowance.suggested_allowance || 0),
+      note: `Calculated from the allowance base using ${Math.round((allowance.allowance_percentage || 0.25) * 100)}% and cash-buffer guardrails.`,
+    },
+  ];
 
   const cards = [
     // ── Monthly overview ────────────────────────────────────────────────────
@@ -1499,17 +1525,17 @@ function CashFlowView({
     },
     {
       key: 'expenses',
-      label: 'Total Expenses',
+      label: 'Tracked Expenses',
       value: formatCurrency(summary.total_expenses || 0),
       note: 'All tracked expenses from the cash-flow sheet. Click to view.',
       className: '',
-      onClick: () => openDrillDown('Total Expenses — All Recorded Expenses', (tx) => tx.source !== 'income'),
+      onClick: () => openDrillDown('Tracked Expenses — All Recorded Expenses', (tx) => tx.source !== 'income'),
     },
     {
       key: 'profit',
       label: 'Net Profit',
       value: formatCurrency(summary.net_profit || 0),
-      note: 'Operating profit after expenses.',
+      note: 'Realized operating profit after tracked expenses.',
       className: 'metric-card--profit',
     },
     {
@@ -1523,11 +1549,11 @@ function CashFlowView({
     // ── This week ───────────────────────────────────────────────────────────
     {
       key: 'week-gross',
-      label: 'This Week Profit',
+      label: 'This Week Realized Profit',
       value: formatCurrency(weekGrossProfit),
-      note: `Phone ${formatCurrency(summary.current_week_phone_profit || 0)} + services ${formatCurrency(summary.current_week_service_profit || 0)}. Click to view.`,
+      note: `Phone realized profit ${formatCurrency(summary.current_week_phone_profit || 0)} + service realized profit ${formatCurrency(summary.current_week_service_profit || 0)}. Click to view.`,
       className: '',
-      onClick: () => openDrillDown('This Week Profit — Phones & Services', (tx) => tx.source === 'income' && tx.payment_status !== 'OWING' && txIsThisWeek(tx, weekStart, weekEnd)),
+      onClick: () => openDrillDown('This Week Realized Profit — Phones & Services', (tx) => tx.source === 'income' && tx.payment_status !== 'OWING' && txIsThisWeek(tx, weekStart, weekEnd)),
     },
     {
       key: 'week-expenses',
@@ -1541,14 +1567,14 @@ function CashFlowView({
       key: 'week-net',
       label: 'This Week Net Profit',
       value: formatCurrency(summary.current_week_net_profit || 0),
-      note: 'Real weekly profit after deducting this week\'s expenses.',
+      note: 'Realized weekly profit after deducting this week\'s tracked expenses.',
       className: 'metric-card--profit',
     },
     {
       key: 'allowance-base',
-      label: 'Allowance Profit Base',
+      label: 'Allowance Base',
       value: formatCurrency(summary.allowance_base_net_profit || 0),
-      note: `Used for allowance only. Starts from realized weekly profit and excludes business-only expenses (${formatCurrency(summary.current_week_business_only_expenses || 0)} this week).`,
+      note: `Used for allowance only. Starts from realized weekly profit, subtracts allowance expenses, and excludes business-only expenses (${formatCurrency(summary.current_week_business_only_expenses || 0)} this week).`,
       className: 'metric-card--profit',
     },
     {
@@ -1700,6 +1726,15 @@ function CashFlowView({
           {latestWeeklyAllowanceEntry
             ? ` | Last withdrawal: ${latestWeeklyAllowanceEntry.date || latestWeeklyAllowanceEntry.payment_date || 'No date'} (${formatCurrency(latestWeeklyAllowanceEntry._amount || 0)})`
             : ' | No allowance withdrawal recorded yet this week.'}
+        </div>
+        <div className="summary-grid summary-grid--home" style={{ marginTop: '12px' }}>
+          {allowanceFormulaCards.map((card) => (
+            <article key={card.key} className="metric-card metric-card--home">
+              <span className="metric-label">{card.label}</span>
+              <strong className="metric-value">{loading ? 'Loading...' : card.value}</strong>
+              <span className="metric-note">{card.note}</span>
+            </article>
+          ))}
         </div>
         {errorText ? (
           <div className="notice notice-error" style={{ marginTop: '12px' }}>
