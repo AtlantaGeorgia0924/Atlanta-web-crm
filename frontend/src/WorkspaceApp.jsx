@@ -1,6 +1,6 @@
 import React, { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
-import { getApiLabel } from './api/http';
+import { getApiLabel, invalidateApiCache } from './api/http';
 import { addServiceRecord, checkoutSaleCart, fetchPendingServiceDeals, fetchStockDashboard, returnServiceDeal, returnStockItem, updatePendingDealMeta, updatePendingDealPayment, updatePendingServiceMeta, updateServiceDealPayment, updateStockRow } from './api/stock';
 import { createUser, fetchUsers, updateUser } from './api/users';
 import {
@@ -6671,7 +6671,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       return;
     }
 
-    loadCashflowDashboard(false);
+    invalidateApiCache('/api/foundation/');
+    loadCashflowDashboard(true);
   }, [activeView, isAdmin]);
 
   useEffect(() => {
