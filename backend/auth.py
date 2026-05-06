@@ -60,7 +60,9 @@ class AuthSettings:
             os.getenv('APP_AUTH_POSTGRES_DSN')
             or os.getenv('AUTH_POSTGRES_DSN')
             or os.getenv('POSTGRES_DSN')
-            or os.getenv('DATABASE_URL')
+            # DATABASE_URL is intentionally excluded: Render injects it for its
+            # own managed Postgres add-on which is NOT Supabase. Set POSTGRES_DSN
+            # explicitly in your Render environment variables.
             or ''
         ).strip()
         jwt_secret = os.getenv('APP_JWT_SECRET') or 'change-this-jwt-secret-in-production'

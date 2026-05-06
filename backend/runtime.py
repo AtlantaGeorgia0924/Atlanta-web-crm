@@ -205,7 +205,7 @@ class BackendRuntime:
             except Exception as exc:
                 self.logger.warning('Failed to load %s: %s', self.config_path, exc)
 
-        env_dsn = os.getenv('POSTGRES_DSN') or os.getenv('DATABASE_URL')
+        env_dsn = os.getenv('POSTGRES_DSN')  # DATABASE_URL excluded: Render injects it for local Postgres, not Supabase
         if env_dsn:
             config['postgres_dsn'] = env_dsn
 
