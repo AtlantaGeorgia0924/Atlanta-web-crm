@@ -239,6 +239,14 @@ function formatCount(value) {
   return numberFormatter.format(Number(value || 0));
 }
 
+function roundCurrency(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.round(numeric * 100) / 100;
+}
+
 function formatCurrency(value) {
   return `NGN ${formatCount(value)}`;
 }
