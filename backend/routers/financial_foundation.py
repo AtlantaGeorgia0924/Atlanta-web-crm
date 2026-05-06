@@ -1,3 +1,4 @@
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -152,6 +153,7 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
 
 @router.get('/cashflow-dashboard', dependencies=[Depends(require_admin)])
 def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
+    started = time.perf_counter()
     try:
         summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh)
         expense_summary = runtime.get_cashflow_expense_records(force_refresh=force_refresh)
@@ -164,7 +166,7 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
 
     transactions = runtime.get_cashflow_sheet_records(force_refresh=force_refresh).get('items', [])
 
-    return {
+    result = {
         'summary': summary,
         'weekly_allowance': weekly_allowance,
         'expenses': expense_summary.get('items', []),
@@ -173,6 +175,15 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
         'transactions': transactions,
         'capital': capital,
     }
+    runtime.logger.info(
+        'query_timing kind=dashboard_read_cashflow duration_ms=%.2f force_refresh=%s expense_count=%s transaction_count=%s read_mode=%s',
+        round((time.perf_counter() - started) * 1000, 2),
+        bool(force_refresh),
+        len(result.get('expenses') or []),
+        len(transactions),
+        'postgres_first' if runtime.postgres_ready else 'sheet_only',
+    )
+    return result
 
 
 @router.get('/weekly-allowance', dependencies=[Depends(require_admin)])

@@ -1,3 +1,4 @@
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -418,6 +419,8 @@ def build_live_stock_view(
     runtime=Depends(get_runtime),
     current_user=Depends(get_current_user),
 ):
+    started = time.perf_counter()
+    total_rows = 0
     try:
         stock_view = _serialize_stock_view(runtime.get_stock_view_payload(
             filter_text=filter_text,
@@ -428,7 +431,8 @@ def build_live_stock_view(
             stock_view = _sanitize_stock_view_for_staff(stock_view)
 
         all_rows = list(stock_view.get('all_rows_cache') or [])
-        stock_view['total_rows'] = len(all_rows)
+        total_rows = len(all_rows)
+        stock_view['total_rows'] = total_rows
         if int(page_size or 0) > 0:
             safe_page_size = max(1, min(int(page_size), 1000))
             safe_page = max(1, int(page or 1))
@@ -442,6 +446,18 @@ def build_live_stock_view(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f'Stock view temporarily unavailable: {exc}') from exc
+    finally:
+        runtime.logger.info(
+            'query_timing kind=stock_search duration_ms=%.2f force_refresh=%s filter_mode=%s filter_text_len=%s page=%s page_size=%s total_rows=%s read_mode=%s',
+            round((time.perf_counter() - started) * 1000, 2),
+            bool(force_refresh),
+            str(filter_mode or 'all'),
+            len(str(filter_text or '').strip()),
+            int(page or 1),
+            int(page_size or 0),
+            total_rows,
+            'postgres_first' if runtime.postgres_ready else 'sheet_only',
+        )
 
 
 @router.get('/form/live')

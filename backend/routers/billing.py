@@ -1,5 +1,6 @@
 from datetime import date
 import os
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -160,6 +161,18 @@ def _resolve_customer_service_row(runtime, name_input, row_idx, force_refresh=Fa
     return record_idx + 1, record
 
 
+def _log_query_timing(runtime, *, kind, started_at, force_refresh=False, **fields):
+    detail_items = [
+        f'query_timing kind={kind}',
+        f'duration_ms={round((time.perf_counter() - started_at) * 1000, 2)}',
+        f'force_refresh={bool(force_refresh)}',
+        f'read_mode={"postgres_first" if runtime.postgres_ready else "sheet_only"}',
+    ]
+    for key, value in fields.items():
+        detail_items.append(f'{key}={value}')
+    runtime.logger.info(' '.join(detail_items))
+
+
 @router.post('/outstanding-items/from-values')
 def outstanding_items_from_values(payload: OutstandingItemsValuesRequest):
     outstanding_items, total_outstanding, columns = get_customer_outstanding_items_from_values(
@@ -219,41 +232,56 @@ def compute_sales_snapshot_endpoint(payload: SalesSnapshotRequest):
 
 @router.get('/debtors/live')
 def compute_live_debtors(force_refresh: bool = False, runtime=Depends(get_runtime)):
-    return compute_debtors(runtime.get_main_records(force_refresh=force_refresh))
+    started = time.perf_counter()
+    records = runtime.get_main_records(force_refresh=force_refresh)
+    result = compute_debtors(records)
+    _log_query_timing(runtime, kind='billing_read_debtors', started_at=started, force_refresh=force_refresh, rows=len(records), clients=len(result.get('client_names') or []))
+    return result
 
 
 @router.get('/sales-snapshot/live')
 def compute_live_sales_snapshot(force_refresh: bool = False, runtime=Depends(get_runtime)):
-    return compute_sales_snapshot(runtime.get_main_records(force_refresh=force_refresh))
+    started = time.perf_counter()
+    records = runtime.get_main_records(force_refresh=force_refresh)
+    result = compute_sales_snapshot(records)
+    _log_query_timing(runtime, kind='billing_read_sales_snapshot', started_at=started, force_refresh=force_refresh, rows=len(records))
+    return result
 
 
 @router.get('/home-bootstrap')
 def get_home_bootstrap(force_refresh: bool = False, runtime=Depends(get_runtime)):
+    started = time.perf_counter()
     records = runtime.get_main_records(force_refresh=force_refresh)
-    return {
+    result = {
         'debtors': compute_debtors(records),
         'sales_snapshot': compute_sales_snapshot(records),
         'sync_status': runtime.get_sync_status(),
     }
+    _log_query_timing(runtime, kind='dashboard_read_home_bootstrap', started_at=started, force_refresh=force_refresh, rows=len(records))
+    return result
 
 
 @router.get('/outstanding-items/live/{name_input}')
 def outstanding_items_live(name_input: str, force_refresh: bool = False, runtime=Depends(get_runtime)):
+    started = time.perf_counter()
     outstanding_items, total_outstanding = get_customer_outstanding_items_from_records(
         name_input,
         runtime.get_main_records(force_refresh=force_refresh),
     )
-    return {
+    result = {
         'outstanding_items': outstanding_items,
         'total_outstanding': total_outstanding,
     }
+    _log_query_timing(runtime, kind='billing_read_outstanding_items', started_at=started, force_refresh=force_refresh, customer_len=len(str(name_input or '').strip()), items=len(outstanding_items))
+    return result
 
 
 @router.get('/bill/live/{name_input}')
 def generate_live_bill(name_input: str, force_refresh: bool = False, runtime=Depends(get_runtime)):
+    started = time.perf_counter()
     payment_details = _resolve_payment_details(runtime)
     gender = runtime.get_client_gender(name_input)
-    return {
+    result = {
         'bill_text': generate_bill_text(
             name_input,
             runtime.get_main_records(force_refresh=force_refresh),
@@ -261,6 +289,8 @@ def generate_live_bill(name_input: str, force_refresh: bool = False, runtime=Dep
             gender=gender,
         )
     }
+    _log_query_timing(runtime, kind='billing_read_bill', started_at=started, force_refresh=force_refresh, customer_len=len(str(name_input or '').strip()))
+    return result
 
 
 @router.post('/payment-plan/live')
@@ -490,12 +520,16 @@ def services_today_live(force_refresh: bool = False, target_date: str = '', runt
 
 @router.get('/services/search')
 def search_services_endpoint(q: str = '', force_refresh: bool = False, runtime=Depends(get_runtime)):
+    started = time.perf_counter()
     if not str(q or '').strip():
+        _log_query_timing(runtime, kind='billing_read_services_search', started_at=started, force_refresh=force_refresh, query_len=0, count=0)
         return {'services': [], 'count': 0, 'query': ''}
     records = runtime.get_main_records(force_refresh=force_refresh)
     services = search_services_by_name(records, q)
-    return {
+    result = {
         'services': services,
         'count': len(services),
         'query': str(q).strip(),
     }
+    _log_query_timing(runtime, kind='billing_read_services_search', started_at=started, force_refresh=force_refresh, query_len=len(str(q or '').strip()), rows=len(records), count=len(services))
+    return result

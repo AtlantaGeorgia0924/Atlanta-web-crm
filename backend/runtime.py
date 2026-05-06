@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import os
 import threading
+import time
 import uuid
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
@@ -100,6 +101,8 @@ class BackendRuntime:
             'sheets_connected': False,
             'sheet_error': '',
         }
+        # In-memory cache for health endpoint — avoids live DB queries on /health
+        self._health_cache: dict = {}
 
     @staticmethod
     def _normalize_optional_header_name(value):
@@ -2594,6 +2597,17 @@ class BackendRuntime:
             self.postgres_sync_manager.replace_operational_rows('operational_billing_rows', billing_rows)
             self.postgres_sync_manager.replace_operational_rows('operational_stock_rows', stock_rows)
             self.postgres_sync_manager.replace_operational_rows('operational_cashflow_rows', cashflow_rows)
+            _mirror_refresh_payload = {
+                'status': 'success',
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+                'counts': {
+                    'operational_billing_rows': len(billing_rows),
+                    'operational_stock_rows': len(stock_rows),
+                    'operational_cashflow_rows': len(cashflow_rows),
+                },
+            }
+            self.postgres_sync_manager.set_meta('operational_mirror_refresh_status', _mirror_refresh_payload)
+            self._health_cache['mirror_refresh_status'] = _mirror_refresh_payload
             self.logger.info(
                 'operational_mirror_refresh=success billing=%s stock=%s cashflow=%s',
                 len(billing_rows),
@@ -2601,7 +2615,143 @@ class BackendRuntime:
                 len(cashflow_rows),
             )
         except Exception as exc:
+            try:
+                _mirror_refresh_fail = {
+                    'status': 'failed',
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                    'error': str(exc),
+                }
+                self.postgres_sync_manager.set_meta('operational_mirror_refresh_status', _mirror_refresh_fail)
+                self._health_cache['mirror_refresh_status'] = _mirror_refresh_fail
+            except Exception:
+                pass
             self.logger.warning('operational_mirror_refresh=failed error=%s', exc)
+
+    def _load_postgres_meta(self, key, default=None):
+        if not self.postgres_ready:
+            return default
+        try:
+            row = self.postgres_sync_manager.fetchone_dict(
+                "SELECT value_json, updated_at FROM app_meta WHERE key = %s",
+                (str(key or ''),),
+            )
+        except Exception as exc:
+            self.logger.warning('Failed to load app_meta %s: %s', key, exc)
+            return default
+
+        if not row:
+            return default
+
+        value = row.get('value_json')
+        if isinstance(value, dict):
+            enriched = dict(value)
+            enriched.setdefault('updated_at', str(row.get('updated_at') or ''))
+            return enriched
+        return value if value is not None else default
+
+    def _mirror_verification_report(self, *, source_key, mirror_table, source_rows, built_rows, source_data_rows):
+        built_hashes = []
+        invalid_rows = 0
+        for row in list(built_rows or []):
+            source_hash = str((row or {}).get('source_hash') or '').strip()
+            payload = (row or {}).get('payload_json') or {}
+            if not source_hash or not payload:
+                invalid_rows += 1
+                continue
+            built_hashes.append(source_hash)
+
+        seen_hashes = set()
+        duplicate_rows = 0
+        expected_hashes = set()
+        for source_hash in built_hashes:
+            if source_hash in seen_hashes:
+                duplicate_rows += 1
+                continue
+            seen_hashes.add(source_hash)
+            expected_hashes.add(source_hash)
+
+        db_rows = self.postgres_sync_manager.fetchall_dict(
+            f"SELECT source_hash, sheet_row_num FROM {mirror_table} ORDER BY sheet_row_num ASC"
+        ) if self.postgres_ready else []
+        db_hashes = {
+            str((row or {}).get('source_hash') or '').strip()
+            for row in list(db_rows or [])
+            if str((row or {}).get('source_hash') or '').strip()
+        }
+
+        filtered_rows = max(0, int(source_data_rows or 0) - len(list(built_rows or [])))
+        skipped_rows = filtered_rows + invalid_rows + duplicate_rows
+        missing_rows = max(0, len(expected_hashes - db_hashes))
+        unexpected_rows = max(0, len(db_hashes - expected_hashes))
+
+        return {
+            'source_key': source_key,
+            'mirror_table': mirror_table,
+            'source_total_rows': len(list(source_rows or [])),
+            'source_live_rows': int(source_data_rows or 0),
+            'expected_live_rows': len(expected_hashes),
+            'mirror_live_rows': len(db_hashes),
+            'filtered_rows': filtered_rows,
+            'invalid_rows': invalid_rows,
+            'duplicate_rows': duplicate_rows,
+            'skipped_rows': skipped_rows,
+            'missing_rows': missing_rows,
+            'unexpected_rows': unexpected_rows,
+            'status': 'ok' if missing_rows == 0 and unexpected_rows == 0 else 'mismatch',
+        }
+
+    def verify_operational_mirrors(self):
+        if not self.postgres_ready:
+            raise RuntimeError('PostgreSQL sync manager is not ready')
+
+        started = time.perf_counter()
+        main_records = self._load_cached_rows('main_records')
+        stock_values = self._load_cached_rows('stock_values')
+        cashflow_values = self._load_cached_rows('cashflow_expense_values')
+
+        stock_header_row_idx = 0
+        if stock_values:
+            stock_header_row_idx, _, _ = detect_stock_headers(stock_values)
+
+        reports = {
+            'main_records_vs_operational_billing_rows': self._mirror_verification_report(
+                source_key='main_records',
+                mirror_table='operational_billing_rows',
+                source_rows=main_records,
+                built_rows=self._build_operational_billing_rows(main_records),
+                source_data_rows=len(list(main_records or [])),
+            ),
+            'stock_values_vs_operational_stock_rows': self._mirror_verification_report(
+                source_key='stock_values',
+                mirror_table='operational_stock_rows',
+                source_rows=stock_values,
+                built_rows=self._build_operational_stock_rows(stock_values),
+                source_data_rows=max(0, len(list(stock_values or [])) - (stock_header_row_idx + 1)),
+            ),
+            'cashflow_expense_values_vs_operational_cashflow_rows': self._mirror_verification_report(
+                source_key='cashflow_expense_values',
+                mirror_table='operational_cashflow_rows',
+                source_rows=cashflow_values,
+                built_rows=self._build_operational_cashflow_rows(cashflow_values),
+                source_data_rows=max(0, len(list(cashflow_values or [])) - 1),
+            ),
+        }
+
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        overall_status = 'ok' if all(item.get('status') == 'ok' for item in reports.values()) else 'mismatch'
+        result = {
+            'status': overall_status,
+            'duration_ms': duration_ms,
+            'reports': reports,
+        }
+        try:
+            self.postgres_sync_manager.set_meta('operational_mirror_verification', {
+                **result,
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            pass
+        return result
 
     def _append_cached_cashflow_row(self, row_values):
         if not self.postgres_ready:
@@ -2940,12 +3090,25 @@ class BackendRuntime:
                 self.logger.warning('backup_sync_status=failed queue_id=%s kind=%s error=%s', item.get('id'), (item.get('payload_json') or {}).get('kind', ''), exc)
 
         remaining = len(self.postgres_sync_manager.fetch_pending_operations(limit=500))
-        return {
+        result = {
             'attempted': len(items),
             'processed': processed,
             'failed': failed,
             'remaining_pending': remaining,
         }
+        _backup_sync_payload = {
+            'status': 'failed' if failed else 'success',
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+            **result,
+        }
+        try:
+            self.postgres_sync_manager.set_meta('backup_sync_status', _backup_sync_payload)
+        except Exception:
+            pass
+        self._health_cache['backup_sync_status'] = _backup_sync_payload
+        self._health_cache['queue_size'] = remaining
+        self._health_cache['queue_failed'] = failed
+        return result
 
     def get_main_records(self, force_refresh=False):
         if not force_refresh:
@@ -6166,4 +6329,32 @@ class BackendRuntime:
             'stock_sheet_id': self._resolve_stock_sheet_id(),
             'postgres_snapshot': snapshot,
             'queue_pending': queue_pending,
+        }
+
+    def get_production_health(self):
+        # Serves entirely from in-memory state — zero live DB queries.
+        # _health_cache is populated by _refresh_operational_mirrors(),
+        # replay_pending_queue_now(), and verify_operational_mirrors().
+        h = self._health_cache
+        latest_pull = None
+        try:
+            pull_meta = h.get('latest_pull')
+            if pull_meta is None and self.postgres_sync_manager is not None:
+                sync_log = getattr(self.postgres_sync_manager, '_last_pull_log', None)
+                if isinstance(sync_log, dict):
+                    latest_pull = sync_log
+            else:
+                latest_pull = pull_meta
+        except Exception:
+            pass
+        return {
+            'status': 'ok' if self.postgres_ready else 'degraded',
+            'active_db_host': self._postgres_dsn_host() or 'unknown',
+            'postgres_ready': bool(self.postgres_ready),
+            'mirror_refresh_status': h.get('mirror_refresh_status', {}),
+            'mirror_verification': h.get('mirror_verification', {}),
+            'queue_size': h.get('queue_size', 0),
+            'queue_failed': h.get('queue_failed', 0),
+            'backup_sync_status': h.get('backup_sync_status', {}),
+            'latest_pull': latest_pull,
         }

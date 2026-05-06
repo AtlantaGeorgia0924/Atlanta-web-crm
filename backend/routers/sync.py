@@ -72,6 +72,14 @@ def sync_status_endpoint(runtime=Depends(get_runtime)):
     return runtime.get_sync_status()
 
 
+@router.get('/mirror-verification', dependencies=[Depends(require_admin)])
+def mirror_verification_endpoint(runtime=Depends(get_runtime), current_user=Depends(require_admin)):
+    try:
+        return runtime.verify_operational_mirrors()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 def _run_background_sync_job(runtime, job_name, **kwargs):
     try:
         if job_name == 'pull_once':

@@ -1,10 +1,9 @@
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.auth import AuthService
-from backend.dependencies import get_current_user
 from backend.routers import assets, auth, billing, clients, financial_foundation, name_fix, stock, sync, users
 from backend.runtime import BackendRuntime
 
@@ -43,8 +42,11 @@ def create_app():
     )
 
     @app.get('/health', tags=['system'])
-    def health(_=Depends(get_current_user)):
-        return {'status': 'ok'}
+    def health():
+        runtime = getattr(app.state, 'runtime', None)
+        if runtime is None:
+            return {'status': 'starting'}
+        return runtime.get_production_health()
 
     app.include_router(auth.router)
     app.include_router(billing.router)
