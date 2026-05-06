@@ -1450,6 +1450,37 @@ class BackendRuntime:
         reserve_amount = max(0.0, available_cash_before_reserve) * reserve_percentage
         available_cash_after_reserve = available_cash_before_reserve - reserve_amount
 
+        # Reconcile weekly service profit directly from main records using
+        # payment date + amount paid so older services paid this week are
+        # included even if legacy cashflow rows were missed.
+        reconciled_current_week_service_profit = 0.0
+        try:
+            main_records = self.get_main_records(force_refresh=force_refresh)
+            for record in main_records or []:
+                imei_value = str(self._record_value(record, 'IMEI') or '').strip()
+                if imei_value:
+                    continue
+
+                payment_date = parse_sheet_date(
+                    self._record_value(record, 'PAYMENT DATE', 'PAID DATE', 'DATE')
+                )
+                if payment_date is None or payment_date < current_week_start or payment_date > current_week_end_date:
+                    continue
+
+                status_text = str(self._record_value(record, 'STATUS') or '').strip().upper()
+                price_value = clean_amount(self._record_value(record, 'PRICE'))
+                paid_value = clean_amount(self._record_value(record, 'AMOUNT PAID'))
+                realized_value = paid_value if paid_value > 0 else (price_value if status_text == 'PAID' else 0.0)
+                if realized_value > 0:
+                    reconciled_current_week_service_profit += realized_value
+        except Exception as reconcile_exc:
+            self.logger.warning('Failed to reconcile weekly service profit from main records: %s', reconcile_exc)
+
+        if reconciled_current_week_service_profit > current_week_service_profit:
+            missing_service_profit_delta = round(reconciled_current_week_service_profit - current_week_service_profit, 2)
+            current_week_service_profit = round(reconciled_current_week_service_profit, 2)
+            current_week_paid_income = round(current_week_paid_income + missing_service_profit_delta, 2)
+
         weekly_realized_profit = round(current_week_phone_profit + current_week_service_profit, 2)
         current_week_net_cash_flow = round(current_week_paid_income - current_week_expenses, 2)
         current_week_net_profit = round(weekly_realized_profit - current_week_expenses, 2)
