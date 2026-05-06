@@ -778,9 +778,69 @@ class BackendRuntime:
         except (TypeError, ValueError):
             return float(default)
 
+    def _load_operational_cashflow_records(self):
+        if not self.postgres_ready:
+            return []
+        try:
+            rows = self.postgres_sync_manager.fetchall_dict(
+                """
+                SELECT sheet_row_num, payload_json
+                FROM operational_cashflow_rows
+                ORDER BY sheet_row_num DESC, id DESC
+                """
+            )
+        except Exception as exc:
+            self.logger.warning('Failed to read operational_cashflow_rows: %s', exc)
+            return []
+
+        items = []
+        for row in rows or []:
+            payload = dict((row or {}).get('payload_json') or {})
+            payload['row_num'] = int((row or {}).get('sheet_row_num') or 0)
+            items.append(payload)
+        return items
+
+    def _load_operational_billing_records(self):
+        if not self.postgres_ready:
+            return []
+        try:
+            rows = self.postgres_sync_manager.fetchall_dict(
+                """
+                SELECT sheet_row_num, payload_json
+                FROM operational_billing_rows
+                ORDER BY sheet_row_num DESC, id DESC
+                """
+            )
+        except Exception as exc:
+            self.logger.warning('Failed to read operational_billing_rows: %s', exc)
+            return []
+
+        items = []
+        for row in rows or []:
+            payload = dict((row or {}).get('payload_json') or {})
+            payload['row_num'] = int((row or {}).get('sheet_row_num') or 0)
+            items.append(payload)
+        return items
+
     def get_cashflow_expense_records(self, force_refresh=False):
         sheet_entries = []
         sheet_title = 'CASH FLOW'
+
+        if not force_refresh:
+            operational_items = self._load_operational_cashflow_records()
+            if operational_items:
+                for normalized in operational_items:
+                    if str(normalized.get('source') or '').strip().lower() == 'income':
+                        continue
+                    sheet_entries.append(normalized)
+                total = sum(clean_amount(entry.get('amount')) for entry in sheet_entries)
+                return {
+                    'items': sheet_entries,
+                    'count': len(sheet_entries),
+                    'total': total,
+                    'source': 'postgres_operational',
+                    'sheet_title': sheet_title,
+                }
 
         if not force_refresh:
             cached_values = self._load_cached_rows('cashflow_expense_values')
@@ -1136,6 +1196,17 @@ class BackendRuntime:
         sheet_entries = []
 
         if not force_refresh:
+            operational_items = self._load_operational_cashflow_records()
+            if operational_items:
+                self.logger.info('read_source=postgres_operational table=operational_cashflow_rows rows=%s', len(operational_items))
+                return {
+                    'items': operational_items,
+                    'count': len(operational_items),
+                    'source': 'postgres_operational',
+                    'sheet_title': sheet_title,
+                }
+
+        if not force_refresh:
             cached_values = self._load_cached_rows('cashflow_expense_values')
             if cached_values:
                 for row_num, row_values in enumerate(cached_values[1:], start=2):
@@ -1198,6 +1269,50 @@ class BackendRuntime:
         month_total = 0.0
         week_total = 0.0
         entries = []
+
+        if not force_refresh:
+            operational_records = self._load_operational_billing_records()
+            if operational_records:
+                for record in operational_records:
+                    imei = str(self._record_value(record, 'IMEI') or '').strip()
+                    if not imei:
+                        continue
+
+                    cost_price = max(0.0, clean_amount(self._record_value(record, 'COST PRICE', 'COST')))
+                    if cost_price <= 0:
+                        continue
+
+                    stocked_date = parse_sheet_date(self._record_value(record, 'DATE BOUGHT'))
+                    if stocked_date is None:
+                        continue
+                    if stocked_date < start_date or stocked_date > current_day:
+                        continue
+
+                    amount = round(cost_price, 2)
+                    month_total += amount
+                    if current_week_start <= stocked_date <= current_day:
+                        week_total += amount
+
+                    entries.append({
+                        'date': stocked_date.isoformat(),
+                        'category': 'PHONE CAPITAL OUTFLOW',
+                        'amount': amount,
+                        'description': str(self._record_value(record, 'DESCRIPTION', 'MODEL', 'DEVICE') or '').strip(),
+                        'created_by': str(self._record_value(record, 'SELLER NAME', 'NAME OF SELLER', 'NAME') or '').strip(),
+                        'source': 'capital',
+                        'payment_status': '',
+                        'type': 'phone_capital',
+                        'cost_price': amount,
+                        'payment_date': '',
+                    })
+
+                entries.sort(key=lambda row: (row.get('date') or '', row.get('description') or ''), reverse=True)
+                return {
+                    'start_date': start_date.isoformat(),
+                    'month_total': round(month_total, 2),
+                    'week_total': round(week_total, 2),
+                    'entries': entries,
+                }
 
         for record in self.get_main_records(force_refresh=force_refresh):
             imei = str(self._record_value(record, 'IMEI') or '').strip()
