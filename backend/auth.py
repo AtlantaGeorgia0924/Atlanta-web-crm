@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import threading
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -97,50 +98,46 @@ class AuthService:
         self._connection_lock = threading.RLock()
         self._initialized = False
         self._storage_mode = 'sqlite'
+        self._last_postgres_error = ''
+
+    def _postgres_host(self):
+        dsn = str(self.settings.postgres_dsn or '').strip()
+        if not dsn:
+            return ''
+        try:
+            parsed = urlparse(dsn)
+            return str(parsed.hostname or '').strip().lower()
+        except Exception:
+            return ''
+
+    def _is_supabase_host(self):
+        host = self._postgres_host()
+        return bool(host) and 'supabase.' in host
 
     def initialize(self):
         with self._connection_lock:
             if self._initialized:
                 return
 
-            if self._initialize_postgres_storage():
-                self._storage_mode = 'postgres'
-                self._initialized = True
-                return
+            if not self.settings.postgres_dsn:
+                raise RuntimeError('PostgreSQL DSN is required at startup. Set POSTGRES_DSN or DATABASE_URL.')
 
-            db_dir = os.path.dirname(self.settings.db_path)
-            if db_dir:
-                os.makedirs(db_dir, exist_ok=True)
+            if not self._is_supabase_host():
+                raise RuntimeError(f'PostgreSQL host must be Supabase. Resolved host={self._postgres_host() or "unknown"}')
 
-            self._connection = sqlite3.connect(self.settings.db_path, check_same_thread=False)
-            self._connection.row_factory = sqlite3.Row
-            self._connection.execute(
-                '''
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT NOT NULL UNIQUE,
-                    password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('admin', 'staff')),
-                    is_active INTEGER NOT NULL DEFAULT 1,
-                    logo_url TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                '''
-            )
-            self._connection.execute('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)')
-            self._connection.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username))')
-            try:
-                self._connection.execute('ALTER TABLE users ADD COLUMN logo_url TEXT')
-            except Exception:
-                pass
+            if not self._initialize_postgres_storage():
+                raise RuntimeError(f'PostgreSQL auth initialization failed: {self._last_postgres_error or "unknown error"}')
 
-            self._connection.commit()
-            self._storage_mode = 'sqlite'
+            self._storage_mode = 'postgres'
             self._initialized = True
+            return
 
     def _initialize_postgres_storage(self):
         if not self.settings.postgres_dsn or not PSYCOPG2_AVAILABLE:
+            if not PSYCOPG2_AVAILABLE:
+                self._last_postgres_error = 'psycopg2 is not available in this runtime'
+            else:
+                self._last_postgres_error = 'postgres_dsn is empty'
             return False
 
         try:
@@ -148,8 +145,10 @@ class AuthService:
             self._pg_connection.autocommit = True
             self._ensure_postgres_schema()
             self._maybe_migrate_sqlite_users_to_postgres()
+            self._last_postgres_error = ''
             return True
-        except Exception:
+        except Exception as exc:
+            self._last_postgres_error = str(exc)
             if self._pg_connection is not None:
                 try:
                     self._pg_connection.close()

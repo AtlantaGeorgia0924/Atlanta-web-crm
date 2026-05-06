@@ -6,6 +6,7 @@ import mimetypes
 import os
 import threading
 import uuid
+from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 
 import gspread
@@ -502,6 +503,63 @@ class BackendRuntime:
     def start(self):
         self._connect_sheets()
         self._init_postgres_sync()
+        self._verify_postgres_connection_strict()
+
+    def _postgres_dsn_host(self):
+        dsn = str(self.config.get('postgres_dsn', '') or '').strip()
+        if not dsn:
+            return ''
+        try:
+            parsed = urlparse(dsn)
+            return str(parsed.hostname or '').strip().lower()
+        except Exception:
+            return ''
+
+    def _verify_postgres_connection_strict(self):
+        host = self._postgres_dsn_host()
+        host_text = host or 'unknown'
+        self.logger.info('DATABASE_URL host: %s', host_text)
+        print(f'DATABASE_URL host: {host_text}')
+
+        if not self.postgres_ready:
+            details = self.sync_state.get('last_error') or 'PostgreSQL sync manager is not ready'
+            self.logger.error('PostgreSQL startup verification failed: %s', details)
+            raise RuntimeError(f'PostgreSQL startup verification failed: {details}')
+
+        if 'supabase.' not in host_text:
+            message = f'Expected Supabase PostgreSQL host, got: {host_text}'
+            self.logger.error(message)
+            raise RuntimeError(message)
+
+        try:
+            row = self.postgres_sync_manager.fetchone(
+                "SELECT current_database(), inet_server_addr()::text, version()"
+            )
+            current_database = str((row or [None, None, None])[0] or '')
+            inet_server_addr = str((row or [None, None, None])[1] or '')
+            pg_version = str((row or [None, None, None])[2] or '')
+
+            self.logger.info('current_database(): %s', current_database)
+            self.logger.info('inet_server_addr(): %s', inet_server_addr)
+            self.logger.info('PostgreSQL version: %s', pg_version)
+            self.logger.info('Using Supabase PostgreSQL')
+            print(f'current_database(): {current_database}')
+            print(f'inet_server_addr(): {inet_server_addr}')
+            print(f'PostgreSQL version: {pg_version}')
+            print('Using Supabase PostgreSQL')
+
+            self.postgres_sync_manager.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS backend_connection_test (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    note TEXT NOT NULL DEFAULT 'startup-check'
+                )
+                '''
+            )
+        except Exception as exc:
+            self.logger.exception('PostgreSQL startup verification failed: %s', exc)
+            raise RuntimeError(f'PostgreSQL startup verification failed: {exc}') from exc
 
     def stop(self):
         try:
@@ -2721,18 +2779,7 @@ class BackendRuntime:
 
     def _enqueue_db_first_operation(self, entity_name, operation, payload, cache_apply_callable=None, cache_rollback_callable=None):
         if not self.postgres_ready:
-            # Fallback path for deployments without PostgreSQL:
-            # execute the write directly against Google Sheets so core workflows
-            # (sell, return, service add, payment update) still work.
-            if not bool(self.config.get('legacy_sheet_fallback', True)):
-                raise RuntimeError('PostgreSQL sync is not ready. Configure postgres_dsn or POSTGRES_DSN before DB-first API writes.')
-
-            if not self._ensure_sheet_connection():
-                raise RuntimeError(self.sync_state.get('sheet_error') or 'Google Sheets connection unavailable')
-
-            self._replay_queue_operation({'payload_json': payload})
-            self.logger.info('write_source=google_sheets_direct kind=%s reason=postgres_not_ready', payload.get('kind', ''))
-            return 'direct-sheet-write'
+            raise RuntimeError('PostgreSQL sync is not ready. Refusing fallback write path to preserve Supabase as source of truth.')
 
         queue_id = self.postgres_sync_manager.enqueue_operation(entity_name, operation, payload)
         if queue_id is None:

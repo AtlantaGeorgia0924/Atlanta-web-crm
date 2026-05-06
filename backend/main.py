@@ -1,4 +1,3 @@
-import threading
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -16,15 +15,10 @@ async def lifespan(app: FastAPI):
     auth_service = AuthService(runtime.base_dir)
     auth_service.initialize()
     auth_service.ensure_default_admin()
-    startup_thread = threading.Thread(
-        target=runtime.start,
-        name='backend-runtime-startup',
-        daemon=True,
-    )
-    startup_thread.start()
+    runtime.start()
     app.state.auth_service = auth_service
     app.state.runtime = runtime
-    app.state.runtime_startup_thread = startup_thread
+    app.state.runtime_startup_thread = None
     try:
         yield
     finally:
