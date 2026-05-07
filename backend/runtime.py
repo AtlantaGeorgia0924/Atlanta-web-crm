@@ -1360,340 +1360,235 @@ class BackendRuntime:
         payload = self.get_cashflow_sheet_records(force_refresh=force_refresh)
         items = payload.get('items') or []
         capital = self.get_phone_capital_outflow(force_refresh=force_refresh)
-
-        # Some older phone income rows were posted before COST_PRICE was filled.
-        # Build a fallback lookup from main records so later cost updates still
-        # count in month summary without forcing a full cashflow rebuild.
-        phone_cost_lookup = {}
-        for record in self.get_main_records(force_refresh=force_refresh):
-            imei_value = str(self._record_value(record, 'IMEI') or '').strip()
-            if not imei_value:
-                continue
-
-            record_cost = max(0.0, clean_amount(self._record_value(record, 'COST PRICE', 'COST')))
-            if record_cost <= 0:
-                continue
-
-            record_description = self._normalize_cashflow_lookup_text(
-                self._record_value(record, 'DESCRIPTION', 'MODEL', 'DEVICE')
-            )
-            if not record_description:
-                continue
-
-            record_actor = self._normalize_cashflow_lookup_text(
-                self._record_value(record, 'NAME', 'NAME OF BUYER', 'CLIENT NAME')
-            )
-            record_payment_date = parse_sheet_date(
-                self._record_value(record, 'PAYMENT DATE', 'PAID DATE', 'DATE')
-            )
-            record_date_key = record_payment_date.isoformat() if record_payment_date else ''
-
-            candidate_keys = [
-                (record_description, record_actor, record_date_key),
-                (record_description, record_actor, ''),
-                (record_description, '', record_date_key),
-                (record_description, '', ''),
-            ]
-            for key in candidate_keys:
-                if key not in phone_cost_lookup:
-                    phone_cost_lookup[key] = record_cost
-
-        # Stock can contain the authoritative cost for phone deals that were
-        # created through pending/sold stock flows.
-        stock_values = self.get_stock_values(force_refresh=force_refresh)
-        stock_header_row_idx, _, stock_headers_upper = detect_stock_headers(stock_values)
-        stock_desc_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DEVICE', 'DESC')
-        stock_name_col = svc_stock_header_index(stock_headers_upper, 'NAME', 'CLIENT NAME', 'NAME OF BUYER')
-        stock_cost_col = svc_stock_header_index(stock_headers_upper, 'COST PRICE', 'COST', 'BUYING PRICE')
-        stock_payment_date_col = svc_stock_header_index(stock_headers_upper, 'PAYMENT DATE', 'PAID DATE', 'DATE')
-
-        for row_values in stock_values[stock_header_row_idx + 1:]:
-            row = list(row_values or [])
-            stock_cost = max(0.0, clean_amount(
-                row[stock_cost_col] if stock_cost_col is not None and stock_cost_col < len(row) else ''
-            ))
-            if stock_cost <= 0:
-                continue
-
-            stock_description = self._normalize_cashflow_lookup_text(
-                row[stock_desc_col] if stock_desc_col is not None and stock_desc_col < len(row) else ''
-            )
-            if not stock_description:
-                continue
-
-            stock_actor = self._normalize_cashflow_lookup_text(
-                row[stock_name_col] if stock_name_col is not None and stock_name_col < len(row) else ''
-            )
-            stock_payment_date = parse_sheet_date(
-                row[stock_payment_date_col] if stock_payment_date_col is not None and stock_payment_date_col < len(row) else ''
-            )
-            stock_date_key = stock_payment_date.isoformat() if stock_payment_date else ''
-
-            stock_keys = [
-                (stock_description, stock_actor, stock_date_key),
-                (stock_description, stock_actor, ''),
-                (stock_description, '', stock_date_key),
-                (stock_description, '', ''),
-            ]
-            for key in stock_keys:
-                if key not in phone_cost_lookup:
-                    phone_cost_lookup[key] = stock_cost
-
-        total_paid_income = 0.0
-        total_owing_income = 0.0
-        total_expenses = 0.0
-        total_phone_realized_profit = 0.0
-        total_service_realized_profit = 0.0
-
+        main_records = self.get_main_records(force_refresh=force_refresh)
         current_day = datetime.now(timezone.utc).date()
         current_month_start = current_day.replace(day=1)
         current_week_start = current_day - timedelta(days=(current_day.weekday() + 1) % 7)
         current_week_end_date = current_day
-        current_week_paid_income = 0.0
+
+        allowance_percentage = 0.25
+        monthly_gross_profit = 0.0
+        monthly_phone_profit = 0.0
+        monthly_service_profit = 0.0
+        monthly_manual_expenses = 0.0
+        monthly_allowance_paid = 0.0
+        total_owing_income = 0.0
+
+        current_week_gross_profit = 0.0
         current_week_expenses = 0.0
-        current_week_allowance_expenses = 0.0
-        current_week_business_only_expenses = 0.0
         current_week_phone_profit = 0.0
         current_week_service_profit = 0.0
         current_week_service_profit_done_this_week = 0.0
         current_week_service_profit_previous_weeks_paid_this_week = 0.0
+        excluded_phone_missing_cost_rows_week = []
+        excluded_phone_missing_cost_rows_month = []
 
-        # Month-level support metrics.
-        monthly_allowance_paid = 0.0
-        monthly_fixed_overhead = 0.0
-        weekly_month_buckets = {}
+        # Build fallback phone cost map from stock + paid records.
+        phone_cost_lookup = {}
+        for record in main_records:
+            imei_text = str(self._record_value(record, 'IMEI') or '').strip()
+            if not imei_text:
+                continue
+            record_cost = max(0.0, clean_amount(self._record_value(record, 'COST PRICE', 'COST')))
+            if record_cost <= 0:
+                continue
+            phone_cost_lookup[imei_text] = record_cost
+
+        stock_values = self.get_stock_values(force_refresh=force_refresh)
+        stock_header_row_idx, _, stock_headers_upper = detect_stock_headers(stock_values)
+        stock_imei_col = svc_stock_header_index(stock_headers_upper, 'IMEI')
+        stock_cost_col = svc_stock_header_index(stock_headers_upper, 'COST PRICE', 'COST', 'BUYING PRICE')
+        for row_values in stock_values[stock_header_row_idx + 1:]:
+            row = list(row_values or [])
+            imei_text = str(row[stock_imei_col] if stock_imei_col is not None and stock_imei_col < len(row) else '').strip()
+            if not imei_text:
+                continue
+            stock_cost = max(0.0, clean_amount(row[stock_cost_col] if stock_cost_col is not None and stock_cost_col < len(row) else ''))
+            if stock_cost > 0 and imei_text not in phone_cost_lookup:
+                phone_cost_lookup[imei_text] = stock_cost
+
+        # Pool of phone additional expenses keyed to sale metadata, so each
+        # additional expense is consumed once by a matching paid phone sale.
+        phone_extra_expense_pool = {}
 
         for item in items:
-            amount = clean_amount(item.get('amount'))
+            amount = max(0.0, clean_amount(item.get('amount')))
+            if amount <= 0:
+                continue
             source = str(item.get('source') or '').strip().lower()
+            if source == 'income':
+                continue
+
             category = str(item.get('category') or '').strip().lower()
-            entry_type = str(item.get('type') or '').strip().lower()
-            cost_price = max(0.0, clean_amount(item.get('cost_price')))
-            payment_status = str(item.get('payment_status') or '').strip().upper()
-            try:
-                entry_date = parse_sheet_date(item.get('payment_date') or item.get('date'))
-            except Exception:
-                entry_date = None
+            entry_date = parse_sheet_date(item.get('payment_date') or item.get('date'))
+            if entry_date is None:
+                continue
 
-            if entry_type == 'phone' and cost_price <= 0:
-                item_description = self._normalize_cashflow_lookup_text(item.get('description'))
-                item_actor = self._normalize_cashflow_lookup_text(item.get('created_by'))
-                item_date_key = entry_date.isoformat() if entry_date is not None else ''
-                fallback_keys = [
-                    (item_description, item_actor, item_date_key),
-                    (item_description, item_actor, ''),
-                    (item_description, '', item_date_key),
-                    (item_description, '', ''),
-                ]
-                for key in fallback_keys:
-                    resolved_cost = phone_cost_lookup.get(key)
-                    if resolved_cost and resolved_cost > 0:
-                        cost_price = resolved_cost
-                        break
+            is_phone_extra = 'phone sale expense' in category or category == 'phone expense'
+            is_service_specific = 'service expense' in category
+            is_manual_expense = not is_phone_extra and not is_service_specific
 
-            # Legacy phone rows may store sale price in AMOUNT when cost was
-            # unknown at posting time. If cost exists and amount exceeds cost,
-            # derive realized phone profit as sale - cost.
-            phone_realized_amount = amount
-            if entry_type == 'phone' and cost_price > 0 and amount > cost_price:
-                phone_realized_amount = round(max(0.0, amount - cost_price), 2)
+            if is_phone_extra:
+                expense_description = self._normalize_cashflow_lookup_text(item.get('description'))
+                expense_actor = self._normalize_cashflow_lookup_text(item.get('created_by'))
+                expense_date_key = entry_date.isoformat()
+                for pool_key in [
+                    (expense_description, expense_actor, expense_date_key),
+                    (expense_description, expense_actor, ''),
+                    (expense_description, '', expense_date_key),
+                    (expense_description, '', ''),
+                ]:
+                    phone_extra_expense_pool.setdefault(pool_key, []).append(amount)
+                continue
 
-            is_income = source == 'income'
-            is_paid = payment_status != 'OWING'  # missing/PAID both count as paid (backward compat)
-            is_business_only_expense = (not is_income) and self._is_business_only_expense_category(category)
-            in_current_month = entry_date is not None and entry_date >= current_month_start and entry_date <= current_day
-            has_phone_cost = cost_price > 0
-            allow_phone_profit = entry_type != 'phone' or has_phone_cost
+            if not is_manual_expense:
+                continue
+
+            in_current_month = current_month_start <= entry_date <= current_day
+            in_current_week = current_week_start <= entry_date <= current_week_end_date
 
             if in_current_month:
-                if is_income:
-                    if is_paid:
-                        if allow_phone_profit:
-                            total_paid_income += amount
-                            if entry_type == 'service':
-                                realized_profit = amount
-                                total_service_realized_profit += realized_profit
-                            else:
-                                realized_profit = phone_realized_amount
-                                total_phone_realized_profit += realized_profit
-                    else:
-                        if allow_phone_profit:
-                            total_owing_income += amount
+                monthly_manual_expenses += amount
+                if 'weekly allowance' in category:
+                    monthly_allowance_paid += amount
+            if in_current_week:
+                current_week_expenses += amount
+
+        for record in main_records:
+            status_text = str(self._record_value(record, 'STATUS') or '').strip().upper()
+            if status_text != 'PAID':
+                row_date = parse_sheet_date(self._record_value(record, 'DATE', 'SERVICE DATE'))
+                if row_date is not None and current_month_start <= row_date <= current_day:
+                    price_value = max(0.0, clean_amount(self._record_value(record, 'PRICE')))
+                    paid_value = max(0.0, clean_amount(self._record_value(record, 'AMOUNT PAID')))
+                    total_owing_income += max(0.0, price_value - paid_value)
+                continue
+
+            payment_date = self._parse_main_record_profit_date(
+                self._record_value(record, 'PAYMENT DATE', 'PAID DATE'),
+                self._record_value(record, 'DATE', 'SERVICE DATE'),
+            )
+            if payment_date is None:
+                continue
+
+            price_value = max(0.0, clean_amount(self._record_value(record, 'PRICE', 'AMOUNT SOLD', 'SELLING PRICE')))
+            if price_value <= 0:
+                continue
+
+            imei_value = str(self._record_value(record, 'IMEI') or '').strip()
+            in_current_month = current_month_start <= payment_date <= current_day
+            in_current_week = current_week_start <= payment_date <= current_week_end_date
+
+            if imei_value:
+                cost_price = max(0.0, clean_amount(self._record_value(record, 'COST PRICE', 'COST')))
+                if cost_price <= 0:
+                    cost_price = max(0.0, clean_amount(phone_cost_lookup.get(imei_value)))
+
+                if cost_price <= 0:
+                    audit_row = {
+                        'payment_date': payment_date.isoformat(),
+                        'name': str(self._record_value(record, 'NAME', 'NAME OF BUYER', 'CLIENT NAME') or '').strip(),
+                        'description': str(self._record_value(record, 'DESCRIPTION', 'MODEL', 'DEVICE') or '').strip(),
+                        'imei': imei_value,
+                        'price': round(price_value, 2),
+                        'reason': 'missing_or_zero_cost_price',
+                    }
+                    if in_current_month:
+                        excluded_phone_missing_cost_rows_month.append(audit_row)
+                    if in_current_week:
+                        excluded_phone_missing_cost_rows_week.append(audit_row)
+                    continue
+
+                description_text = self._normalize_cashflow_lookup_text(self._record_value(record, 'DESCRIPTION', 'MODEL', 'DEVICE'))
+                actor_text = self._normalize_cashflow_lookup_text(self._record_value(record, 'NAME', 'NAME OF BUYER', 'CLIENT NAME'))
+                date_key = payment_date.isoformat()
+
+                additional_expense = 0.0
+                for pool_key in [
+                    (description_text, actor_text, date_key),
+                    (description_text, actor_text, ''),
+                    (description_text, '', date_key),
+                    (description_text, '', ''),
+                ]:
+                    pool = phone_extra_expense_pool.get(pool_key) or []
+                    if pool:
+                        additional_expense = max(0.0, clean_amount(pool.pop(0)))
+                        break
+
+                phone_profit = round(max(0.0, price_value - cost_price - additional_expense), 2)
+                if phone_profit <= 0:
+                    continue
+
+                if in_current_month:
+                    monthly_phone_profit += phone_profit
+                    monthly_gross_profit += phone_profit
+                if in_current_week:
+                    current_week_phone_profit += phone_profit
+                    current_week_gross_profit += phone_profit
+                continue
+
+            service_expense = max(0.0, clean_amount(
+                self._record_value(record, 'SERVICE EXPENSE', 'EXPENSE', 'SERVICE COST')
+            ))
+            service_profit = round(max(0.0, price_value - service_expense), 2)
+            if service_profit <= 0:
+                continue
+
+            if in_current_month:
+                monthly_service_profit += service_profit
+                monthly_gross_profit += service_profit
+            if in_current_week:
+                current_week_service_profit += service_profit
+                current_week_gross_profit += service_profit
+                service_work_date = parse_sheet_date(self._record_value(record, 'DATE', 'SERVICE DATE'))
+                if service_work_date is not None and service_work_date < current_week_start:
+                    current_week_service_profit_previous_weeks_paid_this_week += service_profit
                 else:
-                    total_expenses += amount
+                    current_week_service_profit_done_this_week += service_profit
 
-                    if 'allowance' in category:
-                        monthly_allowance_paid += max(0.0, amount)
-
-                    if any(token in category for token in ('monthly', 'internet', 'rent', 'subscription', 'utility', 'salary', 'wages')):
-                        monthly_fixed_overhead += amount
-
-                    if entry_date is not None:
-                        bucket_week_start = entry_date - timedelta(days=(entry_date.weekday() + 1) % 7)
-                        week_key = bucket_week_start.isoformat()
-                        bucket = weekly_month_buckets.setdefault(week_key, {'realized_income': 0.0, 'allowance_expenses': 0.0})
-                        bucket['allowance_expenses'] += amount if not is_business_only_expense else 0.0
-
-                if is_income and is_paid and entry_date is not None:
-                    bucket_week_start = entry_date - timedelta(days=(entry_date.weekday() + 1) % 7)
-                    week_key = bucket_week_start.isoformat()
-                    bucket = weekly_month_buckets.setdefault(week_key, {'realized_income': 0.0, 'allowance_expenses': 0.0})
-                    # Weekly allowance should be based on paid profit without
-                    # reducing phone income by stocking cost.
-                    realized_income_for_allowance = amount
-                    bucket['realized_income'] += realized_income_for_allowance
-
-            if entry_date is not None and current_week_start <= entry_date <= current_week_end_date:
-                if is_income and is_paid:
-                    current_week_paid_income += amount
-                    if entry_type == 'service' or ('service' in category and entry_type not in ('phone', 'service')):
-                        current_week_service_profit += amount
-                        current_week_service_profit_done_this_week += amount
-                    else:
-                        # Keep this week's phone profit on paid amount basis.
-                        current_week_phone_profit += amount
-                elif not is_income:
-                    current_week_expenses += amount
-                    if is_business_only_expense:
-                        current_week_business_only_expenses += amount
-                    else:
-                        current_week_allowance_expenses += amount
-
-        total_cash_in = round(total_paid_income, 2)
+        total_cash_in = round(monthly_gross_profit, 2)
         expected_income = round(total_owing_income, 2)
-        total_expenses = round(total_expenses, 2)
-        total_realized_profit = round(total_phone_realized_profit + total_service_realized_profit, 2)
-        net_profit = round(total_realized_profit - total_expenses, 2)
-
-        receivables_excluded = max(0.0, self._read_numeric_config('receivables_amount', default=0.0))
-        reserve_percentage = self._normalized_reserve_percentage()
-        available_cash_before_reserve = total_cash_in - total_expenses - receivables_excluded
-        reserve_amount = max(0.0, available_cash_before_reserve) * reserve_percentage
-        available_cash_after_reserve = available_cash_before_reserve - reserve_amount
-
-        # Reconcile weekly service profit directly from main records using
-        # payment date + amount paid so older services paid this week are
-        # included even if legacy cashflow rows were missed.
-        current_week_service_profit_cashflow = round(current_week_service_profit, 2)
-        reconciled_current_week_service_profit = 0.0
-        reconciled_current_week_service_rows = 0
-        reconciled_current_week_service_done_this_week = 0.0
-        reconciled_current_week_service_previous_weeks_paid_this_week = 0.0
-        try:
-            main_records = self.get_main_records(force_refresh=force_refresh)
-            for record in main_records or []:
-                imei_value = str(self._record_value(record, 'IMEI') or '').strip()
-                if imei_value:
-                    continue
-
-                payment_date = parse_sheet_date(
-                    self._record_value(record, 'PAYMENT DATE', 'PAID DATE', 'DATE')
-                )
-                if payment_date is None or payment_date < current_week_start or payment_date > current_week_end_date:
-                    continue
-
-                status_text = str(self._record_value(record, 'STATUS') or '').strip().upper()
-                price_value = clean_amount(self._record_value(record, 'PRICE'))
-                paid_value = clean_amount(self._record_value(record, 'AMOUNT PAID'))
-                realized_value = paid_value if paid_value > 0 else (price_value if status_text == 'PAID' else 0.0)
-                if realized_value > 0:
-                    reconciled_current_week_service_profit += realized_value
-                    reconciled_current_week_service_rows += 1
-                    service_work_date = parse_sheet_date(
-                        self._record_value(record, 'DATE', 'SERVICE DATE')
-                    )
-                    if service_work_date is not None and service_work_date < current_week_start:
-                        reconciled_current_week_service_previous_weeks_paid_this_week += realized_value
-                    else:
-                        reconciled_current_week_service_done_this_week += realized_value
-        except Exception as reconcile_exc:
-            self.logger.warning('Failed to reconcile weekly service profit from main records: %s', reconcile_exc)
-
-        current_week_service_profit_reconciled_delta = 0.0
-        if reconciled_current_week_service_profit > current_week_service_profit:
-            missing_service_profit_delta = round(reconciled_current_week_service_profit - current_week_service_profit, 2)
-            current_week_service_profit_reconciled_delta = missing_service_profit_delta
-            current_week_service_profit = round(reconciled_current_week_service_profit, 2)
-            current_week_service_profit_done_this_week = round(reconciled_current_week_service_done_this_week, 2)
-            current_week_service_profit_previous_weeks_paid_this_week = round(reconciled_current_week_service_previous_weeks_paid_this_week, 2)
-            current_week_paid_income = round(current_week_paid_income + missing_service_profit_delta, 2)
-        else:
-            current_week_service_profit_done_this_week = round(current_week_service_profit_done_this_week, 2)
-            current_week_service_profit_previous_weeks_paid_this_week = 0.0
+        total_expenses = round(monthly_manual_expenses, 2)
+        net_profit = round(monthly_gross_profit - monthly_manual_expenses, 2)
 
         current_week_profit_done_this_week = round(current_week_phone_profit + current_week_service_profit_done_this_week, 2)
         current_week_profit_previous_weeks_paid_this_week = round(current_week_service_profit_previous_weeks_paid_this_week, 2)
-        weekly_realized_profit = round(current_week_profit_done_this_week + current_week_profit_previous_weeks_paid_this_week, 2)
-        current_week_net_cash_flow = round(current_week_paid_income - current_week_expenses, 2)
+        weekly_realized_profit = round(current_week_gross_profit, 2)
         current_week_net_profit = round(weekly_realized_profit - current_week_expenses, 2)
-        allowance_base_net_profit = round(weekly_realized_profit - current_week_allowance_expenses, 2)
+        current_week_net_cash_flow = current_week_net_profit
+        allowance_base_net_profit = current_week_net_profit
+        suggested_allowance = round(max(0.0, current_week_net_profit) * allowance_percentage, 2)
 
-        # Month-to-date cash can dip at month boundaries (e.g., new month with early expense),
-        # so allowance cap should also consider current week cash position.
-        weekly_available_before_reserve = current_week_paid_income - current_week_expenses
-        weekly_reserve_amount = max(0.0, weekly_available_before_reserve) * reserve_percentage
-        weekly_available_after_reserve = weekly_available_before_reserve - weekly_reserve_amount
+        monthly_remaining_profit = round(net_profit - monthly_allowance_paid, 2)
 
-        allowance_percentage = self._normalized_allowance_percentage()
-        raw_allowance = max(0.0, allowance_base_net_profit) * allowance_percentage
-        # Allowance must not exceed usable cash after reserve.
-        # Use the stronger of month-to-date and week-to-date cash bases.
-        allowance_cash_cap = max(0.0, max(available_cash_after_reserve, weekly_available_after_reserve))
+        reserve_percentage = 0.0
+        reserve_amount = 0.0
+        receivables_excluded = 0.0
+        available_cash_before_reserve = round(net_profit, 2)
+        available_cash_after_reserve = available_cash_before_reserve
+        weekly_available_before_reserve = round(current_week_net_profit, 2)
+        weekly_available_after_reserve = weekly_available_before_reserve
+        current_week_allowance_expenses = round(current_week_expenses, 2)
+        current_week_business_only_expenses = 0.0
+        monthly_fixed_overhead = 0.0
+        monthly_allowance_provision = round(monthly_allowance_paid, 2)
+        month_remainder_profit_after_paid_allowance = monthly_remaining_profit
+        month_remainder_profit_after_provision = monthly_remaining_profit
+        cash_runway_weeks = 0.0
+        cash_health_status = 'yellow'
+        allowance_cash_cap = max(0.0, available_cash_after_reserve)
+        required_cash_buffer = 0.0
+        cash_buffer_ok = True
+        buffer_weeks_threshold = 0.0
+        current_week_service_profit_cashflow = round(current_week_service_profit, 2)
+        reconciled_current_week_service_profit = round(current_week_service_profit, 2)
+        current_week_service_profit_reconciled_delta = 0.0
+        reconciled_current_week_service_rows = 0
 
-        # Guardrail: allowance pauses if cash buffer is below policy threshold.
-        # Default threshold is 4 weeks of fixed overhead.
-        buffer_weeks_threshold = max(0.0, self._read_numeric_config('allowance_min_buffer_weeks', default=4.0))
-        fixed_overhead_weekly = round(max(0.0, monthly_fixed_overhead) / 4.0, 2)
-        required_cash_buffer = round(fixed_overhead_weekly * buffer_weeks_threshold, 2)
-        cash_buffer_ok = allowance_cash_cap >= required_cash_buffer
-
-        suggested_allowance = round(min(raw_allowance, allowance_cash_cap), 2) if cash_buffer_ok else 0.0
-
-        # Monthly allowance provision based on each week's allowance base inside this month.
-        monthly_allowance_provision = 0.0
-        for bucket in weekly_month_buckets.values():
-            week_base = max(0.0, (bucket.get('realized_income', 0.0) - bucket.get('allowance_expenses', 0.0)))
-            monthly_allowance_provision += week_base * allowance_percentage
-        monthly_allowance_provision = round(monthly_allowance_provision, 2)
-
-        month_remainder_profit_after_paid_allowance = round(net_profit - monthly_allowance_paid, 2)
-        month_remainder_profit_after_provision = round(net_profit - monthly_allowance_provision, 2)
-
-        weekly_burn = current_week_expenses if current_week_expenses > 0 else max(0.0, total_expenses / 4.0)
-        cash_runway_weeks = round((allowance_cash_cap / weekly_burn), 2) if weekly_burn > 0 else 0.0
-        if cash_runway_weeks >= 8 and cash_buffer_ok:
-            cash_health_status = 'green'
-        elif cash_runway_weeks >= 4:
-            cash_health_status = 'yellow'
-        else:
-            cash_health_status = 'red'
-
-        # Self-heal: if month shows expenses but zero paid income while main sheet
-        # clearly has PAID rows in this month, cashflow mirror likely drifted.
-        if (not _rebuild_attempted) and total_cash_in <= 0 and total_expenses > 0:
-            try:
-                today_local = datetime.now(timezone.utc).date()
-                month_start_local = today_local.replace(day=1)
-                paid_rows_this_month = 0
-                for record in self.get_main_records(force_refresh=force_refresh):
-                    status = str(self._record_value(record, 'STATUS') or '').strip().upper()
-                    if status != 'PAID':
-                        continue
-                    payment_date = parse_sheet_date(
-                        self._record_value(record, 'PAYMENT DATE', 'PAID DATE', 'DATE')
-                    )
-                    if payment_date is None:
-                        continue
-                    if month_start_local <= payment_date <= today_local:
-                        paid_rows_this_month += 1
-                        if paid_rows_this_month >= 1:
-                            break
-
-                if paid_rows_this_month > 0:
-                    self.rebuild_cashflow_sheet(force_refresh=True)
-                    return self.get_cashflow_summary_from_sheet(force_refresh=True, _rebuild_attempted=True)
-            except Exception as rebuild_exc:
-                self.logger.warning('Cashflow self-heal rebuild skipped: %s', rebuild_exc)
+        excluded_phone_missing_cost_rows_week.sort(
+            key=lambda row: (str(row.get('payment_date') or ''), str(row.get('description') or '')),
+            reverse=True,
+        )
 
         return {
             'total_cash_in': total_cash_in,
@@ -1709,7 +1604,7 @@ class BackendRuntime:
             'reserve_amount': reserve_amount,
             'available_cash': available_cash_after_reserve,
             'available_cash_before_reserve': available_cash_before_reserve,
-            'current_week_cash_in': round(current_week_paid_income, 2),
+            'current_week_cash_in': round(current_week_gross_profit, 2),
             'current_week_expenses': round(current_week_expenses, 2),
             'current_week_phone_profit': round(current_week_phone_profit, 2),
             'current_week_service_profit': round(current_week_service_profit, 2),
@@ -1740,6 +1635,12 @@ class BackendRuntime:
             'capital_outflow_week': capital.get('week_total', 0.0),
             'current_week_start': current_week_start.isoformat(),
             'current_week_end': current_week_end_date.isoformat(),
+            'excluded_phone_missing_cost_count_month': int(len(excluded_phone_missing_cost_rows_month)),
+            'excluded_phone_missing_cost_count_week': int(len(excluded_phone_missing_cost_rows_week)),
+            'excluded_phone_missing_cost_rows_week': excluded_phone_missing_cost_rows_week[:40],
+            'monthly_gross_profit': round(monthly_gross_profit, 2),
+            'monthly_net_profit': round(net_profit, 2),
+            'monthly_remaining_profit': monthly_remaining_profit,
             'weekly_allowance': {
                 'suggested_allowance': suggested_allowance,
                 'calculation_date': current_day.isoformat(),
@@ -1772,6 +1673,25 @@ class BackendRuntime:
         for token in ('IOS UPDATE', 'UPDATE', 'FIX'):
             text = text.replace(token, ' ')
         return ' '.join(text.split())
+
+    @staticmethod
+    def _parse_main_record_profit_date(payment_date_raw, fallback_date_raw):
+        payment_text = str(payment_date_raw or '').strip()
+        if payment_text:
+            return parse_sheet_date(payment_text)
+
+        fallback_text = str(fallback_date_raw or '').strip()
+        if not fallback_text:
+            return None
+
+        # Main sheet slash dates are operationally entered as month/day.
+        for fmt in ('%m/%d/%Y', '%m/%d/%y', '%m-%d-%Y', '%m-%d-%y', '%Y-%m-%d'):
+            try:
+                return datetime.strptime(fallback_text, fmt).date()
+            except Exception:
+                continue
+
+        return parse_sheet_date(fallback_text)
 
     def rebuild_cashflow_sheet(self, force_refresh=False, current_week_only=False):
         today = datetime.now(timezone.utc).date()

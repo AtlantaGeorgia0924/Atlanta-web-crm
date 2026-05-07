@@ -1753,6 +1753,10 @@ function CashFlowView({
     },
   ];
 
+  const excludedPhoneCostRows = Array.isArray(summary.excluded_phone_missing_cost_rows_week)
+    ? summary.excluded_phone_missing_cost_rows_week
+    : [];
+
   return (
     <div className="workspace-stack">
       <section className="summary-frame">
@@ -2133,6 +2137,55 @@ function CashFlowView({
         ) : (
           <div className="notice" style={{ marginTop: '12px' }}>
             No excluded expense rows detected for this week.
+          </div>
+        )}
+      </section>
+
+      <section className="summary-frame">
+        <h3>Missing Phone Cost Audit</h3>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          Paid phone sales without cost price are excluded from phone profit until cost is filled.
+        </p>
+        <div className="summary-grid summary-grid--home" style={{ marginTop: '12px' }}>
+          <article className="metric-card metric-card--home">
+            <span className="metric-label">Excluded This Week</span>
+            <strong className="metric-value">{formatCount(summary.excluded_phone_missing_cost_count_week || 0)}</strong>
+            <span className="metric-note">These paid phone rows are not counted in weekly phone profit.</span>
+          </article>
+          <article className="metric-card metric-card--home">
+            <span className="metric-label">Excluded This Month</span>
+            <strong className="metric-value">{formatCount(summary.excluded_phone_missing_cost_count_month || 0)}</strong>
+            <span className="metric-note">Fill cost price to include them in monthly and weekly phone profit.</span>
+          </article>
+        </div>
+        {excludedPhoneCostRows.length ? (
+          <div className="table-wrap table-wrap--mobile-cards" style={{ marginTop: '12px' }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Payment Date</th>
+                  <th>Name</th>
+                  <th>Description</th>
+                  <th>IMEI</th>
+                  <th>Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {excludedPhoneCostRows.map((row, index) => (
+                  <tr key={`missing-cost-${index}-${row.imei || row.description || ''}`}>
+                    <td data-label="Payment Date">{row.payment_date || '—'}</td>
+                    <td data-label="Name">{row.name || '—'}</td>
+                    <td data-label="Description">{row.description || '—'}</td>
+                    <td data-label="IMEI">{row.imei || '—'}</td>
+                    <td data-label="Price">{formatCurrency(row.price || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="notice" style={{ marginTop: '12px' }}>
+            No paid phone sale with missing cost was excluded this week.
           </div>
         )}
       </section>
@@ -6257,6 +6310,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       cash_health_status: 'red',
       capital_outflow_month: 0,
       capital_outflow_week: 0,
+      excluded_phone_missing_cost_count_month: 0,
+      excluded_phone_missing_cost_count_week: 0,
+      excluded_phone_missing_cost_rows_week: [],
       current_week_start: '',
       current_week_end: '',
     };
