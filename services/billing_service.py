@@ -1,6 +1,7 @@
 import json
 import os
-from datetime import date, datetime
+import re
+from datetime import date, datetime, timedelta
 
 from services.sync_service import detect_sheet_header_row
 
@@ -421,9 +422,67 @@ def parse_sheet_date(date_value):
     if not raw:
         return None
 
+    # Some synced sheet values arrive as ISO timestamps or spreadsheet serial dates.
+    numeric_candidate = raw.replace(',', '')
+    try:
+        numeric_value = float(numeric_candidate)
+    except Exception:
+        numeric_value = None
+    if numeric_value is not None and numeric_value >= 1:
+        try:
+            return (datetime(1899, 12, 30) + timedelta(days=numeric_value)).date()
+        except Exception:
+            pass
+
+    iso_candidate = raw.replace('Z', '+00:00')
+    try:
+        return datetime.fromisoformat(iso_candidate).date()
+    except Exception:
+        pass
+
+    if 'T' in raw:
+        iso_date_only = raw.split('T', 1)[0].strip()
+        try:
+            return datetime.strptime(iso_date_only, '%Y-%m-%d').date()
+        except Exception:
+            pass
+
+    date_parts_match = None
+    for separator in ('/', '.'):
+        date_parts_match = re.match(rf'^(\d{{1,2}}){re.escape(separator)}(\d{{1,2}}){re.escape(separator)}(\d{{2,4}})$', raw)
+        if date_parts_match:
+            break
+    if date_parts_match:
+        first = int(date_parts_match.group(1))
+        second = int(date_parts_match.group(2))
+        year = int(date_parts_match.group(3))
+        if year < 100:
+            year += 2000
+        day = first
+        month = second
+        if first > 12 and second <= 12:
+            day = first
+            month = second
+        elif second > 12 and first <= 12:
+            day = second
+            month = first
+        try:
+            return date(year, month, day)
+        except Exception:
+            pass
+
+    dash_match = re.match(r'^(\d{1,2})-(\d{1,2})-(\d{4})$', raw)
+    if dash_match:
+        try:
+            return date(int(dash_match.group(3)), int(dash_match.group(2)), int(dash_match.group(1)))
+        except Exception:
+            pass
+
     candidate_formats = [
-        '%m/%d/%Y', '%d/%m/%Y', '%Y-%m-%d', '%d-%m-%Y', '%m-%d-%Y',
-        '%m/%d/%y', '%d/%m/%y', '%Y/%m/%d'
+        '%d/%m/%Y', '%m/%d/%Y', '%Y-%m-%d', '%d-%m-%Y', '%m-%d-%Y',
+        '%d/%m/%y', '%m/%d/%y', '%Y/%m/%d', '%d.%m.%Y', '%m.%d.%Y',
+        '%d %B %Y', '%d %b %Y', '%B %d %Y', '%b %d %Y',
+        '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d %H:%M'
     ]
 
     for fmt in candidate_formats:

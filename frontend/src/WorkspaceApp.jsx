@@ -1282,12 +1282,41 @@ function CashFlowView({
 
   function parse_date_approx(raw) {
     if (!raw) return null;
-    // Try formats dd/mm/yyyy, yyyy-mm-dd, d/m/yyyy, dd-mm-yyyy
     const clean = String(raw).trim();
-    let m = clean.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    const numeric = Number(clean.replace(/,/g, ''));
+    if (Number.isFinite(numeric) && numeric >= 1) {
+      const serialEpoch = new Date(Date.UTC(1899, 11, 30));
+      serialEpoch.setUTCDate(serialEpoch.getUTCDate() + Math.floor(numeric));
+      return new Date(serialEpoch.getUTCFullYear(), serialEpoch.getUTCMonth(), serialEpoch.getUTCDate());
+    }
+
+    let m = clean.match(/^(\d{1,2})[\/\.](\d{1,2})[\/\.](\d{2,4})$/);
+    if (m) {
+      let first = Number(m[1]);
+      let second = Number(m[2]);
+      let year = Number(m[3]);
+      if (year < 100) {
+        year += 2000;
+      }
+      let day = first;
+      let month = second;
+      if (first <= 12 && second > 12) {
+        day = second;
+        month = first;
+      }
+      return new Date(year, month - 1, day);
+    }
+
+    m = clean.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
     if (m) return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+
     m = clean.match(/^(\d{4})-(\d{2})-(\d{2})/);
     if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+
+    const nativeParsed = new Date(clean);
+    if (!Number.isNaN(nativeParsed.getTime())) {
+      return new Date(nativeParsed.getFullYear(), nativeParsed.getMonth(), nativeParsed.getDate());
+    }
     return null;
   }
 
