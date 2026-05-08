@@ -247,6 +247,79 @@ function roundCurrency(value) {
   return Math.round(numeric * 100) / 100;
 }
 
+function hasOwnField(payload, fieldName) {
+  return Boolean(payload) && Object.prototype.hasOwnProperty.call(payload, fieldName);
+}
+
+function normalizeCashflowPayload(rawSummary, rawAllowance, defaultSummary, defaultAllowance) {
+  const sourceSummary = rawSummary && typeof rawSummary === 'object' ? rawSummary : {};
+  const sourceAllowance = rawAllowance && typeof rawAllowance === 'object' ? rawAllowance : {};
+
+  const summary = {
+    ...defaultSummary,
+    ...sourceSummary,
+  };
+
+  const allowance = {
+    ...defaultAllowance,
+    ...sourceAllowance,
+  };
+
+  if (!hasOwnField(sourceSummary, 'current_week_allowance_expenses')) {
+    summary.current_week_allowance_expenses = roundCurrency(summary.current_week_expenses || 0);
+  } else {
+    summary.current_week_allowance_expenses = roundCurrency(summary.current_week_allowance_expenses || 0);
+  }
+
+  const hasProfitDoneField = hasOwnField(sourceSummary, 'current_week_profit_done_this_week');
+  const hasProfitPrevPaidField = hasOwnField(sourceSummary, 'current_week_profit_previous_weeks_paid_this_week');
+
+  if (!hasProfitDoneField || !hasProfitPrevPaidField) {
+    const phoneProfit = roundCurrency(summary.current_week_phone_profit || 0);
+    const serviceDoneThisWeek = roundCurrency(summary.current_week_service_profit_done_this_week || 0);
+    const servicePrevWeeksPaidThisWeek = roundCurrency(summary.current_week_service_profit_previous_weeks_paid_this_week || 0);
+
+    let derivedProfitDoneThisWeek = roundCurrency(phoneProfit + serviceDoneThisWeek);
+    let derivedProfitPrevPaidThisWeek = roundCurrency(servicePrevWeeksPaidThisWeek);
+
+    if (derivedProfitDoneThisWeek <= 0 && derivedProfitPrevPaidThisWeek <= 0) {
+      // Compatibility fallback for older API payloads that only provide weekly cash-in.
+      derivedProfitDoneThisWeek = roundCurrency(summary.current_week_cash_in || 0);
+      derivedProfitPrevPaidThisWeek = 0;
+    }
+
+    summary.current_week_profit_done_this_week = derivedProfitDoneThisWeek;
+    summary.current_week_profit_previous_weeks_paid_this_week = derivedProfitPrevPaidThisWeek;
+  } else {
+    summary.current_week_profit_done_this_week = roundCurrency(summary.current_week_profit_done_this_week || 0);
+    summary.current_week_profit_previous_weeks_paid_this_week = roundCurrency(summary.current_week_profit_previous_weeks_paid_this_week || 0);
+  }
+
+  const derivedAllowanceBase = roundCurrency(
+    (summary.current_week_profit_done_this_week || 0)
+    + (summary.current_week_profit_previous_weeks_paid_this_week || 0)
+    - (summary.current_week_allowance_expenses || 0)
+  );
+
+  if (!hasOwnField(sourceSummary, 'allowance_base_net_profit') || !hasProfitDoneField || !hasProfitPrevPaidField) {
+    summary.allowance_base_net_profit = derivedAllowanceBase;
+  } else {
+    summary.allowance_base_net_profit = roundCurrency(summary.allowance_base_net_profit || 0);
+  }
+
+  const allowancePercentage = Number(allowance.allowance_percentage || 0.25);
+  if (!hasOwnField(sourceAllowance, 'suggested_allowance') || !hasProfitDoneField || !hasProfitPrevPaidField) {
+    allowance.suggested_allowance = roundCurrency(Math.max(0, summary.allowance_base_net_profit || 0) * allowancePercentage);
+  } else {
+    allowance.suggested_allowance = roundCurrency(allowance.suggested_allowance || 0);
+  }
+
+  allowance.allowance_base_net_profit = roundCurrency(summary.allowance_base_net_profit || 0);
+  allowance.allowance_expenses = roundCurrency(summary.current_week_allowance_expenses || 0);
+
+  return { summary, allowance };
+}
+
 function formatCurrency(value) {
   return `NGN ${formatCount(value)}`;
 }
@@ -6327,8 +6400,14 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     try {
       const result = await fetchFoundationCashflowDashboard({ forceRefresh });
 
-      const nextSummary = result?.summary || defaultSummary;
-      const nextAllowance = result?.weekly_allowance || defaultAllowance;
+      const normalized = normalizeCashflowPayload(
+        result?.summary,
+        result?.weekly_allowance,
+        defaultSummary,
+        defaultAllowance,
+      );
+      const nextSummary = normalized.summary;
+      const nextAllowance = normalized.allowance;
 
       setCashflowSummary(nextSummary);
       setWeeklyAllowance(nextAllowance);
