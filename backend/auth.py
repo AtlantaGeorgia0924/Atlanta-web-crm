@@ -136,26 +136,71 @@ class AuthService:
                 return
 
             if not self.settings.postgres_dsn:
-                raise RuntimeError(
-                    'Supabase PostgreSQL DSN is required at startup. '
-                    'Set APP_AUTH_POSTGRES_DSN, AUTH_POSTGRES_DSN, POSTGRES_DSN, or SUPABASE_DB_URL.'
-                )
+                if not self._initialize_sqlite_storage():
+                    raise RuntimeError('SQLite auth initialization failed while Supabase DSN is missing.')
+                self._storage_mode = 'sqlite'
+                self._initialized = True
+                return
 
             if not self._is_supabase_host():
-                resolved_host = self._postgres_host() or 'unknown'
-                raise RuntimeError(
-                    'PostgreSQL host must be Supabase. '
-                    f'Resolved host={resolved_host}. '
-                    'Set APP_AUTH_POSTGRES_DSN, AUTH_POSTGRES_DSN, POSTGRES_DSN, or SUPABASE_DB_URL to your Supabase connection string. '
-                    'If Render injects DATABASE_URL for a local Postgres service, do not rely on it for this app.'
-                )
+                if not self._initialize_sqlite_storage():
+                    resolved_host = self._postgres_host() or 'unknown'
+                    raise RuntimeError(
+                        'PostgreSQL host must be Supabase and SQLite fallback initialization failed. '
+                        f'Resolved host={resolved_host}. '
+                        'Set APP_AUTH_POSTGRES_DSN, AUTH_POSTGRES_DSN, POSTGRES_DSN, or SUPABASE_DB_URL to your Supabase connection string. '
+                        'If Render injects DATABASE_URL for a local Postgres service, do not rely on it for this app.'
+                    )
+                self._storage_mode = 'sqlite'
+                self._initialized = True
+                return
 
             if not self._initialize_postgres_storage():
-                raise RuntimeError(f'PostgreSQL auth initialization failed: {self._last_postgres_error or "unknown error"}')
+                if not self._initialize_sqlite_storage():
+                    raise RuntimeError(f'PostgreSQL auth initialization failed: {self._last_postgres_error or "unknown error"}')
+                self._storage_mode = 'sqlite'
+                self._initialized = True
+                return
 
             self._storage_mode = 'postgres'
             self._initialized = True
             return
+
+    def _initialize_sqlite_storage(self):
+        try:
+            os.makedirs(os.path.dirname(self.settings.db_path) or '.', exist_ok=True)
+            self._connection = sqlite3.connect(self.settings.db_path, check_same_thread=False)
+            self._connection.row_factory = sqlite3.Row
+            self._connection.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('admin', 'staff')),
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    logo_url TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                '''
+            )
+            self._connection.execute(
+                'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username))'
+            )
+            self._connection.execute(
+                'CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)'
+            )
+            self._connection.commit()
+            return True
+        except Exception:
+            if self._connection is not None:
+                try:
+                    self._connection.close()
+                except Exception:
+                    pass
+            self._connection = None
+            return False
 
     def _initialize_postgres_storage(self):
         if not self.settings.postgres_dsn or not PSYCOPG2_AVAILABLE:
