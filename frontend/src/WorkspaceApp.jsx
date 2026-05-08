@@ -8164,6 +8164,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       if (isAdmin) {
         await loadCashflowDashboard(true);
       }
+      setServiceModalOpen(false);
       setStatusText('Service row queued into inventory successfully.');
     } catch (error) {
       setStatusText(error.message || 'Could not add the service row.');
