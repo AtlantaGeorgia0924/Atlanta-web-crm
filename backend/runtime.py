@@ -755,7 +755,7 @@ class BackendRuntime:
         ]
 
         if self.postgres_ready:
-            self._enqueue_db_first_operation(
+            queue_id = self._enqueue_db_first_operation(
                 'cashflow',
                 'cashflow_append_row',
                 {
@@ -764,9 +764,24 @@ class BackendRuntime:
                 },
                 cache_apply_callable=lambda: self._append_cached_cashflow_row(row_values),
             )
+
+            # Expense create is followed by force-refresh dashboard reads from sheet.
+            # Flush now so the new row is visible immediately instead of waiting for background replay.
+            try:
+                replay = self.replay_pending_queue_now(limit=40)
+            except Exception as exc:
+                raise RuntimeError(f'Could not apply cashflow write right now: {exc}')
+
+            if replay and replay.get('failed', 0) > 0:
+                raise RuntimeError('Cashflow write was queued but not fully applied. Please retry.')
+
             cached_rows = self._load_cached_rows('cashflow_expense_values')
             row_num = len(cached_rows) if cached_rows else None
-            self.logger.info('write_source=postgres_primary kind=cashflow_append_row row_num=%s', row_num)
+            self.logger.info(
+                'write_source=postgres_primary kind=cashflow_append_row row_num=%s queue_id=%s',
+                row_num,
+                queue_id,
+            )
             return self._normalize_cashflow_expense_row(row_values, row_num=row_num)
 
         worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
