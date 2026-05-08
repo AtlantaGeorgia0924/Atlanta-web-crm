@@ -3308,7 +3308,21 @@ class BackendRuntime:
 
     def _enqueue_db_first_operation(self, entity_name, operation, payload, cache_apply_callable=None, cache_rollback_callable=None):
         if not self.postgres_ready:
-            raise RuntimeError('PostgreSQL sync is not ready. Refusing fallback write path to preserve Supabase as source of truth.')
+            # Degraded-mode fallback: keep core business writes working even when
+            # PostgreSQL sync is unavailable. This writes directly to Sheets.
+            try:
+                self._replay_queue_operation({'payload_json': payload})
+                self.logger.warning(
+                    'write_source=google_sheets_fallback kind=%s reason=postgres_not_ready entity=%s operation=%s',
+                    payload.get('kind', ''),
+                    entity_name,
+                    operation,
+                )
+                return None
+            except Exception as exc:
+                raise RuntimeError(
+                    f'PostgreSQL sync is not ready and direct Google Sheets fallback write failed: {exc}'
+                ) from exc
 
         queue_id = self.postgres_sync_manager.enqueue_operation(entity_name, operation, payload)
         if queue_id is None:
