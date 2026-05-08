@@ -164,21 +164,41 @@ def _resolve_customer_service_row(runtime, name_input, row_idx, force_refresh=Fa
     if normalized_idx <= 0:
         raise HTTPException(status_code=400, detail='Invalid service row.')
 
-    # `row_idx` in clients can be either records index or values index.
-    # Convert both to absolute sheet row number safely.
-    row_num = (header_row_idx + 1) + normalized_idx
-    if row_num <= header_row_idx + 1 or row_num > len(values):
-        raise HTTPException(status_code=400, detail='Selected service row is no longer available.')
-
-    row = values[row_num - 1] if row_num - 1 < len(values) else []
     name_col = headers.index('NAME') if 'NAME' in headers else None
-    row_name = str(row[name_col] if name_col is not None and name_col < len(row) else '').strip().upper()
+    if name_col is None:
+        raise HTTPException(status_code=400, detail='Main sheet NAME column is missing.')
 
     expected_name = str(name_input or '').strip().upper()
-    if not expected_name or row_name != expected_name:
+    if not expected_name:
         raise HTTPException(status_code=400, detail='Selected service does not belong to this customer.')
 
-    return row_num, row
+    first_data_row = header_row_idx + 2
+    candidate_rows = []
+
+    # Path A: row_idx from records APIs (1-based record position).
+    candidate_rows.append((header_row_idx + 1) + normalized_idx)
+    # Path B: row_idx from raw values APIs (0-based index into values rows).
+    candidate_rows.append(normalized_idx + 1)
+    # Path C: already an absolute sheet row number.
+    candidate_rows.append(normalized_idx)
+
+    resolved_row_num = None
+    resolved_row = None
+    for candidate in candidate_rows:
+        row_num = int(candidate)
+        if row_num < first_data_row or row_num > len(values):
+            continue
+        row = values[row_num - 1] if row_num - 1 < len(values) else []
+        row_name = str(row[name_col] if name_col < len(row) else '').strip().upper()
+        if row_name == expected_name:
+            resolved_row_num = row_num
+            resolved_row = row
+            break
+
+    if resolved_row_num is None:
+        raise HTTPException(status_code=400, detail='Selected service does not belong to this customer.')
+
+    return resolved_row_num, resolved_row
 
 
 def _log_query_timing(runtime, *, kind, started_at, force_refresh=False, **fields):
