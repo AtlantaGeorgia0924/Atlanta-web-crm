@@ -58,6 +58,20 @@ from services.sync_service import (
 )
 
 
+def resolve_supabase_dsn(*candidates):
+    for raw in candidates:
+        dsn = str(raw or '').strip()
+        if not dsn:
+            continue
+        try:
+            host = str(urlparse(dsn).hostname or '').strip().lower()
+        except Exception:
+            host = ''
+        if host and 'supabase.' in host:
+            return dsn
+    return ''
+
+
 def normalize_client_gender(value):
     text = str(value or '').strip().lower()
     if text in {'male', 'm'}:
@@ -208,7 +222,12 @@ class BackendRuntime:
             except Exception as exc:
                 self.logger.warning('Failed to load %s: %s', self.config_path, exc)
 
-        env_dsn = os.getenv('POSTGRES_DSN')  # DATABASE_URL excluded: Render injects it for local Postgres, not Supabase
+        env_dsn = resolve_supabase_dsn(
+            os.getenv('POSTGRES_DSN'),
+            os.getenv('SUPABASE_DB_URL'),
+            # Accept DATABASE_URL only when it points to Supabase.
+            os.getenv('DATABASE_URL'),
+        )
         if env_dsn:
             config['postgres_dsn'] = env_dsn
 

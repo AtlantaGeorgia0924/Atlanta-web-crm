@@ -42,6 +42,20 @@ class UserNotFoundError(AuthError):
     pass
 
 
+def resolve_supabase_dsn(*candidates):
+    for raw in candidates:
+        dsn = str(raw or '').strip()
+        if not dsn:
+            continue
+        try:
+            host = str(urlparse(dsn).hostname or '').strip().lower()
+        except Exception:
+            host = ''
+        if host and 'supabase.' in host:
+            return dsn
+    return ''
+
+
 @dataclass(frozen=True)
 class AuthSettings:
     db_path: str
@@ -56,15 +70,15 @@ class AuthSettings:
     @classmethod
     def from_base_dir(cls, base_dir: str):
         db_path = os.getenv('APP_AUTH_DB_PATH') or os.path.join(base_dir, 'auth.db')
-        postgres_dsn = (
-            os.getenv('APP_AUTH_POSTGRES_DSN')
-            or os.getenv('AUTH_POSTGRES_DSN')
-            or os.getenv('POSTGRES_DSN')
-            # DATABASE_URL is intentionally excluded: Render injects it for its
-            # own managed Postgres add-on which is NOT Supabase. Set POSTGRES_DSN
-            # explicitly in your Render environment variables.
-            or ''
-        ).strip()
+        postgres_dsn = resolve_supabase_dsn(
+            os.getenv('APP_AUTH_POSTGRES_DSN'),
+            os.getenv('AUTH_POSTGRES_DSN'),
+            os.getenv('POSTGRES_DSN'),
+            os.getenv('SUPABASE_DB_URL'),
+            # Only accepted when host is Supabase; Render internal DATABASE_URL
+            # values (host=postgres) are ignored automatically.
+            os.getenv('DATABASE_URL'),
+        )
         jwt_secret = os.getenv('APP_JWT_SECRET') or 'change-this-jwt-secret-in-production'
         jwt_algorithm = os.getenv('APP_JWT_ALGORITHM') or 'HS256'
         expiration_text = os.getenv('APP_JWT_EXPIRATION_MINUTES') or '480'
@@ -122,14 +136,17 @@ class AuthService:
                 return
 
             if not self.settings.postgres_dsn:
-                raise RuntimeError('PostgreSQL DSN is required at startup. Set POSTGRES_DSN or DATABASE_URL.')
+                raise RuntimeError(
+                    'Supabase PostgreSQL DSN is required at startup. '
+                    'Set APP_AUTH_POSTGRES_DSN, AUTH_POSTGRES_DSN, POSTGRES_DSN, or SUPABASE_DB_URL.'
+                )
 
             if not self._is_supabase_host():
                 resolved_host = self._postgres_host() or 'unknown'
                 raise RuntimeError(
                     'PostgreSQL host must be Supabase. '
                     f'Resolved host={resolved_host}. '
-                    'Set POSTGRES_DSN to your Supabase connection string. '
+                    'Set APP_AUTH_POSTGRES_DSN, AUTH_POSTGRES_DSN, POSTGRES_DSN, or SUPABASE_DB_URL to your Supabase connection string. '
                     'If Render injects DATABASE_URL for a local Postgres service, do not rely on it for this app.'
                 )
 
