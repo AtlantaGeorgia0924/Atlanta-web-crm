@@ -876,6 +876,65 @@ class BackendRuntime:
         sheet_entries = []
         sheet_title = 'CASH FLOW'
 
+        def _expense_fallback_payload():
+            # Fail-open path: keep dashboard stable when sheet refresh is unavailable.
+            cached_values = self._load_cached_rows('cashflow_expense_values') if self.postgres_ready else []
+            fallback_items = []
+            for row_num, row_values in enumerate((cached_values or [])[1:], start=2):
+                if not row_values or not any(str(cell or '').strip() for cell in row_values):
+                    continue
+                normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+                if str(normalized.get('source') or '').strip().lower() == 'income':
+                    continue
+                fallback_items.append(normalized)
+
+            if fallback_items:
+                fallback_items.reverse()
+                total = sum(clean_amount(entry.get('amount')) for entry in fallback_items)
+                return {
+                    'items': fallback_items,
+                    'count': len(fallback_items),
+                    'total': total,
+                    'source': 'postgres_cache_fallback',
+                    'sheet_title': sheet_title,
+                }
+
+            operational_items = self._load_operational_cashflow_records() if self.postgres_ready else []
+            if operational_items:
+                fallback_items = [
+                    item for item in operational_items
+                    if str(item.get('source') or '').strip().lower() != 'income'
+                ]
+                total = sum(clean_amount(entry.get('amount')) for entry in fallback_items)
+                return {
+                    'items': fallback_items,
+                    'count': len(fallback_items),
+                    'total': total,
+                    'source': 'postgres_operational_fallback',
+                    'sheet_title': sheet_title,
+                }
+            return None
+
+        cached_values = self._load_cached_rows('cashflow_expense_values')
+        if cached_values:
+            for row_num, row_values in enumerate(cached_values[1:], start=2):
+                if not row_values or not any(str(cell or '').strip() for cell in row_values):
+                    continue
+                normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
+                if str(normalized.get('source') or '').strip().lower() == 'income':
+                    continue
+                sheet_entries.append(normalized)
+            if sheet_entries:
+                sheet_entries.reverse()
+                total = sum(clean_amount(entry.get('amount')) for entry in sheet_entries)
+                return {
+                    'items': sheet_entries,
+                    'count': len(sheet_entries),
+                    'total': total,
+                    'source': 'postgres_cache' if not force_refresh else 'postgres_cache_force_refresh',
+                    'sheet_title': sheet_title,
+                }
+
         if not force_refresh:
             operational_items = self._load_operational_cashflow_records()
             if operational_items:
@@ -892,32 +951,14 @@ class BackendRuntime:
                     'sheet_title': sheet_title,
                 }
 
-        if not force_refresh:
-            cached_values = self._load_cached_rows('cashflow_expense_values')
-            if cached_values:
-                for row_num, row_values in enumerate(cached_values[1:], start=2):
-                    if not row_values or not any(str(cell or '').strip() for cell in row_values):
-                        continue
-                    normalized = self._normalize_cashflow_expense_row(row_values, row_num=row_num)
-                    if str(normalized.get('source') or '').strip().lower() == 'income':
-                        continue
-                    sheet_entries.append(normalized)
-                if sheet_entries:
-                    sheet_entries.reverse()
-                    total = sum(clean_amount(entry.get('amount')) for entry in sheet_entries)
-                    return {
-                        'items': sheet_entries,
-                        'count': len(sheet_entries),
-                        'total': total,
-                        'source': 'postgres_cache',
-                        'sheet_title': sheet_title,
-                    }
-
         try:
             worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=False)
         except Exception as exc:
             self.logger.warning('Failed to resolve cashflow expense worksheet: %s', exc)
             worksheet = None
+            fallback_payload = _expense_fallback_payload()
+            if fallback_payload is not None:
+                return fallback_payload
 
         if worksheet is not None:
             sheet_title = worksheet.title or sheet_title
@@ -946,6 +987,10 @@ class BackendRuntime:
                 'source': 'sheet',
                 'sheet_title': sheet_title,
             }
+
+        fallback_payload = _expense_fallback_payload()
+        if fallback_payload is not None:
+            return fallback_payload
 
         return {
             'items': [],
@@ -1245,6 +1290,48 @@ class BackendRuntime:
         sheet_title = 'CASH FLOW'
         sheet_entries = []
 
+        def _sheet_fallback_payload():
+            cached_values = self._load_cached_rows('cashflow_expense_values') if self.postgres_ready else []
+            fallback_entries = []
+            for row_num, row_values in enumerate((cached_values or [])[1:], start=2):
+                if not row_values or not any(str(cell or '').strip() for cell in row_values):
+                    continue
+                fallback_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
+            if fallback_entries:
+                fallback_entries.reverse()
+                return {
+                    'items': fallback_entries,
+                    'count': len(fallback_entries),
+                    'source': 'postgres_cache_fallback',
+                    'sheet_title': sheet_title,
+                }
+
+            operational_items = self._load_operational_cashflow_records() if self.postgres_ready else []
+            if operational_items:
+                return {
+                    'items': operational_items,
+                    'count': len(operational_items),
+                    'source': 'postgres_operational_fallback',
+                    'sheet_title': sheet_title,
+                }
+            return None
+
+        cached_values = self._load_cached_rows('cashflow_expense_values')
+        if cached_values:
+            for row_num, row_values in enumerate(cached_values[1:], start=2):
+                if not row_values or not any(str(cell or '').strip() for cell in row_values):
+                    continue
+                sheet_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
+            if sheet_entries:
+                sheet_entries.reverse()
+                self.logger.info('read_source=postgres_cache table=cashflow_expense_values rows=%s force_refresh=%s', len(sheet_entries), bool(force_refresh))
+                return {
+                    'items': sheet_entries,
+                    'count': len(sheet_entries),
+                    'source': 'postgres_cache' if not force_refresh else 'postgres_cache_force_refresh',
+                    'sheet_title': sheet_title,
+                }
+
         if not force_refresh:
             operational_items = self._load_operational_cashflow_records()
             if operational_items:
@@ -1256,28 +1343,14 @@ class BackendRuntime:
                     'sheet_title': sheet_title,
                 }
 
-        if not force_refresh:
-            cached_values = self._load_cached_rows('cashflow_expense_values')
-            if cached_values:
-                for row_num, row_values in enumerate(cached_values[1:], start=2):
-                    if not row_values or not any(str(cell or '').strip() for cell in row_values):
-                        continue
-                    sheet_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
-                if sheet_entries:
-                    sheet_entries.reverse()
-                    self.logger.info('read_source=postgres_cache table=cashflow_expense_values rows=%s', len(sheet_entries))
-                    return {
-                        'items': sheet_entries,
-                        'count': len(sheet_entries),
-                        'source': 'postgres_cache',
-                        'sheet_title': sheet_title,
-                    }
-
         try:
             worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=False)
         except Exception as exc:
             self.logger.warning('Failed to resolve cashflow expense worksheet: %s', exc)
             worksheet = None
+            fallback_payload = _sheet_fallback_payload()
+            if fallback_payload is not None:
+                return fallback_payload
 
         if worksheet is not None:
             sheet_title = worksheet.title or sheet_title
@@ -1294,6 +1367,10 @@ class BackendRuntime:
                 sheet_entries.append(self._normalize_cashflow_expense_row(row_values, row_num=row_num))
 
         sheet_entries.reverse()
+        if not sheet_entries:
+            fallback_payload = _sheet_fallback_payload()
+            if fallback_payload is not None:
+                return fallback_payload
         self.logger.info('read_source=google_sheets table=cashflow_expense_values rows=%s', len(sheet_entries))
         return {
             'items': sheet_entries,

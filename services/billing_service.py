@@ -8,13 +8,23 @@ from services.sync_service import detect_sheet_header_row
 
 def clean_amount(value):
     try:
-        if not value:
+        if value is None:
             return 0
 
-        value = str(value).replace('₦', '').replace(',', '').replace('.00', '').strip()
-        if not value.isdigit():
+        text = str(value).replace('₦', '').replace(',', '').strip()
+        if not text:
             return 0
-        return int(value)
+
+        # Support decimal payloads like "1234.0" from API writes while preserving
+        # existing integer-style behavior for sheet values.
+        normalized = re.sub(r'[^0-9.\-]', '', text)
+        if not normalized or normalized in {'-', '.', '-.'}:
+            return 0
+
+        amount = float(normalized)
+        if amount.is_integer():
+            return int(amount)
+        return amount
     except Exception:
         return 0
 

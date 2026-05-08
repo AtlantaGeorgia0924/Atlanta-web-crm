@@ -6384,7 +6384,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         date: expenseDraft.date,
         allowanceImpact: expenseDraft.allowance_impact,
       });
-      await loadCashflowDashboard(true);
+      await loadCashflowDashboard(false);
       return true;
     } catch (error) {
       const message = error?.message || 'Could not save expense.';
@@ -6401,7 +6401,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     setCashflowExpenseError('');
     try {
       const result = await undoLastWeeklyAllowanceWithdrawal();
-      await loadCashflowDashboard(true);
+      await loadCashflowDashboard(false);
       setStatusText(
         result?.removed_amount
           ? `Undid latest weekly allowance withdrawal: ${formatCurrency(result.removed_amount)}.`
