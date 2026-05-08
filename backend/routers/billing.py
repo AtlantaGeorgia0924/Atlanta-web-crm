@@ -304,9 +304,9 @@ def get_home_bootstrap(force_refresh: bool = False, runtime=Depends(get_runtime)
 @router.get('/outstanding-items/live/{name_input}')
 def outstanding_items_live(name_input: str, force_refresh: bool = False, runtime=Depends(get_runtime)):
     started = time.perf_counter()
-    outstanding_items, total_outstanding = get_customer_outstanding_items_from_records(
+    outstanding_items, total_outstanding, _columns = get_customer_outstanding_items_from_values(
         name_input,
-        runtime.get_main_records(force_refresh=force_refresh),
+        runtime.get_main_values(force_refresh=force_refresh),
     )
     result = {
         'outstanding_items': outstanding_items,
