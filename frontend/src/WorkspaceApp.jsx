@@ -247,10 +247,6 @@ function roundCurrency(value) {
   return Math.round(numeric * 100) / 100;
 }
 
-function hasOwnField(payload, fieldName) {
-  return Boolean(payload) && Object.prototype.hasOwnProperty.call(payload, fieldName);
-}
-
 function normalizeCashflowPayload(rawSummary, rawAllowance, defaultSummary, defaultAllowance) {
   const sourceSummary = rawSummary && typeof rawSummary === 'object' ? rawSummary : {};
   const sourceAllowance = rawAllowance && typeof rawAllowance === 'object' ? rawAllowance : {};
@@ -265,27 +261,27 @@ function normalizeCashflowPayload(rawSummary, rawAllowance, defaultSummary, defa
     ...sourceAllowance,
   };
 
-  if (!hasOwnField(sourceSummary, 'current_week_allowance_expenses')) {
-    summary.current_week_allowance_expenses = roundCurrency(summary.current_week_expenses || 0);
-  } else {
-    summary.current_week_allowance_expenses = roundCurrency(summary.current_week_allowance_expenses || 0);
-  }
+  summary.current_week_allowance_expenses = roundCurrency(summary.current_week_expenses || 0);
 
   const phoneProfit = roundCurrency(summary.current_week_phone_profit || 0);
   const serviceProfit = roundCurrency(summary.current_week_service_profit || 0);
-  const weekGrossProfit = roundCurrency(phoneProfit + serviceProfit);
+  const weekGrossProfit = roundCurrency(summary.current_week_gross_profit || (phoneProfit + serviceProfit));
   const weekExpenses = roundCurrency(summary.current_week_expenses || 0);
-  const weekNetProfit = roundCurrency(weekGrossProfit - weekExpenses);
+  const weekNetProfit = roundCurrency(summary.current_week_net_profit || (weekGrossProfit - weekExpenses));
 
-  summary.current_week_profit_done_this_week = weekGrossProfit;
-  summary.current_week_profit_previous_weeks_paid_this_week = 0;
+  summary.current_week_gross_profit = weekGrossProfit;
   summary.current_week_cash_in = weekGrossProfit;
   summary.current_week_net_profit = weekNetProfit;
   summary.current_week_net_cash_flow = weekNetProfit;
   summary.allowance_base_net_profit = weekNetProfit;
+  summary.monthly_remaining_profit = roundCurrency(
+    summary.monthly_remaining_profit || ((summary.monthly_net_profit || summary.net_profit || 0) - (summary.monthly_allowance_paid || 0))
+  );
 
   const allowancePercentage = Number(allowance.allowance_percentage || 0.25);
-  allowance.suggested_allowance = roundCurrency(Math.max(0, summary.allowance_base_net_profit || 0) * allowancePercentage);
+  allowance.suggested_allowance = roundCurrency(
+    summary.next_week_allowance || Math.max(0, summary.allowance_base_net_profit || 0) * allowancePercentage
+  );
 
   allowance.allowance_base_net_profit = roundCurrency(summary.allowance_base_net_profit || 0);
   allowance.allowance_expenses = roundCurrency(summary.current_week_allowance_expenses || 0);
@@ -1621,15 +1617,12 @@ function CashFlowView({
     }
   }
 
-  const weekGrossProfit = (summary.current_week_phone_profit || 0) + (summary.current_week_service_profit || 0);
-  const weekProfitDoneThisWeek = Number(summary.current_week_profit_done_this_week || 0);
-  const weekProfitPrevPaidThisWeek = Number(summary.current_week_profit_previous_weeks_paid_this_week || 0);
-  const weekProfitCombined = weekProfitDoneThisWeek + weekProfitPrevPaidThisWeek;
+  const weekGrossProfit = Number(summary.current_week_gross_profit || ((summary.current_week_phone_profit || 0) + (summary.current_week_service_profit || 0)));
   const allowanceFormulaCards = [
     {
       key: 'allowance-formula-gross',
       label: 'Weekly Gross Profit',
-      value: formatCurrency(weekProfitCombined || weekGrossProfit),
+      value: formatCurrency(weekGrossProfit),
       note: `Paid phone profit ${formatCurrency(summary.current_week_phone_profit || 0)} + paid service profit ${formatCurrency(summary.current_week_service_profit || 0)}.`,
     },
     {
@@ -1642,7 +1635,7 @@ function CashFlowView({
       key: 'allowance-formula-net',
       label: 'Weekly Net Profit',
       value: formatCurrency(summary.current_week_net_profit || 0),
-      note: `Weekly net = ${formatCurrency(weekProfitCombined || weekGrossProfit)} - ${formatCurrency(summary.current_week_expenses || 0)}.`,
+      note: `Weekly net = ${formatCurrency(weekGrossProfit)} - ${formatCurrency(summary.current_week_expenses || 0)}.`,
     },
     {
       key: 'allowance-formula-final',
@@ -1689,8 +1682,8 @@ function CashFlowView({
     {
       key: 'week-gross',
       label: 'This Week Realized Profit',
-      value: formatCurrency(weekProfitCombined || weekGrossProfit),
-      note: `Profit done this week ${formatCurrency(weekProfitDoneThisWeek)} + previous weeks paid this week ${formatCurrency(weekProfitPrevPaidThisWeek)}. Click to view.`,
+      value: formatCurrency(weekGrossProfit),
+      note: 'Paid service + paid phone profit this week. Click to view.',
       className: '',
       onClick: () => openDrillDown('This Week Realized Profit — Phones & Services', (tx) => tx.source === 'income' && tx.payment_status !== 'OWING' && txIsThisWeek(tx, weekStart, weekEnd)),
     },

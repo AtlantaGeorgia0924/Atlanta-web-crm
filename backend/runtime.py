@@ -1480,7 +1480,13 @@ class BackendRuntime:
         for record in main_records:
             status_text = str(self._record_value(record, 'STATUS', 'PAYMENT STATUS') or '').strip().upper()
             normalized_status = ' '.join(status_text.split())
-            is_paid_status = normalized_status.startswith('PAID') or normalized_status in {'FULLY PAID'}
+            price_for_status = max(0.0, clean_amount(self._record_value(record, 'PRICE', 'AMOUNT SOLD', 'SELLING PRICE')))
+            amount_paid_for_status = max(0.0, clean_amount(self._record_value(record, 'AMOUNT PAID')))
+            is_paid_status = (
+                normalized_status.startswith('PAID')
+                or normalized_status in {'FULLY PAID', 'PAID IN FULL', 'COMPLETE', 'COMPLETED', 'PAIS'}
+                or (price_for_status > 0 and amount_paid_for_status >= price_for_status)
+            )
             if not is_paid_status:
                 row_date = parse_sheet_date(self._record_value(record, 'DATE', 'SERVICE DATE'))
                 if row_date is not None and current_month_start <= row_date <= current_day:
@@ -1565,24 +1571,21 @@ class BackendRuntime:
             if in_current_week:
                 current_week_service_profit += service_profit
                 current_week_gross_profit += service_profit
-                service_work_date = parse_sheet_date(self._record_value(record, 'DATE', 'SERVICE DATE'))
-                if service_work_date is not None and service_work_date < current_week_start:
-                    current_week_service_profit_previous_weeks_paid_this_week += service_profit
-                else:
-                    current_week_service_profit_done_this_week += service_profit
+                current_week_service_profit_done_this_week += service_profit
 
         total_cash_in = round(monthly_gross_profit, 2)
         expected_income = round(total_owing_income, 2)
         total_expenses = round(monthly_manual_expenses, 2)
         net_profit = round(monthly_gross_profit - monthly_manual_expenses, 2)
 
-        current_week_profit_done_this_week = round(current_week_phone_profit + current_week_service_profit_done_this_week, 2)
-        current_week_profit_previous_weeks_paid_this_week = round(current_week_service_profit_previous_weeks_paid_this_week, 2)
+        current_week_profit_done_this_week = round(current_week_gross_profit, 2)
+        current_week_profit_previous_weeks_paid_this_week = 0.0
         weekly_realized_profit = round(current_week_gross_profit, 2)
         current_week_net_profit = round(weekly_realized_profit - current_week_expenses, 2)
         current_week_net_cash_flow = current_week_net_profit
         allowance_base_net_profit = current_week_net_profit
         suggested_allowance = round(max(0.0, current_week_net_profit) * allowance_percentage, 2)
+        next_week_allowance = suggested_allowance
 
         monthly_remaining_profit = round(net_profit - monthly_allowance_paid, 2)
 
@@ -1631,6 +1634,7 @@ class BackendRuntime:
             'available_cash': available_cash_after_reserve,
             'available_cash_before_reserve': available_cash_before_reserve,
             'current_week_cash_in': round(current_week_gross_profit, 2),
+            'current_week_gross_profit': round(current_week_gross_profit, 2),
             'current_week_expenses': round(current_week_expenses, 2),
             'current_week_phone_profit': round(current_week_phone_profit, 2),
             'current_week_service_profit': round(current_week_service_profit, 2),
@@ -1648,6 +1652,7 @@ class BackendRuntime:
             'current_week_available_cash_before_reserve': round(weekly_available_before_reserve, 2),
             'current_week_available_cash_after_reserve': round(weekly_available_after_reserve, 2),
             'allowance_base_net_profit': allowance_base_net_profit,
+            'next_week_allowance': next_week_allowance,
             'current_week_allowance_expenses': round(current_week_allowance_expenses, 2),
             'current_week_business_only_expenses': round(current_week_business_only_expenses, 2),
             'monthly_fixed_overhead': round(monthly_fixed_overhead, 2),
