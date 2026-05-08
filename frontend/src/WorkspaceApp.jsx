@@ -1306,6 +1306,10 @@ function CashFlowView({
     setDrillDown({ title, rows: allTx.filter(filterFn) });
   }
 
+  function openDrillDownRows(title, rows) {
+    setDrillDown({ title, rows: Array.isArray(rows) ? rows : [] });
+  }
+
   function closeDrillDown() {
     setDrillDown(null);
   }
@@ -1635,6 +1639,9 @@ function CashFlowView({
   }
 
   const weekGrossProfit = Number(summary.current_week_gross_profit || ((summary.current_week_phone_profit || 0) + (summary.current_week_service_profit || 0)));
+  const weekRealizedProfitRows = Array.isArray(summary.current_week_realized_profit_rows)
+    ? summary.current_week_realized_profit_rows
+    : [];
   const allowanceFormulaCards = [
     {
       key: 'allowance-formula-gross',
@@ -1702,7 +1709,13 @@ function CashFlowView({
       value: formatCurrency(weekGrossProfit),
       note: 'Paid service + paid phone profit this week. Click to view.',
       className: '',
-      onClick: () => openDrillDown('This Week Realized Profit — Phones & Services', (tx) => tx.source === 'income' && tx.payment_status !== 'OWING' && txIsThisWeek(tx, weekStart, weekEnd)),
+      onClick: () => {
+        if (weekRealizedProfitRows.length) {
+          openDrillDownRows('This Week Realized Profit — Phones & Services', weekRealizedProfitRows);
+          return;
+        }
+        openDrillDown('This Week Realized Profit — Phones & Services', (tx) => tx.source === 'income' && tx.payment_status !== 'OWING' && txIsThisWeek(tx, weekStart, weekEnd));
+      },
     },
     {
       key: 'week-expenses',

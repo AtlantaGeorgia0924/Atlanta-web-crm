@@ -1417,6 +1417,7 @@ class BackendRuntime:
         current_week_service_profit_previous_weeks_paid_this_week = 0.0
         excluded_phone_missing_cost_rows_week = []
         excluded_phone_missing_cost_rows_month = []
+        current_week_realized_profit_rows = []
 
         # Build fallback phone cost map from stock + paid records.
         phone_cost_lookup = {}
@@ -1572,6 +1573,17 @@ class BackendRuntime:
                 if in_current_week:
                     current_week_phone_profit += phone_profit
                     current_week_gross_profit += phone_profit
+                    current_week_realized_profit_rows.append({
+                        'date': payment_date.isoformat(),
+                        'payment_date': payment_date.isoformat(),
+                        'category': 'PHONE PROFIT',
+                        'amount': round(phone_profit, 2),
+                        'description': str(self._record_value(record, 'DESCRIPTION', 'MODEL', 'DEVICE') or '').strip(),
+                        'created_by': str(self._record_value(record, 'NAME', 'NAME OF BUYER', 'CLIENT NAME') or '').strip(),
+                        'source': 'profit',
+                        'payment_status': 'PAID',
+                        'type': 'phone',
+                    })
                 continue
 
             service_expense = max(0.0, clean_amount(
@@ -1588,6 +1600,17 @@ class BackendRuntime:
                 current_week_service_profit += service_profit
                 current_week_gross_profit += service_profit
                 current_week_service_profit_done_this_week += service_profit
+                current_week_realized_profit_rows.append({
+                    'date': payment_date.isoformat(),
+                    'payment_date': payment_date.isoformat(),
+                    'category': 'SERVICE PROFIT',
+                    'amount': round(service_profit, 2),
+                    'description': str(self._record_value(record, 'DESCRIPTION', 'MODEL', 'DEVICE') or '').strip(),
+                    'created_by': str(self._record_value(record, 'NAME', 'NAME OF BUYER', 'CLIENT NAME') or '').strip(),
+                    'source': 'profit',
+                    'payment_status': 'PAID',
+                    'type': 'service',
+                })
 
         total_cash_in = round(monthly_gross_profit, 2)
         expected_income = round(total_owing_income, 2)
@@ -1631,6 +1654,10 @@ class BackendRuntime:
         reconciled_current_week_service_rows = 0
 
         excluded_phone_missing_cost_rows_week.sort(
+            key=lambda row: (str(row.get('payment_date') or ''), str(row.get('description') or '')),
+            reverse=True,
+        )
+        current_week_realized_profit_rows.sort(
             key=lambda row: (str(row.get('payment_date') or ''), str(row.get('description') or '')),
             reverse=True,
         )
@@ -1685,6 +1712,7 @@ class BackendRuntime:
             'excluded_phone_missing_cost_count_month': int(len(excluded_phone_missing_cost_rows_month)),
             'excluded_phone_missing_cost_count_week': int(len(excluded_phone_missing_cost_rows_week)),
             'excluded_phone_missing_cost_rows_week': excluded_phone_missing_cost_rows_week[:40],
+            'current_week_realized_profit_rows': current_week_realized_profit_rows[:200],
             'monthly_gross_profit': round(monthly_gross_profit, 2),
             'monthly_net_profit': round(net_profit, 2),
             'monthly_remaining_profit': monthly_remaining_profit,
