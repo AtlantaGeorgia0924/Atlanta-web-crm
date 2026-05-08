@@ -1316,7 +1316,12 @@ function CashFlowView({
 
   function txIsThisWeek(tx, weekStart, weekEnd) {
     try {
-      const d = parse_date_approx(tx.date || tx.payment_date || '');
+      const source = String(tx?.source || '').trim().toLowerCase();
+      // Income profit is recognized by payment date; expenses/capital use row date.
+      const dateCandidate = source === 'income'
+        ? (tx?.payment_date || tx?.date || '')
+        : (tx?.date || tx?.payment_date || '');
+      const d = parse_date_approx(dateCandidate);
       return d !== null && d >= weekStart && d <= weekEnd;
     } catch {
       return false;
