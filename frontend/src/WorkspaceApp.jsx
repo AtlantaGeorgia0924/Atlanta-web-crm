@@ -1653,36 +1653,28 @@ function CashFlowView({
   const weekProfitCombined = weekProfitDoneThisWeek + weekProfitPrevPaidThisWeek;
   const allowanceFormulaCards = [
     {
-      key: 'allowance-formula-profit',
-      label: 'Profit Done This Week',
-      value: formatCurrency(weekProfitDoneThisWeek),
-      note: `Phone ${formatCurrency(summary.current_week_phone_profit || 0)} + service work done this week ${formatCurrency(summary.current_week_service_profit_done_this_week || 0)}.` + (summary.current_week_service_profit_reconciled_delta > 0
-        ? ` Includes ${formatCurrency(summary.current_week_service_profit_reconciled_delta || 0)} paid this week for ${formatCount(summary.current_week_service_profit_reconciled_rows || 0)} older service row(s).`
-        : ''),
-    },
-    {
-      key: 'allowance-formula-prev-paid',
-      label: 'Previous Weeks Paid This Week',
-      value: formatCurrency(weekProfitPrevPaidThisWeek),
-      note: 'Profit from older work received this week (added to this week profit).',
+      key: 'allowance-formula-gross',
+      label: 'Weekly Gross Profit',
+      value: formatCurrency(weekProfitCombined || weekGrossProfit),
+      note: `Paid phone profit ${formatCurrency(summary.current_week_phone_profit || 0)} + paid service profit ${formatCurrency(summary.current_week_service_profit || 0)}.`,
     },
     {
       key: 'allowance-formula-expenses',
-      label: 'Allowance Expenses (Week)',
-      value: formatCurrency(summary.current_week_allowance_expenses || 0),
-      note: 'Only expenses marked to affect allowance are deducted here. Phone cost is not treated as an expense line.',
+      label: 'Weekly Manual Expenses',
+      value: formatCurrency(summary.current_week_expenses || 0),
+      note: 'Only manually recorded weekly expenses reduce weekly net profit.',
     },
     {
-      key: 'allowance-formula-base',
-      label: 'Allowance Base',
-      value: formatCurrency(summary.allowance_base_net_profit || 0),
-      note: `Allowance base = (${formatCurrency(weekProfitDoneThisWeek)} + ${formatCurrency(weekProfitPrevPaidThisWeek)}) - ${formatCurrency(summary.current_week_allowance_expenses || 0)}.`,
+      key: 'allowance-formula-net',
+      label: 'Weekly Net Profit',
+      value: formatCurrency(summary.current_week_net_profit || 0),
+      note: `Weekly net = ${formatCurrency(weekProfitCombined || weekGrossProfit)} - ${formatCurrency(summary.current_week_expenses || 0)}.`,
     },
     {
       key: 'allowance-formula-final',
       label: 'Next Week Allowance',
       value: formatCurrency(allowance.suggested_allowance || 0),
-      note: `Calculated from the allowance base using ${Math.round((allowance.allowance_percentage || 0.25) * 100)}% and cash-buffer guardrails.`,
+      note: `Next week allowance = ${Math.round((allowance.allowance_percentage || 0.25) * 100)}% of this week's net profit.`,
     },
   ];
 
@@ -1744,47 +1736,15 @@ function CashFlowView({
       className: 'metric-card--profit',
     },
     {
-      key: 'allowance-base',
-      label: 'Allowance Base',
-      value: formatCurrency(summary.allowance_base_net_profit || 0),
-      note: `Used for allowance only. Starts from realized weekly profit, subtracts allowance expenses, and excludes business-only expenses (${formatCurrency(summary.current_week_business_only_expenses || 0)} this week).`,
-      className: 'metric-card--profit',
-    },
-    {
-      key: 'business-week-expenses',
-      label: 'Business-Only Expenses (Week)',
-      value: formatCurrency(summary.current_week_business_only_expenses || 0),
-      note: 'Tracked for visibility; does not reduce your weekly allowance.',
-      className: '',
-    },
-    // ── Cash position ────────────────────────────────────────────────────────
-    {
-      key: 'available-cash',
-      label: 'Available Cash',
-      value: formatCurrency(summary.available_cash || 0),
-      note: 'After reserves and receivables exclusion.',
-      className: '',
-    },
-    {
-      key: 'reserve',
-      label: 'Reserve Amount',
-      value: formatCurrency(summary.reserve_amount || 0),
-      note: 'Protected by reserve percentage.',
-      className: '',
-    },
-    {
       key: 'allowance',
       label: 'Next Week Allowance',
       value: formatCurrency(allowance.suggested_allowance || 0),
-      note: `Allowance is 25% of allowance-base net profit, capped by usable cash and a ${allowance.buffer_weeks_threshold || 4}-week buffer policy.`,
+      note: 'Calculated as 25% of this week\'s net profit.',
       className: 'metric-card--allowance',
     },
   ];
 
-  const cashHealthLabel = String(summary.cash_health_status || 'red').toUpperCase();
-  const monthlyRemainder = (summary.monthly_allowance_paid || 0) > 0
-    ? (summary.month_remainder_profit_after_paid_allowance || 0)
-    : (summary.month_remainder_profit_after_provision || 0);
+  const monthlyRemainder = summary.monthly_remaining_profit || 0;
 
   const capitalCards = [
     {
@@ -1803,26 +1763,12 @@ function CashFlowView({
     },
   ];
 
-  const governanceCards = [
-    {
-      key: 'monthly-fixed-overhead',
-      label: 'Fixed Monthly Overhead',
-      value: formatCurrency(summary.monthly_fixed_overhead || 0),
-      note: 'Estimated recurring expenses (internet, rent, subscription, wages, etc.).',
-    },
-    {
-      key: 'cash-health',
-      label: 'Cash Health Score',
-      value: `${cashHealthLabel} (${summary.cash_runway_weeks || 0}w runway)`,
-      note: `Buffer check: ${(allowance.cash_buffer_ok ? 'OK' : 'LOW')} (required ${formatCurrency(allowance.required_cash_buffer || 0)}).`,
-    },
+  const monthlyCards = [
     {
       key: 'month-remainder',
-      label: 'Month Remainder Profit',
+      label: 'Monthly Remaining Profit',
       value: formatCurrency(monthlyRemainder),
-      note: (summary.monthly_allowance_paid || 0) > 0
-        ? `Net profit after recorded weekly allowance payouts (${formatCurrency(summary.monthly_allowance_paid || 0)}).`
-        : `Net profit after weekly allowance provision (${formatCurrency(summary.monthly_allowance_provision || 0)}).`,
+      note: `Monthly remaining = monthly net profit ${formatCurrency(summary.monthly_net_profit || 0)} - weekly allowances taken ${formatCurrency(summary.monthly_allowance_paid || 0)}.`,
     },
   ];
 
@@ -1949,12 +1895,12 @@ function CashFlowView({
       </section>
 
       <section className="summary-frame">
-        <h2>Governance & Health</h2>
+        <h2>Monthly Allowance Impact</h2>
         <p className="metric-note" style={{ marginTop: '8px' }}>
-          Controls to keep allowance healthy: buffer guardrail, overhead visibility, and month remainder after expenses and weekly allowance.
+          Simple monthly view: remaining profit after weekly allowance withdrawals.
         </p>
         <div className="summary-grid summary-grid--home" style={{ marginTop: '10px' }}>
-          {governanceCards.map((card) => (
+          {monthlyCards.map((card) => (
             <article key={card.key} className="metric-card metric-card--home">
               <span className="metric-label">{card.label}</span>
               <strong className="metric-value">{card.value}</strong>

@@ -1445,6 +1445,7 @@ class BackendRuntime:
 
             is_phone_extra = 'phone sale expense' in category or category == 'phone expense'
             is_service_specific = 'service expense' in category
+            is_weekly_allowance_withdrawal = 'weekly allowance' in category
             is_manual_expense = not is_phone_extra and not is_service_specific
 
             if is_phone_extra:
@@ -1466,16 +1467,21 @@ class BackendRuntime:
             in_current_month = current_month_start <= entry_date <= current_day
             in_current_week = current_week_start <= entry_date <= current_week_end_date
 
+            if is_weekly_allowance_withdrawal:
+                if in_current_month:
+                    monthly_allowance_paid += amount
+                continue
+
             if in_current_month:
                 monthly_manual_expenses += amount
-                if 'weekly allowance' in category:
-                    monthly_allowance_paid += amount
             if in_current_week:
                 current_week_expenses += amount
 
         for record in main_records:
-            status_text = str(self._record_value(record, 'STATUS') or '').strip().upper()
-            if status_text != 'PAID':
+            status_text = str(self._record_value(record, 'STATUS', 'PAYMENT STATUS') or '').strip().upper()
+            normalized_status = ' '.join(status_text.split())
+            is_paid_status = normalized_status.startswith('PAID') or normalized_status in {'FULLY PAID'}
+            if not is_paid_status:
                 row_date = parse_sheet_date(self._record_value(record, 'DATE', 'SERVICE DATE'))
                 if row_date is not None and current_month_start <= row_date <= current_day:
                     price_value = max(0.0, clean_amount(self._record_value(record, 'PRICE')))
@@ -1580,6 +1586,7 @@ class BackendRuntime:
 
         monthly_remaining_profit = round(net_profit - monthly_allowance_paid, 2)
 
+        # Legacy fields kept for API compatibility, but reserve/buffer logic is intentionally removed.
         reserve_percentage = 0.0
         reserve_amount = 0.0
         receivables_excluded = 0.0
@@ -1594,8 +1601,8 @@ class BackendRuntime:
         month_remainder_profit_after_paid_allowance = monthly_remaining_profit
         month_remainder_profit_after_provision = monthly_remaining_profit
         cash_runway_weeks = 0.0
-        cash_health_status = 'yellow'
-        allowance_cash_cap = max(0.0, available_cash_after_reserve)
+        cash_health_status = 'n/a'
+        allowance_cash_cap = 0.0
         required_cash_buffer = 0.0
         cash_buffer_ok = True
         buffer_weeks_threshold = 0.0
