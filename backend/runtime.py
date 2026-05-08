@@ -526,7 +526,18 @@ class BackendRuntime:
     def start(self):
         self._connect_sheets()
         self._init_postgres_sync()
-        self._verify_postgres_connection_strict()
+        strict_startup = str(os.getenv('APP_STRICT_POSTGRES_STARTUP', '')).strip().lower() in {'1', 'true', 'yes', 'on'}
+        if strict_startup:
+            self._verify_postgres_connection_strict()
+            return
+
+        try:
+            self._verify_postgres_connection_strict()
+        except Exception as exc:
+            self.logger.warning(
+                'PostgreSQL strict startup verification skipped (non-blocking mode): %s',
+                exc,
+            )
 
     def _postgres_dsn_host(self):
         dsn = str(self.config.get('postgres_dsn', '') or '').strip()
