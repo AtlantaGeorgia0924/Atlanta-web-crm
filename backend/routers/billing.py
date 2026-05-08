@@ -23,6 +23,7 @@ from services.billing_service import (
     mark_whatsapp_bill_sent,
     parse_sheet_date,
     save_whatsapp_send_history,
+    detect_sheet_header_row,
 )
 
 router = APIRouter(
@@ -143,22 +144,41 @@ def _resolve_payment_details(runtime, explicit_value=''):
 
 
 def _resolve_customer_service_row(runtime, name_input, row_idx, force_refresh=False):
-    records = runtime.get_main_records(force_refresh=force_refresh)
+    values = runtime.get_main_values(force_refresh=force_refresh)
+    if not values:
+        raise HTTPException(status_code=400, detail='Main sheet is empty.')
+
+    header_row_idx = detect_sheet_header_row(values)
+    if header_row_idx < 0 or header_row_idx >= len(values):
+        raise HTTPException(status_code=400, detail='Main sheet header row was not found.')
+
+    headers = [str(cell or '').strip().upper() for cell in (values[header_row_idx] if header_row_idx < len(values) else [])]
+    if not headers:
+        raise HTTPException(status_code=400, detail='Main sheet headers are missing.')
+
     try:
-        record_idx = int(row_idx) - 1
+        normalized_idx = int(row_idx)
     except Exception:
         raise HTTPException(status_code=400, detail='Invalid service row.')
 
-    if record_idx < 0 or record_idx >= len(records):
+    if normalized_idx <= 0:
+        raise HTTPException(status_code=400, detail='Invalid service row.')
+
+    # `row_idx` in clients can be either records index or values index.
+    # Convert both to absolute sheet row number safely.
+    row_num = (header_row_idx + 1) + normalized_idx
+    if row_num <= header_row_idx + 1 or row_num > len(values):
         raise HTTPException(status_code=400, detail='Selected service row is no longer available.')
 
-    record = records[record_idx] or {}
+    row = values[row_num - 1] if row_num - 1 < len(values) else []
+    name_col = headers.index('NAME') if 'NAME' in headers else None
+    row_name = str(row[name_col] if name_col is not None and name_col < len(row) else '').strip().upper()
+
     expected_name = str(name_input or '').strip().upper()
-    actual_name = str(record.get('NAME') or '').strip().upper()
-    if not expected_name or actual_name != expected_name:
+    if not expected_name or row_name != expected_name:
         raise HTTPException(status_code=400, detail='Selected service does not belong to this customer.')
 
-    return record_idx + 1, record
+    return row_num, row
 
 
 def _log_query_timing(runtime, *, kind, started_at, force_refresh=False, **fields):
@@ -327,7 +347,7 @@ def apply_payment_endpoint(payload: ApplyPaymentRequest, runtime=Depends(get_run
 
 @router.post('/services/update')
 def update_service_endpoint(payload: UpdateServiceRequest, runtime=Depends(get_runtime)):
-    row_num, _record = _resolve_customer_service_row(runtime, payload.name_input, payload.row_idx, force_refresh=payload.force_refresh)
+    row_num, _row = _resolve_customer_service_row(runtime, payload.name_input, payload.row_idx, force_refresh=payload.force_refresh)
     updates = {}
     if payload.price is not None:
         updates['PRICE'] = payload.price
@@ -339,7 +359,7 @@ def update_service_endpoint(payload: UpdateServiceRequest, runtime=Depends(get_r
         updates['NAME'] = str(payload.new_name).strip().upper()
 
     try:
-        result = runtime.update_main_record_fields(
+        result = runtime.update_main_sheet_row_fields(
             row_num,
             updates,
             force_refresh=payload.force_refresh,
@@ -371,9 +391,9 @@ def update_sales_today_payment_endpoint(payload: UpdateSalesTodayPaymentRequest,
 
 @router.post('/services/return')
 def return_service_endpoint(payload: ReturnServiceRequest, runtime=Depends(get_runtime)):
-    row_num, _record = _resolve_customer_service_row(runtime, payload.name_input, payload.row_idx, force_refresh=payload.force_refresh)
+    row_num, _row = _resolve_customer_service_row(runtime, payload.name_input, payload.row_idx, force_refresh=payload.force_refresh)
     try:
-        result = runtime.update_main_record_fields(
+        result = runtime.update_main_sheet_row_fields(
             row_num,
             {'STATUS': 'RETURNED'},
             force_refresh=payload.force_refresh,
