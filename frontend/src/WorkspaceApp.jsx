@@ -271,51 +271,25 @@ function normalizeCashflowPayload(rawSummary, rawAllowance, defaultSummary, defa
     summary.current_week_allowance_expenses = roundCurrency(summary.current_week_allowance_expenses || 0);
   }
 
-  const hasProfitDoneField = hasOwnField(sourceSummary, 'current_week_profit_done_this_week');
-  const hasProfitPrevPaidField = hasOwnField(sourceSummary, 'current_week_profit_previous_weeks_paid_this_week');
+  const phoneProfit = roundCurrency(summary.current_week_phone_profit || 0);
+  const serviceProfit = roundCurrency(summary.current_week_service_profit || 0);
+  const weekGrossProfit = roundCurrency(phoneProfit + serviceProfit);
+  const weekExpenses = roundCurrency(summary.current_week_expenses || 0);
+  const weekNetProfit = roundCurrency(weekGrossProfit - weekExpenses);
 
-  if (!hasProfitDoneField || !hasProfitPrevPaidField) {
-    const phoneProfit = roundCurrency(summary.current_week_phone_profit || 0);
-    const serviceDoneThisWeek = roundCurrency(summary.current_week_service_profit_done_this_week || 0);
-    const servicePrevWeeksPaidThisWeek = roundCurrency(summary.current_week_service_profit_previous_weeks_paid_this_week || 0);
-
-    let derivedProfitDoneThisWeek = roundCurrency(phoneProfit + serviceDoneThisWeek);
-    let derivedProfitPrevPaidThisWeek = roundCurrency(servicePrevWeeksPaidThisWeek);
-
-    if (derivedProfitDoneThisWeek <= 0 && derivedProfitPrevPaidThisWeek <= 0) {
-      // Compatibility fallback for older API payloads that only provide weekly cash-in.
-      derivedProfitDoneThisWeek = roundCurrency(summary.current_week_cash_in || 0);
-      derivedProfitPrevPaidThisWeek = 0;
-    }
-
-    summary.current_week_profit_done_this_week = derivedProfitDoneThisWeek;
-    summary.current_week_profit_previous_weeks_paid_this_week = derivedProfitPrevPaidThisWeek;
-  } else {
-    summary.current_week_profit_done_this_week = roundCurrency(summary.current_week_profit_done_this_week || 0);
-    summary.current_week_profit_previous_weeks_paid_this_week = roundCurrency(summary.current_week_profit_previous_weeks_paid_this_week || 0);
-  }
-
-  const derivedAllowanceBase = roundCurrency(
-    (summary.current_week_profit_done_this_week || 0)
-    + (summary.current_week_profit_previous_weeks_paid_this_week || 0)
-    - (summary.current_week_allowance_expenses || 0)
-  );
-
-  if (!hasOwnField(sourceSummary, 'allowance_base_net_profit') || !hasProfitDoneField || !hasProfitPrevPaidField) {
-    summary.allowance_base_net_profit = derivedAllowanceBase;
-  } else {
-    summary.allowance_base_net_profit = roundCurrency(summary.allowance_base_net_profit || 0);
-  }
+  summary.current_week_profit_done_this_week = weekGrossProfit;
+  summary.current_week_profit_previous_weeks_paid_this_week = 0;
+  summary.current_week_cash_in = weekGrossProfit;
+  summary.current_week_net_profit = weekNetProfit;
+  summary.current_week_net_cash_flow = weekNetProfit;
+  summary.allowance_base_net_profit = weekNetProfit;
 
   const allowancePercentage = Number(allowance.allowance_percentage || 0.25);
-  if (!hasOwnField(sourceAllowance, 'suggested_allowance') || !hasProfitDoneField || !hasProfitPrevPaidField) {
-    allowance.suggested_allowance = roundCurrency(Math.max(0, summary.allowance_base_net_profit || 0) * allowancePercentage);
-  } else {
-    allowance.suggested_allowance = roundCurrency(allowance.suggested_allowance || 0);
-  }
+  allowance.suggested_allowance = roundCurrency(Math.max(0, summary.allowance_base_net_profit || 0) * allowancePercentage);
 
   allowance.allowance_base_net_profit = roundCurrency(summary.allowance_base_net_profit || 0);
   allowance.allowance_expenses = roundCurrency(summary.current_week_allowance_expenses || 0);
+  allowance.previous_week_profit = roundCurrency(weekGrossProfit);
 
   return { summary, allowance };
 }
