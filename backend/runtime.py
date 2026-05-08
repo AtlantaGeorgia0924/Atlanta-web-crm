@@ -718,6 +718,10 @@ class BackendRuntime:
         }
 
     def _append_cashflow_sheet_record(self, *, amount, category='', description='', date_text='', created_by='', source='expense', payment_status='', entry_type='', cost_price='', payment_date_text=''):
+        today_iso = datetime.now(timezone.utc).date().isoformat()
+        parsed_main_date = parse_sheet_date(date_text)
+        resolved_main_date = parsed_main_date.isoformat() if parsed_main_date is not None else today_iso
+
         resolved_source = str(source or '').strip() or 'expense'
         if resolved_source == 'income':
             resolved_payment_status = str(payment_status or '').strip().upper()
@@ -728,16 +732,17 @@ class BackendRuntime:
                 category_text = str(category or '').strip().lower()
                 resolved_type = 'service' if 'service' in category_text else 'phone'
             resolved_cost_price = str(cost_price or '').strip()
-            resolved_payment_date = str(payment_date_text or '').strip()
+            parsed_payment_date = parse_sheet_date(payment_date_text)
+            resolved_payment_date = parsed_payment_date.isoformat() if parsed_payment_date is not None else ''
             if resolved_payment_status == 'PAID' and not resolved_payment_date:
-                resolved_payment_date = str(date_text or datetime.now(timezone.utc).date().isoformat()).strip()
+                resolved_payment_date = resolved_main_date
         else:
             resolved_payment_status = ''
             resolved_type = 'expense'
             resolved_cost_price = ''
             resolved_payment_date = ''
         row_values = [
-            str(date_text or datetime.now(timezone.utc).date().isoformat()).strip(),
+            resolved_main_date,
             str(category or '').strip(),
             str(amount or '').strip(),
             str(description or '').strip(),

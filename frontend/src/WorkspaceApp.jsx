@@ -1439,10 +1439,22 @@ function CashFlowView({
   }, [drillDown, allTx]);
 
   const today = new Date();
-  // Backend week starts on Sunday: current_day - (weekday+1)%7
-  // JS getDay(): Sun=0 Mon=1 … Sat=6 → subtract getDay() to land on Sunday
-  const weekStart = new Date(today); weekStart.setDate(today.getDate() - today.getDay()); weekStart.setHours(0,0,0,0);
-  const weekEnd = new Date(today); weekEnd.setHours(23,59,59,999);
+  const backendWeekStart = parse_date_approx(summary?.current_week_start || '');
+  const backendWeekEnd = parse_date_approx(summary?.current_week_end || '');
+
+  const weekStart = backendWeekStart instanceof Date && !Number.isNaN(backendWeekStart.getTime())
+    ? new Date(backendWeekStart)
+    : new Date(today);
+  if (!(backendWeekStart instanceof Date) || Number.isNaN(backendWeekStart.getTime())) {
+    // Fallback: local Sunday start when backend window is unavailable.
+    weekStart.setDate(today.getDate() - today.getDay());
+  }
+  weekStart.setHours(0, 0, 0, 0);
+
+  const weekEnd = backendWeekEnd instanceof Date && !Number.isNaN(backendWeekEnd.getTime())
+    ? new Date(backendWeekEnd)
+    : new Date(today);
+  weekEnd.setHours(23, 59, 59, 999);
   const [allowanceActionBusy, setAllowanceActionBusy] = useState(false);
   const todayKey = formatDateForInput();
 
