@@ -13,6 +13,77 @@ router = APIRouter(
 )
 
 
+def _build_sheet_cashflow_fallback(runtime, force_refresh: bool = False):
+    summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh) or {}
+    weekly_allowance = summary.get('weekly_allowance') or {}
+    expenses_payload = runtime.get_cashflow_expense_records(force_refresh=force_refresh) or {}
+    expense_items = expenses_payload.get('items') or []
+    capital = runtime.get_phone_capital_outflow(force_refresh=force_refresh) or {'month_total': 0, 'week_total': 0, 'entries': []}
+
+    week_allowance_amount = float(
+        weekly_allowance.get('suggested_allowance')
+        or summary.get('next_week_allowance')
+        or 0
+    )
+    month_allowance_amount = float(summary.get('monthly_allowance_paid') or 0)
+
+    week_row = {
+        'period_type': 'week',
+        'period_start': summary.get('current_week_start') or '',
+        'period_end': summary.get('current_week_end') or '',
+        'profit_seen': float(summary.get('current_week_gross_profit') or summary.get('weekly_realized_profit') or 0),
+        'expenses_total': float(summary.get('current_week_expenses') or 0),
+        'net_profit': float(summary.get('current_week_net_profit') or 0),
+        'allowance_amount': week_allowance_amount,
+        'profit_left': float(summary.get('current_week_net_profit') or 0) - week_allowance_amount,
+        'generated_at': '',
+    }
+    month_row = {
+        'period_type': 'month',
+        'period_start': '',
+        'period_end': '',
+        'profit_seen': float(summary.get('monthly_gross_profit') or summary.get('total_cash_in') or 0),
+        'expenses_total': float(summary.get('total_expenses') or 0),
+        'net_profit': float(summary.get('monthly_net_profit') or summary.get('net_profit') or 0),
+        'allowance_amount': month_allowance_amount,
+        'profit_left': float(summary.get('monthly_remaining_profit') or summary.get('month_remainder_profit_after_paid_allowance') or 0),
+        'generated_at': '',
+    }
+
+    summary_payload = dict(summary)
+    summary_payload['week'] = week_row
+    summary_payload['month'] = month_row
+
+    normalized_transactions = [
+        {
+            'date': item.get('payment_date') or item.get('date') or '',
+            'payment_date': item.get('payment_date') or item.get('date') or '',
+            'category': item.get('category') or 'EXPENSE',
+            'description': item.get('description') or '',
+            'amount': item.get('amount', 0),
+            'source': item.get('source') or 'expense',
+        }
+        for item in expense_items
+    ]
+
+    return {
+        'summary': summary_payload,
+        'rows': [week_row, month_row],
+        'weekly_allowance': weekly_allowance,
+        'monthly_allowance': month_row,
+        'expenses': expense_items,
+        'expense_source': expenses_payload.get('source') or summary.get('expense_source') or 'sheet',
+        'expense_sheet_title': expenses_payload.get('sheet_title') or summary.get('expense_sheet_title') or 'CASH FLOW',
+        'withdrawals': [],
+        'transactions': normalized_transactions,
+        'capital': {
+            'month_total': float(capital.get('month_total') or 0),
+            'week_total': float(capital.get('week_total') or 0),
+            'entries': capital.get('entries') or [],
+        },
+    }
+
+
 class CreateExpenseRequest(BaseModel):
     amount: float = Field(ge=0)
     category: str = ''
@@ -186,7 +257,13 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        runtime.logger.warning('Cashflow summary DB path unavailable; falling back to sheet summary: %s', exc)
+        fallback_payload = _build_sheet_cashflow_fallback(runtime, force_refresh=force_refresh)
+        return {
+            'summary': fallback_payload.get('summary') or {},
+            'rows': fallback_payload.get('rows') or [],
+            'weekly_allowance': fallback_payload.get('weekly_allowance') or {},
+        }
     except Exception as exc:
         runtime.logger.exception('Unexpected cashflow summary error: %s', exc)
         raise HTTPException(
@@ -214,7 +291,17 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        runtime.logger.warning('Cashflow dashboard DB path unavailable; falling back to sheet summary: %s', exc)
+        fallback_payload = _build_sheet_cashflow_fallback(runtime, force_refresh=force_refresh)
+        runtime.logger.info(
+            'query_timing kind=dashboard_read_cashflow_fallback duration_ms=%.2f force_refresh=%s expense_count=%s transaction_count=%s read_mode=%s',
+            round((time.perf_counter() - started) * 1000, 2),
+            bool(force_refresh),
+            len(fallback_payload.get('expenses') or []),
+            len(fallback_payload.get('transactions') or []),
+            'sheet_fallback',
+        )
+        return fallback_payload
     except Exception as exc:
         runtime.logger.exception('Unexpected cashflow dashboard error: %s', exc)
         raise HTTPException(
