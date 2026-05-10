@@ -2235,11 +2235,14 @@ function CashFlowView({
                       <td>{row._status}</td>
                       <td>{row._reversedDateText}</td>
                       <td>
-                        {row._canReverse ? (
+                        {row._isReversed ? (
+                          <span className="metric-note">—</span>
+                        ) : (
                           <button
                             type="button"
                             className="secondary-button"
-                            disabled={expenseBusy || loading}
+                            disabled={expenseBusy || loading || !row._canReverse}
+                            title={row._canReverse ? 'Reverse this expense' : 'Reverse is unavailable for this row source'}
                             onClick={async () => {
                               const shouldContinue = window.confirm(
                                 `Reverse expense ${formatCurrency(row._amount || 0)} on ${row._dateText}?`
@@ -2252,8 +2255,6 @@ function CashFlowView({
                           >
                             Reverse
                           </button>
-                        ) : (
-                          <span className="metric-note">—</span>
                         )}
                       </td>
                     </tr>
