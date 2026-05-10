@@ -187,6 +187,12 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except Exception as exc:
+        runtime.logger.exception('Unexpected cashflow summary error: %s', exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Cashflow summary is temporarily unavailable. Please try again shortly.',
+        ) from exc
 
     summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
     return {
@@ -209,6 +215,12 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except Exception as exc:
+        runtime.logger.exception('Unexpected cashflow dashboard error: %s', exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Cashflow dashboard is temporarily unavailable. Please try again shortly.',
+        ) from exc
 
     summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
     normalized_transactions = [
