@@ -13,6 +13,47 @@ router = APIRouter(
 )
 
 
+def _summary_row_has_activity(row):
+    if not isinstance(row, dict):
+        return False
+    for key in ('profit_seen', 'expenses_total', 'net_profit', 'allowance_amount', 'profit_left'):
+        try:
+            if abs(float(row.get(key) or 0)) > 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _refresh_live_operational_data(runtime):
+    if not bool(getattr(runtime, 'postgres_ready', False)):
+        return {'attempted': False, 'ok': False, 'error': 'postgres_not_ready'}
+    try:
+        runtime.pull_once()
+        return {'attempted': True, 'ok': True, 'error': ''}
+    except Exception as exc:
+        runtime.logger.warning('Live pull failed before cashflow rebuild: %s', exc)
+        return {'attempted': True, 'ok': False, 'error': str(exc)}
+
+
+def _rebuild_cashflow_from_live(runtime, force_refresh=False):
+    pull_meta = {'attempted': False, 'ok': False, 'error': ''}
+    if force_refresh:
+        pull_meta = _refresh_live_operational_data(runtime)
+
+    rebuilt = runtime.financial_data_service.rebuild_cashflow_summary_rows()
+    week_row = (rebuilt or {}).get('week') or {}
+    month_row = (rebuilt or {}).get('month') or {}
+    if not _summary_row_has_activity(week_row) and not _summary_row_has_activity(month_row):
+        second_pull_meta = _refresh_live_operational_data(runtime)
+        if second_pull_meta.get('attempted'):
+            pull_meta = second_pull_meta
+        rebuilt = runtime.financial_data_service.rebuild_cashflow_summary_rows()
+
+    verification = runtime.financial_data_service.build_cashflow_verification_report()
+    return rebuilt, verification, pull_meta
+
+
 def _build_sheet_cashflow_fallback(runtime, force_refresh: bool = False):
     def _to_number(value):
         try:
@@ -304,8 +345,7 @@ def set_app_config(
 @router.get('/cashflow-summary', dependencies=[Depends(require_admin)])
 def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        if force_refresh:
-            runtime.financial_data_service.rebuild_cashflow_summary_rows()
+        rebuilt_rows, verification, pull_meta = _rebuild_cashflow_from_live(runtime, force_refresh=force_refresh)
         summary_rows = runtime.financial_data_service.get_current_cashflow_summary_rows()
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
@@ -331,6 +371,9 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
         'summary': summary,
         'rows': summary_rows,
         'weekly_allowance': summary.get('week') or {},
+        'rebuild': rebuilt_rows,
+        'verification_report': verification,
+        'live_pull': pull_meta,
     }
 
 
@@ -338,8 +381,7 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
 def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     started = time.perf_counter()
     try:
-        if force_refresh:
-            runtime.financial_data_service.rebuild_cashflow_summary_rows()
+        rebuilt_rows, verification, pull_meta = _rebuild_cashflow_from_live(runtime, force_refresh=force_refresh)
         summary_rows = runtime.financial_data_service.get_current_cashflow_summary_rows()
         expense_items = runtime.financial_data_service.list_expenses(limit=500, offset=0)
         withdrawal_items = runtime.financial_data_service.list_allowance_withdrawals(limit=500, offset=0)
@@ -402,6 +444,9 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
         'withdrawals': withdrawal_items,
         'transactions': normalized_transactions,
         'capital': {'month_total': 0, 'week_total': 0, 'entries': []},
+        'rebuild': rebuilt_rows,
+        'verification_report': verification,
+        'live_pull': pull_meta,
     }
     runtime.logger.info(
         'query_timing kind=dashboard_read_cashflow duration_ms=%.2f force_refresh=%s expense_count=%s transaction_count=%s read_mode=%s',
@@ -447,22 +492,30 @@ def undo_last_weekly_allowance(runtime=Depends(get_runtime), current_user=Depend
 @router.post('/cashflow/rebuild-week', dependencies=[Depends(require_admin)])
 def rebuild_cashflow_week(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        result = runtime.financial_data_service.rebuild_cashflow_summary_rows()
+        result, verification, pull_meta = _rebuild_cashflow_from_live(runtime, force_refresh=True)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
-    return result
+    return {
+        'rebuild': result,
+        'verification_report': verification,
+        'live_pull': pull_meta,
+    }
 
 
 @router.post('/cashflow/rebuild', dependencies=[Depends(require_admin)])
 def rebuild_cashflow(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        result = runtime.financial_data_service.rebuild_cashflow_summary_rows()
+        result, verification, pull_meta = _rebuild_cashflow_from_live(runtime, force_refresh=True)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
-    return result
+    return {
+        'rebuild': result,
+        'verification_report': verification,
+        'live_pull': pull_meta,
+    }

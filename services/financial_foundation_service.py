@@ -400,6 +400,21 @@ class FinancialFoundationService:
         ) or {}
         return self._to_number(row.get('total_profit', 0.0))
 
+    def _count_paid_rows(self, table_name, period_start, period_end):
+        manager = self._require_manager()
+        row = manager.fetchone_dict(
+            f"""
+            SELECT COUNT(*) AS paid_count
+            FROM {table_name}
+            WHERE paid_date IS NOT NULL
+              AND paid_date >= %s
+              AND paid_date <= %s
+              AND UPPER(COALESCE(payment_status, '')) = 'PAID'
+            """,
+            (period_start, period_end),
+        ) or {}
+        return int(row.get('paid_count') or 0)
+
     def _sum_manual_expenses(self, period_start, period_end):
         manager = self._require_manager()
         row = manager.fetchone_dict(
@@ -510,6 +525,76 @@ class FinancialFoundationService:
         return {
             'week': week_row,
             'month': month_row,
+        }
+
+    def build_cashflow_verification_report(self, *, anchor_date=None):
+        anchor_date = anchor_date or date.today()
+        week_start, week_end = self._week_bounds(anchor_date)
+        month_start, month_end = self._month_bounds(anchor_date)
+
+        weekly_service_profit = round(
+            self._sum_paid_profit('operational_billing_rows', week_start, week_end),
+            2,
+        )
+        weekly_product_profit = round(
+            self._sum_paid_profit('operational_stock_rows', week_start, week_end),
+            2,
+        )
+        weekly_profit = round(weekly_service_profit + weekly_product_profit, 2)
+        weekly_expenses = round(self._sum_manual_expenses(week_start, week_end), 2)
+        weekly_net_profit = round(weekly_profit - weekly_expenses, 2)
+        suggested_allowance = round(
+            max(0.0, weekly_net_profit) * self._normalized_allowance_percentage(),
+            2,
+        )
+
+        monthly_service_profit = round(
+            self._sum_paid_profit('operational_billing_rows', month_start, month_end),
+            2,
+        )
+        monthly_product_profit = round(
+            self._sum_paid_profit('operational_stock_rows', month_start, month_end),
+            2,
+        )
+        monthly_profit = round(monthly_service_profit + monthly_product_profit, 2)
+        monthly_expenses = round(self._sum_manual_expenses(month_start, month_end), 2)
+        monthly_net_profit = round(monthly_profit - monthly_expenses, 2)
+        monthly_allowance_withdrawn = round(self._sum_withdrawals(month_start, month_end), 2)
+        monthly_profit_left = round(monthly_net_profit - monthly_allowance_withdrawn, 2)
+
+        weekly_paid_services = self._count_paid_rows('operational_billing_rows', week_start, week_end)
+        weekly_paid_products = self._count_paid_rows('operational_stock_rows', week_start, week_end)
+        monthly_paid_services = self._count_paid_rows('operational_billing_rows', month_start, month_end)
+        monthly_paid_products = self._count_paid_rows('operational_stock_rows', month_start, month_end)
+
+        return {
+            'window': {
+                'week_start': week_start.isoformat(),
+                'week_end': week_end.isoformat(),
+                'month_start': month_start.isoformat(),
+                'month_end': month_end.isoformat(),
+            },
+            # Requested verification fields.
+            'paid_services_counted': weekly_paid_services,
+            'paid_products_counted': weekly_paid_products,
+            'total_weekly_profit': weekly_profit,
+            'total_weekly_expenses': weekly_expenses,
+            'weekly_net_profit': weekly_net_profit,
+            'suggested_allowance': suggested_allowance,
+            'total_monthly_profit': monthly_profit,
+            'total_monthly_expenses': monthly_expenses,
+            'monthly_net_profit': monthly_net_profit,
+            # Additional clarity for debugging period totals.
+            'weekly_service_profit': weekly_service_profit,
+            'weekly_product_profit': weekly_product_profit,
+            'monthly_service_profit': monthly_service_profit,
+            'monthly_product_profit': monthly_product_profit,
+            'monthly_allowance_withdrawn': monthly_allowance_withdrawn,
+            'monthly_profit_left': monthly_profit_left,
+            'weekly_paid_services_counted': weekly_paid_services,
+            'weekly_paid_products_counted': weekly_paid_products,
+            'monthly_paid_services_counted': monthly_paid_services,
+            'monthly_paid_products_counted': monthly_paid_products,
         }
 
     def get_cashflow_summary_rows(self):
