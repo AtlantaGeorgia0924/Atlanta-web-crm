@@ -497,6 +497,12 @@ def rebuild_cashflow_week(force_refresh: bool = False, runtime=Depends(get_runti
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except Exception as exc:
+        runtime.logger.exception('Unexpected cashflow week rebuild error: %s', exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Cashflow rebuild is temporarily unavailable. Please try again shortly.',
+        ) from exc
 
     return {
         'rebuild': result,
@@ -513,6 +519,12 @@ def rebuild_cashflow(force_refresh: bool = False, runtime=Depends(get_runtime), 
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except Exception as exc:
+        runtime.logger.exception('Unexpected cashflow rebuild error: %s', exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Cashflow rebuild is temporarily unavailable. Please try again shortly.',
+        ) from exc
 
     return {
         'rebuild': result,
