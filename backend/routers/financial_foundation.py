@@ -14,39 +14,60 @@ router = APIRouter(
 
 
 def _build_sheet_cashflow_fallback(runtime, force_refresh: bool = False):
-    summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh) or {}
-    weekly_allowance = summary.get('weekly_allowance') or {}
-    expenses_payload = runtime.get_cashflow_expense_records(force_refresh=force_refresh) or {}
-    expense_items = expenses_payload.get('items') or []
-    capital = runtime.get_phone_capital_outflow(force_refresh=force_refresh) or {'month_total': 0, 'week_total': 0, 'entries': []}
+    def _to_number(value):
+        try:
+            return float(value or 0)
+        except Exception:
+            return 0.0
 
-    week_allowance_amount = float(
+    try:
+        summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh) or {}
+    except Exception as exc:
+        runtime.logger.exception('Sheet fallback summary failed: %s', exc)
+        summary = {}
+
+    try:
+        expenses_payload = runtime.get_cashflow_expense_records(force_refresh=force_refresh) or {}
+    except Exception as exc:
+        runtime.logger.exception('Sheet fallback expenses failed: %s', exc)
+        expenses_payload = {}
+
+    try:
+        capital = runtime.get_phone_capital_outflow(force_refresh=force_refresh) or {'month_total': 0, 'week_total': 0, 'entries': []}
+    except Exception as exc:
+        runtime.logger.exception('Sheet fallback capital failed: %s', exc)
+        capital = {'month_total': 0, 'week_total': 0, 'entries': []}
+
+    weekly_allowance = summary.get('weekly_allowance') or {}
+    expense_items = expenses_payload.get('items') or []
+
+    week_allowance_amount = _to_number(
         weekly_allowance.get('suggested_allowance')
         or summary.get('next_week_allowance')
         or 0
     )
-    month_allowance_amount = float(summary.get('monthly_allowance_paid') or 0)
+    month_allowance_amount = _to_number(summary.get('monthly_allowance_paid') or 0)
 
     week_row = {
         'period_type': 'week',
         'period_start': summary.get('current_week_start') or '',
         'period_end': summary.get('current_week_end') or '',
-        'profit_seen': float(summary.get('current_week_gross_profit') or summary.get('weekly_realized_profit') or 0),
-        'expenses_total': float(summary.get('current_week_expenses') or 0),
-        'net_profit': float(summary.get('current_week_net_profit') or 0),
+        'profit_seen': _to_number(summary.get('current_week_gross_profit') or summary.get('weekly_realized_profit') or 0),
+        'expenses_total': _to_number(summary.get('current_week_expenses') or 0),
+        'net_profit': _to_number(summary.get('current_week_net_profit') or 0),
         'allowance_amount': week_allowance_amount,
-        'profit_left': float(summary.get('current_week_net_profit') or 0) - week_allowance_amount,
+        'profit_left': _to_number(summary.get('current_week_net_profit') or 0) - week_allowance_amount,
         'generated_at': '',
     }
     month_row = {
         'period_type': 'month',
         'period_start': '',
         'period_end': '',
-        'profit_seen': float(summary.get('monthly_gross_profit') or summary.get('total_cash_in') or 0),
-        'expenses_total': float(summary.get('total_expenses') or 0),
-        'net_profit': float(summary.get('monthly_net_profit') or summary.get('net_profit') or 0),
+        'profit_seen': _to_number(summary.get('monthly_gross_profit') or summary.get('total_cash_in') or 0),
+        'expenses_total': _to_number(summary.get('total_expenses') or 0),
+        'net_profit': _to_number(summary.get('monthly_net_profit') or summary.get('net_profit') or 0),
         'allowance_amount': month_allowance_amount,
-        'profit_left': float(summary.get('monthly_remaining_profit') or summary.get('month_remainder_profit_after_paid_allowance') or 0),
+        'profit_left': _to_number(summary.get('monthly_remaining_profit') or summary.get('month_remainder_profit_after_paid_allowance') or 0),
         'generated_at': '',
     }
 
@@ -77,8 +98,8 @@ def _build_sheet_cashflow_fallback(runtime, force_refresh: bool = False):
         'withdrawals': [],
         'transactions': normalized_transactions,
         'capital': {
-            'month_total': float(capital.get('month_total') or 0),
-            'week_total': float(capital.get('week_total') or 0),
+            'month_total': _to_number(capital.get('month_total') or 0),
+            'week_total': _to_number(capital.get('week_total') or 0),
             'entries': capital.get('entries') or [],
         },
     }
@@ -265,11 +286,13 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
             'weekly_allowance': fallback_payload.get('weekly_allowance') or {},
         }
     except Exception as exc:
-        runtime.logger.exception('Unexpected cashflow summary error: %s', exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='Cashflow summary is temporarily unavailable. Please try again shortly.',
-        ) from exc
+        runtime.logger.exception('Unexpected cashflow summary error; using sheet fallback: %s', exc)
+        fallback_payload = _build_sheet_cashflow_fallback(runtime, force_refresh=force_refresh)
+        return {
+            'summary': fallback_payload.get('summary') or {},
+            'rows': fallback_payload.get('rows') or [],
+            'weekly_allowance': fallback_payload.get('weekly_allowance') or {},
+        }
 
     summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
     return {
@@ -303,11 +326,17 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
         )
         return fallback_payload
     except Exception as exc:
-        runtime.logger.exception('Unexpected cashflow dashboard error: %s', exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='Cashflow dashboard is temporarily unavailable. Please try again shortly.',
-        ) from exc
+        runtime.logger.exception('Unexpected cashflow dashboard error; using sheet fallback: %s', exc)
+        fallback_payload = _build_sheet_cashflow_fallback(runtime, force_refresh=force_refresh)
+        runtime.logger.info(
+            'query_timing kind=dashboard_read_cashflow_fallback duration_ms=%.2f force_refresh=%s expense_count=%s transaction_count=%s read_mode=%s',
+            round((time.perf_counter() - started) * 1000, 2),
+            bool(force_refresh),
+            len(fallback_payload.get('expenses') or []),
+            len(fallback_payload.get('transactions') or []),
+            'sheet_fallback',
+        )
+        return fallback_payload
 
     summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
     normalized_transactions = [
