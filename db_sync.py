@@ -156,6 +156,37 @@ class PostgresSyncManager:
             created_by TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS manual_expenses (
+            id UUID PRIMARY KEY,
+            amount NUMERIC(14,2) NOT NULL CHECK (amount >= 0),
+            description TEXT NOT NULL,
+            expense_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            is_reversed BOOLEAN NOT NULL DEFAULT FALSE,
+            reversed_at TIMESTAMPTZ
+        );
+
+        CREATE TABLE IF NOT EXISTS allowance_withdrawals (
+            id UUID PRIMARY KEY,
+            week_start DATE NOT NULL,
+            allowance_amount NUMERIC(14,2) NOT NULL,
+            withdrawn_status TEXT NOT NULL DEFAULT 'NO',
+            withdrawn_date TIMESTAMPTZ,
+            withdrawn_by TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS cashflow_summary (
+            id UUID PRIMARY KEY,
+            period_type TEXT NOT NULL,
+            period_start DATE NOT NULL,
+            period_end DATE NOT NULL,
+            profit_seen NUMERIC(14,2) NOT NULL DEFAULT 0,
+            expenses_total NUMERIC(14,2) NOT NULL DEFAULT 0,
+            net_profit NUMERIC(14,2) NOT NULL DEFAULT 0,
+            allowance_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+            profit_left NUMERIC(14,2) NOT NULL DEFAULT 0,
+            generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
         CREATE TABLE IF NOT EXISTS sales_ledger (
             id BIGSERIAL PRIMARY KEY,
             stock_record_id TEXT,
@@ -227,6 +258,10 @@ class PostgresSyncManager:
             customer_name TEXT,
             payment_status TEXT,
             payment_date TEXT,
+            paid_date TIMESTAMPTZ,
+            expense_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+            expense_description TEXT,
+            calculated_profit NUMERIC(14,2) NOT NULL DEFAULT 0,
             payload_json JSONB NOT NULL,
             source_hash TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -241,6 +276,10 @@ class PostgresSyncManager:
             customer_name TEXT,
             payment_status TEXT,
             payment_date TEXT,
+            paid_date TIMESTAMPTZ,
+            expense_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+            expense_description TEXT,
+            calculated_profit NUMERIC(14,2) NOT NULL DEFAULT 0,
             payload_json JSONB NOT NULL,
             source_hash TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -260,6 +299,27 @@ class PostgresSyncManager:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+
+        ALTER TABLE IF EXISTS operational_stock_rows
+            ADD COLUMN IF NOT EXISTS paid_date TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS expense_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS expense_description TEXT,
+            ADD COLUMN IF NOT EXISTS calculated_profit NUMERIC(14,2) NOT NULL DEFAULT 0;
+
+        ALTER TABLE IF EXISTS operational_billing_rows
+            ADD COLUMN IF NOT EXISTS paid_date TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS expense_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS expense_description TEXT,
+            ADD COLUMN IF NOT EXISTS calculated_profit NUMERIC(14,2) NOT NULL DEFAULT 0;
+
+        CREATE INDEX IF NOT EXISTS idx_manual_expenses_expense_date ON manual_expenses(expense_date);
+        CREATE INDEX IF NOT EXISTS idx_manual_expenses_is_reversed ON manual_expenses(is_reversed);
+        CREATE INDEX IF NOT EXISTS idx_allowance_withdrawals_week_start ON allowance_withdrawals(week_start);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_allowance_withdrawals_week_start ON allowance_withdrawals(week_start);
+        CREATE INDEX IF NOT EXISTS idx_allowance_withdrawals_withdrawn_status ON allowance_withdrawals(withdrawn_status);
+        CREATE INDEX IF NOT EXISTS idx_allowance_withdrawals_withdrawn_date ON allowance_withdrawals(withdrawn_date);
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_cashflow_summary_period
+            ON cashflow_summary(period_type, period_start, period_end);
 
         CREATE UNIQUE INDEX IF NOT EXISTS uq_operational_stock_source_hash ON operational_stock_rows(source_hash);
         CREATE UNIQUE INDEX IF NOT EXISTS uq_operational_billing_source_hash ON operational_billing_rows(source_hash);
@@ -574,20 +634,42 @@ class PostgresSyncManager:
 
         normalized_rows = list(rows or [])
         delete_sql = f"DELETE FROM {table_name}"
-        insert_sql = f"""
-        INSERT INTO {table_name} (
-            sheet_row_num,
-            record_id,
-            imei,
-            customer_name,
-            payment_status,
-            payment_date,
-            payload_json,
-            source_hash,
-            created_at,
-            updated_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-        """
+        
+        # Different insert SQL for cashflow rows vs. billing/stock rows
+        if table_name == 'operational_cashflow_rows':
+            insert_sql = f"""
+            INSERT INTO {table_name} (
+                sheet_row_num,
+                record_id,
+                imei,
+                customer_name,
+                payment_status,
+                payment_date,
+                payload_json,
+                source_hash,
+                created_at,
+                updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            """
+        else:
+            insert_sql = f"""
+            INSERT INTO {table_name} (
+                sheet_row_num,
+                record_id,
+                imei,
+                customer_name,
+                payment_status,
+                payment_date,
+                paid_date,
+                expense_amount,
+                expense_description,
+                calculated_profit,
+                payload_json,
+                source_hash,
+                created_at,
+                updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            """
 
         with self._db_lock:
             with self._connect() as conn:
@@ -599,19 +681,39 @@ class PostgresSyncManager:
                         source_hash = str(row.get('source_hash') or '').strip()
                         if not source_hash:
                             source_hash = hashlib.sha256(payload_text.encode('utf-8')).hexdigest()
-                        cur.execute(
-                            insert_sql,
-                            (
-                                row.get('sheet_row_num'),
-                                row.get('record_id'),
-                                row.get('imei'),
-                                row.get('customer_name'),
-                                row.get('payment_status'),
-                                row.get('payment_date'),
-                                Json(payload),
-                                source_hash,
-                            ),
-                        )
+                        
+                        if table_name == 'operational_cashflow_rows':
+                            cur.execute(
+                                insert_sql,
+                                (
+                                    row.get('sheet_row_num'),
+                                    row.get('record_id'),
+                                    row.get('imei'),
+                                    row.get('customer_name'),
+                                    row.get('payment_status'),
+                                    row.get('payment_date'),
+                                    Json(payload),
+                                    source_hash,
+                                ),
+                            )
+                        else:
+                            cur.execute(
+                                insert_sql,
+                                (
+                                    row.get('sheet_row_num'),
+                                    row.get('record_id'),
+                                    row.get('imei'),
+                                    row.get('customer_name'),
+                                    row.get('payment_status'),
+                                    row.get('payment_date'),
+                                    row.get('paid_date'),
+                                    row.get('expense_amount', 0),
+                                    row.get('expense_description'),
+                                    row.get('calculated_profit', 0),
+                                    Json(payload),
+                                    source_hash,
+                                ),
+                            )
         return True
 
     def mark_operation_done(self, queue_id):

@@ -30,6 +30,12 @@ class CashflowPinChangeRequest(BaseModel):
     new_pin: str = Field(min_length=4, max_length=4, pattern=r'^\d{4}$')
 
 
+class AllowanceWithdrawalRequest(BaseModel):
+    week_start: str = ''
+    allowance_amount: float = Field(ge=0)
+    withdrawn_by: str = ''
+
+
 @router.post('/expenses')
 def create_expense(payload: CreateExpenseRequest, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     category = str(payload.category or '').strip()
@@ -38,7 +44,7 @@ def create_expense(payload: CreateExpenseRequest, runtime=Depends(get_runtime), 
         category = f'BUSINESS ONLY: {category}'
 
     try:
-        sheet_item = runtime.append_cashflow_expense_record(
+        expense = runtime.financial_data_service.create_expense(
             amount=payload.amount,
             category=category,
             description=payload.description,
@@ -50,19 +56,51 @@ def create_expense(payload: CreateExpenseRequest, runtime=Depends(get_runtime), 
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    return {'expense': sheet_item, 'sheet_expense': sheet_item}
+    return {'expense': expense}
 
 
 @router.get('/expenses')
 def list_expenses(limit: int = 200, offset: int = 0, runtime=Depends(get_runtime)):
     try:
-        payload = runtime.get_cashflow_expense_records(force_refresh=False)
+        items = runtime.financial_data_service.list_expenses(limit=limit, offset=offset)
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
-    items = payload.get('items') or []
-    limited_items = items[offset:offset + max(1, int(limit or 200))]
-    return {'expenses': limited_items, 'count': len(items), 'source': payload.get('source', 'database')}
+    return {'expenses': items, 'count': len(items), 'source': 'database'}
+
+
+@router.get('/allowance/withdrawals', dependencies=[Depends(require_admin)])
+def list_allowance_withdrawals(limit: int = 200, offset: int = 0, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
+    try:
+        items = runtime.financial_data_service.list_allowance_withdrawals(limit=limit, offset=offset)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    return {'withdrawals': items, 'count': len(items)}
+
+
+@router.post('/allowance/withdraw', dependencies=[Depends(require_admin)])
+def create_allowance_withdrawal(
+    payload: AllowanceWithdrawalRequest,
+    runtime=Depends(get_runtime),
+    current_user=Depends(get_current_user),
+):
+    try:
+        result = runtime.financial_data_service.create_allowance_withdrawal(
+            week_start=payload.week_start,
+            allowance_amount=payload.allowance_amount,
+            withdrawn_by=payload.withdrawn_by or str((current_user or {}).get('username') or ''),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    if isinstance(result, dict) and result.get('error'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result['error'])
+    return {'withdrawal': result}
 
 
 @router.get('/audit-log', dependencies=[Depends(require_admin)])
@@ -142,45 +180,75 @@ def set_app_config(
 @router.get('/cashflow-summary', dependencies=[Depends(require_admin)])
 def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh)
+        if force_refresh:
+            runtime.financial_data_service.rebuild_cashflow_summary_rows()
+        summary_rows = runtime.financial_data_service.get_current_cashflow_summary_rows()
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
-    return {'summary': summary}
+    summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
+    return {
+        'summary': summary,
+        'rows': summary_rows,
+        'weekly_allowance': summary.get('week') or {},
+    }
 
 
 @router.get('/cashflow-dashboard', dependencies=[Depends(require_admin)])
 def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     started = time.perf_counter()
     try:
-        summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh)
-        expense_summary = runtime.get_cashflow_expense_records(force_refresh=force_refresh)
-        capital = runtime.get_phone_capital_outflow(force_refresh=force_refresh)
-        weekly_allowance = summary.get('weekly_allowance') or runtime.get_weekly_allowance_from_sheet(force_refresh=force_refresh)
+        if force_refresh:
+            runtime.financial_data_service.rebuild_cashflow_summary_rows()
+        summary_rows = runtime.financial_data_service.get_current_cashflow_summary_rows()
+        expense_items = runtime.financial_data_service.list_expenses(limit=500, offset=0)
+        withdrawal_items = runtime.financial_data_service.list_allowance_withdrawals(limit=500, offset=0)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
-    transactions = runtime.get_cashflow_sheet_records(force_refresh=force_refresh).get('items', [])
-
+    summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
+    normalized_transactions = [
+        {
+            'date': item.get('expense_date'),
+            'payment_date': item.get('expense_date'),
+            'category': str(item.get('description') or '').split(' - ')[0] if item.get('description') else 'EXPENSE',
+            'description': item.get('description') or '',
+            'amount': item.get('amount', 0),
+            'source': 'expense',
+        }
+        for item in expense_items
+    ] + [
+        {
+            'date': item.get('withdrawn_date') or item.get('week_start'),
+            'payment_date': item.get('withdrawn_date') or item.get('week_start'),
+            'category': 'WEEKLY ALLOWANCE',
+            'description': f"Weekly allowance for {item.get('week_start')}",
+            'amount': item.get('allowance_amount', 0),
+            'source': 'expense',
+        }
+        for item in withdrawal_items
+    ]
     result = {
         'summary': summary,
-        'weekly_allowance': weekly_allowance,
-        'expenses': expense_summary.get('items', []),
-        'expense_source': expense_summary.get('source', 'database'),
-        'expense_sheet_title': expense_summary.get('sheet_title', 'CASH FLOW'),
-        'transactions': transactions,
-        'capital': capital,
+        'weekly_allowance': summary.get('week') or {},
+        'monthly_allowance': summary.get('month') or {},
+        'expenses': expense_items,
+        'expense_source': 'database',
+        'expense_sheet_title': 'manual_expenses',
+        'withdrawals': withdrawal_items,
+        'transactions': normalized_transactions,
+        'capital': {'month_total': 0, 'week_total': 0, 'entries': []},
     }
     runtime.logger.info(
         'query_timing kind=dashboard_read_cashflow duration_ms=%.2f force_refresh=%s expense_count=%s transaction_count=%s read_mode=%s',
         round((time.perf_counter() - started) * 1000, 2),
         bool(force_refresh),
         len(result.get('expenses') or []),
-        len(transactions),
+        0,
         'postgres_first' if runtime.postgres_ready else 'sheet_only',
     )
     return result
@@ -189,19 +257,20 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
 @router.get('/weekly-allowance', dependencies=[Depends(require_admin)])
 def get_weekly_allowance(runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        summary = runtime.get_weekly_allowance_from_sheet(force_refresh=False)
+        summary_rows = runtime.financial_data_service.get_current_cashflow_summary_rows()
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
-    return summary
+    summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
+    return summary.get('week') or {}
 
 
 @router.post('/allowance/undo-last', dependencies=[Depends(require_admin)])
 def undo_last_weekly_allowance(runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        result = runtime.undo_last_weekly_allowance_withdrawal()
+        result = runtime.financial_data_service.undo_last_allowance_withdrawal()
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -209,13 +278,16 @@ def undo_last_weekly_allowance(runtime=Depends(get_runtime), current_user=Depend
 
     if result.get('error'):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result['error'])
-    return result
+    return {
+        'removed_amount': result.get('allowance_amount', 0),
+        'withdrawal': result,
+    }
 
 
 @router.post('/cashflow/rebuild-week', dependencies=[Depends(require_admin)])
 def rebuild_cashflow_week(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        result = runtime.rebuild_cashflow_sheet_for_current_week(force_refresh=force_refresh)
+        result = runtime.financial_data_service.rebuild_cashflow_summary_rows()
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -227,7 +299,7 @@ def rebuild_cashflow_week(force_refresh: bool = False, runtime=Depends(get_runti
 @router.post('/cashflow/rebuild', dependencies=[Depends(require_admin)])
 def rebuild_cashflow(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        result = runtime.rebuild_cashflow_sheet(force_refresh=force_refresh, current_week_only=False)
+        result = runtime.financial_data_service.rebuild_cashflow_summary_rows()
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:

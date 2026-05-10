@@ -230,6 +230,18 @@ export function undoLastWeeklyAllowanceWithdrawal({ cashflowPin = '' } = {}) {
   });
 }
 
+export function createFoundationAllowanceWithdrawal({ weekStart = '', allowanceAmount = 0, withdrawnBy = '', cashflowPin = '' }) {
+  return requestJson('/api/foundation/allowance/withdraw', {
+    method: 'POST',
+    body: {
+      week_start: weekStart,
+      allowance_amount: allowanceAmount,
+      withdrawn_by: withdrawnBy,
+    },
+    headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
+  });
+}
+
 export function changeCashflowPin({ currentPin, newPin }) {
   return requestJson('/api/foundation/cashflow-pin/change', {
     method: 'POST',

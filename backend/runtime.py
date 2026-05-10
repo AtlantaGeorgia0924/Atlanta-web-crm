@@ -5,6 +5,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import threading
 import time
 import uuid
@@ -614,6 +615,7 @@ class BackendRuntime:
 
         try:
             scopes = ['https://www.googleapis.com/auth/spreadsheets']
+
             self.creds = self._load_service_account_credentials(scopes)
             with self._sheet_lock:
                 self.gspread_client = gspread.authorize(self.creds)
@@ -2388,7 +2390,8 @@ class BackendRuntime:
         return values, header_row_idx, headers, headers_upper, True
 
     def _ensure_main_optional_columns(self, force_refresh=False, required_headers=None):
-        required_headers = [self._normalize_optional_header_name(header) for header in (required_headers or []) if str(header or '').strip()]
+        default_required_headers = ['PAID DATE', 'EXPENSE AMOUNT', 'EXPENSE DESCRIPTION', 'CALCULATED PROFIT']
+        required_headers = [self._normalize_optional_header_name(header) for header in ([*default_required_headers, *(required_headers or [])]) if str(header or '').strip()]
         values = self.get_main_values(force_refresh=force_refresh)
         if not values or not required_headers:
             return values, detect_sheet_header_row(values), [str(cell or '').strip() for cell in (values[detect_sheet_header_row(values)] if values and detect_sheet_header_row(values) < len(values) else [])], [str(cell or '').strip().upper() for cell in (values[detect_sheet_header_row(values)] if values and detect_sheet_header_row(values) < len(values) else [])], []
@@ -2445,7 +2448,8 @@ class BackendRuntime:
 
     def _ensure_stock_optional_columns(self, force_refresh=False, required_headers=None):
         values, header_row_idx, headers, headers_upper, inserted_cost_price, inserted_product_status = self._ensure_stock_required_columns_base(force_refresh=force_refresh)
-        required_headers = [self._normalize_optional_header_name(header) for header in (required_headers or []) if str(header or '').strip()]
+        default_required_headers = ['PAID DATE', 'EXPENSE AMOUNT', 'EXPENSE DESCRIPTION', 'CALCULATED PROFIT']
+        required_headers = [self._normalize_optional_header_name(header) for header in ([*default_required_headers, *(required_headers or [])]) if str(header or '').strip()]
         inserted_headers = []
         stock_sheet_id = self._resolve_stock_sheet_id()
         if not stock_sheet_id or not required_headers:
@@ -2765,6 +2769,28 @@ class BackendRuntime:
         payload_text = json.dumps(payload, sort_keys=True, separators=(',', ':'))
         return hashlib.sha256(payload_text.encode('utf-8')).hexdigest()
 
+    @staticmethod
+    def _looks_like_date(value):
+        """Check if a string value looks like a date/timestamp."""
+        if not value or not isinstance(value, str):
+            return False
+        # Check for common date separators: /, -, or digits only (YYYYMMDD), or ISO format
+        value = value.strip()
+        return bool(re.match(r'^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|^\d{4}-\d{2}-\d{2}|^\d{8}$', value))
+
+    @staticmethod
+    def _format_paid_date(date_value):
+        """Parse a date from sheet and return it as ISO format string for PostgreSQL."""
+        if not date_value:
+            return None
+        try:
+            parsed_date = parse_sheet_date(date_value)
+            if parsed_date:
+                return parsed_date.isoformat()
+        except Exception:
+            pass
+        return None
+
     def _build_operational_billing_rows(self, main_records):
         rows = []
         for index, record in enumerate(list(main_records or []), start=2):
@@ -2778,6 +2804,15 @@ class BackendRuntime:
             payment_date = self._mirror_text(
                 self._record_value(payload, 'PAYMENT DATE', 'PAID DATE', 'DATE')
             )
+            paid_date = self._record_value(payload, 'PAID DATE', 'PAYMENT DATE')
+            if not paid_date and payment_status == 'PAID':
+                paid_date = self._record_value(payload, 'DATE', 'SERVICE DATE')
+            # Parse and format the date to ISO format for PostgreSQL
+            paid_date_text = self._format_paid_date(paid_date)
+            expense_amount = clean_amount(self._record_value(payload, 'EXPENSE AMOUNT', 'SERVICE EXPENSE', 'EXPENSE', 'SERVICE COST'))
+            expense_description = self._mirror_text(self._record_value(payload, 'EXPENSE DESCRIPTION', 'INTERNAL NOTE', 'SERVICE EXPENSE'))
+            charged_amount = clean_amount(self._record_value(payload, 'PRICE', 'AMOUNT CHARGED', 'AMOUNT SOLD', 'SELLING PRICE'))
+            calculated_profit = round(max(0.0, charged_amount - expense_amount) if payment_status == 'PAID' and charged_amount > 0 else 0.0, 2)
             imei = self._mirror_text(self._record_value(payload, 'IMEI'))
             record_id = self._mirror_text(self._record_value(payload, 'RECORD_ID'))
             source_hash = self._mirror_hash(payload)
@@ -2788,6 +2823,10 @@ class BackendRuntime:
                 'customer_name': customer_name,
                 'payment_status': payment_status,
                 'payment_date': payment_date,
+                'paid_date': paid_date_text or None,
+                'expense_amount': expense_amount,
+                'expense_description': expense_description,
+                'calculated_profit': calculated_profit,
                 'payload_json': payload,
                 'source_hash': source_hash,
             })
@@ -2815,6 +2854,16 @@ class BackendRuntime:
             payment_date = self._mirror_text(
                 self._record_value(payload, 'PAYMENT DATE', 'PAID DATE', 'DATE SOLD', 'AVAILABILITY/DATE SOLD')
             )
+            paid_date = self._record_value(payload, 'PAID DATE', 'PAYMENT DATE', 'DATE SOLD', 'AVAILABILITY/DATE SOLD')
+            if not paid_date and payment_status == 'PAID':
+                paid_date = self._record_value(payload, 'DATE', 'DATE SOLD', 'AVAILABILITY/DATE SOLD')
+            # Parse and format the date to ISO format for PostgreSQL
+            paid_date_text = self._format_paid_date(paid_date)
+            expense_amount = clean_amount(self._record_value(payload, 'EXPENSE AMOUNT', 'PHONE EXPENSE', 'EXPENSE', 'PHONE SALE EXPENSE'))
+            expense_description = self._mirror_text(self._record_value(payload, 'EXPENSE DESCRIPTION', 'PHONE EXPENSE', 'INTERNAL NOTE'))
+            selling_price = clean_amount(self._record_value(payload, 'AMOUNT SOLD', 'SELLING PRICE', 'PRICE'))
+            cost_price = clean_amount(self._record_value(payload, 'COST PRICE', 'COST', 'BUYING PRICE'))
+            calculated_profit = round(max(0.0, selling_price - cost_price - expense_amount) if payment_status == 'PAID' and selling_price > 0 else 0.0, 2)
             imei = self._mirror_text(self._record_value(payload, 'IMEI'))
             record_id = self._mirror_text(self._record_value(payload, 'RECORD_ID'))
             source_hash = self._mirror_hash(payload)
@@ -2825,6 +2874,10 @@ class BackendRuntime:
                 'customer_name': customer_name,
                 'payment_status': payment_status,
                 'payment_date': payment_date,
+                'paid_date': paid_date_text or None,
+                'expense_amount': expense_amount,
+                'expense_description': expense_description,
+                'calculated_profit': calculated_profit,
                 'payload_json': payload,
                 'source_hash': source_hash,
             })
@@ -3955,6 +4008,11 @@ class BackendRuntime:
         else:
             merged_values['STATUS'] = 'PAID'
 
+        merged_values['PAID DATE'] = now.isoformat() if merged_values['STATUS'] == 'PAID' else ''
+        merged_values['EXPENSE AMOUNT'] = str(service_expense_amount or 0)
+        merged_values['EXPENSE DESCRIPTION'] = str(merged_values.get('INTERNAL NOTE') or service_expense_amount or '').strip()
+        merged_values['CALCULATED PROFIT'] = str(max(0.0, price_amount - service_expense_amount) if merged_values['STATUS'] == 'PAID' else 0)
+
         fulfillment_method = str(merged_values.get('FULFILLMENT METHOD') or '').strip().upper().replace('-', ' ')
         deal_location = str(merged_values.get('DEAL LOCATION') or '').strip()
         if fulfillment_method in {'OFF OFFICE', 'OFFOFFICE'} and not deal_location:
@@ -4145,6 +4203,10 @@ class BackendRuntime:
         price_col = svc_stock_header_index(headers_upper, 'PRICE')
         imei_col = svc_stock_header_index(headers_upper, 'IMEI')
         description_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'MODEL', 'DEVICE', 'DESC')
+        expense_amount_col = svc_stock_header_index(headers_upper, 'EXPENSE AMOUNT')
+        expense_description_col = svc_stock_header_index(headers_upper, 'EXPENSE DESCRIPTION')
+        calculated_profit_col = svc_stock_header_index(headers_upper, 'CALCULATED PROFIT')
+        paid_date_col = svc_stock_header_index(headers_upper, 'PAID DATE')
         if status_col is None:
             return {'error': 'STATUS column is missing in the inventory sheet.'}
 
@@ -4218,6 +4280,66 @@ class BackendRuntime:
             )
             queued_operation_ids.append(queue_id)
 
+        if paid_date_col is not None:
+            queue_id = self._enqueue_db_first_operation(
+                'service',
+                'main_update_paid_date',
+                {
+                    'kind': 'main_update_cell',
+                    'row': row_num,
+                    'col': paid_date_col + 1,
+                    'value': datetime.now(timezone.utc).date().isoformat() if status_text == 'PAID' else '',
+                },
+                cache_apply_callable=lambda rn=row_num, cn=paid_date_col + 1, nv=(datetime.now(timezone.utc).date().isoformat() if status_text == 'PAID' else ''): self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv) if self.postgres_ready else None,
+            )
+            queued_operation_ids.append(queue_id)
+
+        if expense_amount_col is not None:
+            service_expense_value = clean_amount(row[expense_amount_col] if expense_amount_col < len(row) else 0)
+            queue_id = self._enqueue_db_first_operation(
+                'service',
+                'main_update_expense_amount',
+                {
+                    'kind': 'main_update_cell',
+                    'row': row_num,
+                    'col': expense_amount_col + 1,
+                    'value': service_expense_value,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=expense_amount_col + 1, nv=service_expense_value: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv) if self.postgres_ready else None,
+            )
+            queued_operation_ids.append(queue_id)
+
+        if expense_description_col is not None:
+            service_expense_description = str(row[description_col] if description_col is not None and description_col < len(row) else '').strip()
+            queue_id = self._enqueue_db_first_operation(
+                'service',
+                'main_update_expense_description',
+                {
+                    'kind': 'main_update_cell',
+                    'row': row_num,
+                    'col': expense_description_col + 1,
+                    'value': service_expense_description,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=expense_description_col + 1, nv=service_expense_description: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv) if self.postgres_ready else None,
+            )
+            queued_operation_ids.append(queue_id)
+
+        if calculated_profit_col is not None:
+            service_expense_value = clean_amount(row[expense_amount_col] if expense_amount_col is not None and expense_amount_col < len(row) else 0)
+            service_profit_value = round(max(0.0, price_value - service_expense_value) if status_text == 'PAID' else 0.0, 2)
+            queue_id = self._enqueue_db_first_operation(
+                'service',
+                'main_update_calculated_profit',
+                {
+                    'kind': 'main_update_cell',
+                    'row': row_num,
+                    'col': calculated_profit_col + 1,
+                    'value': service_profit_value,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=calculated_profit_col + 1, nv=service_profit_value: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv) if self.postgres_ready else None,
+            )
+            queued_operation_ids.append(queue_id)
+
         try:
             self.replay_pending_queue_now(limit=120)
         except Exception:
@@ -4280,6 +4402,10 @@ class BackendRuntime:
 
         description_col = svc_stock_header_index(headers_upper, 'DESCRIPTION', 'MODEL', 'DEVICE', 'DESC')
         name_col = svc_stock_header_index(headers_upper, 'NAME', 'CLIENT NAME', 'CUSTOMER NAME', 'NAME OF BUYER')
+        expense_amount_col = svc_stock_header_index(headers_upper, 'EXPENSE AMOUNT')
+        expense_description_col = svc_stock_header_index(headers_upper, 'EXPENSE DESCRIPTION')
+        calculated_profit_col = svc_stock_header_index(headers_upper, 'CALCULATED PROFIT')
+        paid_date_col = svc_stock_header_index(headers_upper, 'PAID DATE')
         service_description = str(row[description_col] if description_col is not None and description_col < len(row) else '').strip()
         service_actor = str(row[name_col] if name_col is not None and name_col < len(row) else '').strip()
 
@@ -4308,6 +4434,62 @@ class BackendRuntime:
                     'value': 0,
                 },
                 cache_apply_callable=lambda rn=row_num, cn=paid_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, 0) if self.postgres_ready else None,
+            )
+            queued_operation_ids.append(queue_id)
+
+        if paid_date_col is not None:
+            queue_id = self._enqueue_db_first_operation(
+                'service_return',
+                'main_update_paid_date',
+                {
+                    'kind': 'main_update_cell',
+                    'row': row_num,
+                    'col': paid_date_col + 1,
+                    'value': '',
+                },
+                cache_apply_callable=lambda rn=row_num, cn=paid_date_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, '') if self.postgres_ready else None,
+            )
+            queued_operation_ids.append(queue_id)
+
+        if expense_amount_col is not None:
+            queue_id = self._enqueue_db_first_operation(
+                'service_return',
+                'main_update_expense_amount',
+                {
+                    'kind': 'main_update_cell',
+                    'row': row_num,
+                    'col': expense_amount_col + 1,
+                    'value': 0,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=expense_amount_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, 0) if self.postgres_ready else None,
+            )
+            queued_operation_ids.append(queue_id)
+
+        if expense_description_col is not None:
+            queue_id = self._enqueue_db_first_operation(
+                'service_return',
+                'main_update_expense_description',
+                {
+                    'kind': 'main_update_cell',
+                    'row': row_num,
+                    'col': expense_description_col + 1,
+                    'value': '',
+                },
+                cache_apply_callable=lambda rn=row_num, cn=expense_description_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, '') if self.postgres_ready else None,
+            )
+            queued_operation_ids.append(queue_id)
+
+        if calculated_profit_col is not None:
+            queue_id = self._enqueue_db_first_operation(
+                'service_return',
+                'main_update_calculated_profit',
+                {
+                    'kind': 'main_update_cell',
+                    'row': row_num,
+                    'col': calculated_profit_col + 1,
+                    'value': 0,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=calculated_profit_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, 0) if self.postgres_ready else None,
             )
             queued_operation_ids.append(queue_id)
 
@@ -4360,6 +4542,10 @@ class BackendRuntime:
         availability_col = svc_stock_header_index(stock_headers_upper, 'AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE')
         desc_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
         imei_col = svc_stock_header_index(stock_headers_upper, 'IMEI')
+        paid_date_col = svc_stock_header_index(stock_headers_upper, 'PAID DATE')
+        expense_amount_col = svc_stock_header_index(stock_headers_upper, 'EXPENSE AMOUNT', 'PHONE EXPENSE', 'EXPENSE')
+        expense_description_col = svc_stock_header_index(stock_headers_upper, 'EXPENSE DESCRIPTION')
+        calculated_profit_col = svc_stock_header_index(stock_headers_upper, 'CALCULATED PROFIT')
 
         if status_col is None:
             return {'error': 'Could not find a stock status column (PRODUCT STATUS / STATUS OF DEVICE / STATUS).'}
@@ -4388,6 +4574,14 @@ class BackendRuntime:
             updates.append({'col': paid_amount_col + 1, 'value': ''})
         if availability_col is not None:
             updates.append({'col': availability_col + 1, 'value': ''})
+        if paid_date_col is not None:
+            updates.append({'col': paid_date_col + 1, 'value': ''})
+        if expense_amount_col is not None:
+            updates.append({'col': expense_amount_col + 1, 'value': 0})
+        if expense_description_col is not None:
+            updates.append({'col': expense_description_col + 1, 'value': ''})
+        if calculated_profit_col is not None:
+            updates.append({'col': calculated_profit_col + 1, 'value': 0})
 
         queue_ids = []
         for update in updates:
@@ -4443,6 +4637,10 @@ class BackendRuntime:
             main_imei_col = svc_stock_header_index(main_headers_upper, 'IMEI')
             main_status_col = svc_stock_header_index(main_headers_upper, 'STATUS')
             main_paid_col = svc_stock_header_index(main_headers_upper, 'AMOUNT PAID', 'AMOUNT PAID ')
+            main_paid_date_col = svc_stock_header_index(main_headers_upper, 'PAID DATE')
+            main_expense_amount_col = svc_stock_header_index(main_headers_upper, 'EXPENSE AMOUNT')
+            main_expense_description_col = svc_stock_header_index(main_headers_upper, 'EXPENSE DESCRIPTION')
+            main_calculated_profit_col = svc_stock_header_index(main_headers_upper, 'CALCULATED PROFIT')
 
             if main_status_col is not None:
                 buyer_name_key = str(buyer_name_value or '').strip().upper()
@@ -4507,6 +4705,66 @@ class BackendRuntime:
                                 'value': 0,
                             },
                             cache_apply_callable=lambda rn=latest_row_num, cn=main_paid_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, 0),
+                        )
+                    )
+
+                if main_paid_date_col is not None:
+                    queue_ids.append(
+                        self._enqueue_db_first_operation(
+                            'returns',
+                            'main_update_paid_date',
+                            {
+                                'kind': 'main_update_cell',
+                                'row': latest_row_num,
+                                'col': main_paid_date_col + 1,
+                                'value': '',
+                            },
+                            cache_apply_callable=lambda rn=latest_row_num, cn=main_paid_date_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, ''),
+                        )
+                    )
+
+                if main_expense_amount_col is not None:
+                    queue_ids.append(
+                        self._enqueue_db_first_operation(
+                            'returns',
+                            'main_update_expense_amount',
+                            {
+                                'kind': 'main_update_cell',
+                                'row': latest_row_num,
+                                'col': main_expense_amount_col + 1,
+                                'value': 0,
+                            },
+                            cache_apply_callable=lambda rn=latest_row_num, cn=main_expense_amount_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, 0),
+                        )
+                    )
+
+                if main_expense_description_col is not None:
+                    queue_ids.append(
+                        self._enqueue_db_first_operation(
+                            'returns',
+                            'main_update_expense_description',
+                            {
+                                'kind': 'main_update_cell',
+                                'row': latest_row_num,
+                                'col': main_expense_description_col + 1,
+                                'value': '',
+                            },
+                            cache_apply_callable=lambda rn=latest_row_num, cn=main_expense_description_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, ''),
+                        )
+                    )
+
+                if main_calculated_profit_col is not None:
+                    queue_ids.append(
+                        self._enqueue_db_first_operation(
+                            'returns',
+                            'main_update_calculated_profit',
+                            {
+                                'kind': 'main_update_cell',
+                                'row': latest_row_num,
+                                'col': main_calculated_profit_col + 1,
+                                'value': 0,
+                            },
+                            cache_apply_callable=lambda rn=latest_row_num, cn=main_calculated_profit_col + 1: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, 0),
                         )
                     )
 
@@ -4607,6 +4865,10 @@ class BackendRuntime:
         availability_col = svc_stock_header_index(stock_headers_upper, 'AVAILABILITY/DATE SOLD', 'DATE SOLD', 'SOLD DATE')
         description_col = svc_stock_header_index(stock_headers_upper, 'DESCRIPTION', 'MODEL', 'DESC')
         cost_price_col = svc_stock_header_index(stock_headers_upper, 'COST PRICE', 'COST', 'COST_PRICE')
+        paid_date_col = svc_stock_header_index(stock_headers_upper, 'PAID DATE')
+        expense_amount_col = svc_stock_header_index(stock_headers_upper, 'EXPENSE AMOUNT', 'PHONE EXPENSE', 'EXPENSE')
+        expense_description_col = svc_stock_header_index(stock_headers_upper, 'EXPENSE DESCRIPTION')
+        calculated_profit_col = svc_stock_header_index(stock_headers_upper, 'CALCULATED PROFIT')
 
         buyer_name = str(padded_stock_row[buyer_col] if buyer_col is not None and buyer_col < len(padded_stock_row) else '').strip().upper()
         buyer_phone = normalize_phone_number(padded_stock_row[buyer_phone_col] if buyer_phone_col is not None and buyer_phone_col < len(padded_stock_row) else '')
@@ -4629,6 +4891,10 @@ class BackendRuntime:
         main_status_col = svc_stock_header_index(main_headers_upper, 'STATUS')
         main_paid_col = svc_stock_header_index(main_headers_upper, 'AMOUNT PAID')
         main_price_col = svc_stock_header_index(main_headers_upper, 'PRICE')
+        main_paid_date_col = svc_stock_header_index(main_headers_upper, 'PAID DATE')
+        main_expense_amount_col = svc_stock_header_index(main_headers_upper, 'EXPENSE AMOUNT')
+        main_expense_description_col = svc_stock_header_index(main_headers_upper, 'EXPENSE DESCRIPTION')
+        main_calculated_profit_col = svc_stock_header_index(main_headers_upper, 'CALCULATED PROFIT')
 
         matched_inventory_row = None
         matched_row_values = []
@@ -4730,6 +4996,132 @@ class BackendRuntime:
             )
             queued_operation_ids.append(queue_id)
 
+        if paid_date_col is not None:
+            queue_id = self._enqueue_db_first_operation(
+                'stock',
+                'stock_update_paid_date',
+                {
+                    'kind': 'stock_update_cell',
+                    'stock_sheet_id': stock_sheet_id,
+                    'row': row_num,
+                    'col': paid_date_col + 1,
+                    'value': datetime.now(timezone.utc).date().isoformat() if status_text == 'PAID' else '',
+                },
+                cache_apply_callable=lambda rn=row_num, cn=paid_date_col + 1, nv=(datetime.now(timezone.utc).date().isoformat() if status_text == 'PAID' else ''): self.postgres_sync_manager.update_cached_stock_value(rn, cn, nv),
+            )
+            queued_operation_ids.append(queue_id)
+
+        stock_expense_value = clean_amount(padded_stock_row[expense_amount_col] if expense_amount_col is not None and expense_amount_col < len(padded_stock_row) else 0)
+        if expense_amount_col is not None:
+            queue_id = self._enqueue_db_first_operation(
+                'stock',
+                'stock_update_expense_amount',
+                {
+                    'kind': 'stock_update_cell',
+                    'stock_sheet_id': stock_sheet_id,
+                    'row': row_num,
+                    'col': expense_amount_col + 1,
+                    'value': stock_expense_value,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=expense_amount_col + 1, nv=stock_expense_value: self.postgres_sync_manager.update_cached_stock_value(rn, cn, nv),
+            )
+            queued_operation_ids.append(queue_id)
+
+        if expense_description_col is not None:
+            stock_expense_description = 'PHONE SALE EXPENSE' if stock_expense_value > 0 else ''
+            queue_id = self._enqueue_db_first_operation(
+                'stock',
+                'stock_update_expense_description',
+                {
+                    'kind': 'stock_update_cell',
+                    'stock_sheet_id': stock_sheet_id,
+                    'row': row_num,
+                    'col': expense_description_col + 1,
+                    'value': stock_expense_description,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=expense_description_col + 1, nv=stock_expense_description: self.postgres_sync_manager.update_cached_stock_value(rn, cn, nv),
+            )
+            queued_operation_ids.append(queue_id)
+
+        if calculated_profit_col is not None:
+            stock_profit_value = round(max(0.0, comparison_price - cost_price_value - stock_expense_value) if status_text == 'PAID' else 0.0, 2)
+            queue_id = self._enqueue_db_first_operation(
+                'stock',
+                'stock_update_calculated_profit',
+                {
+                    'kind': 'stock_update_cell',
+                    'stock_sheet_id': stock_sheet_id,
+                    'row': row_num,
+                    'col': calculated_profit_col + 1,
+                    'value': stock_profit_value,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=calculated_profit_col + 1, nv=stock_profit_value: self.postgres_sync_manager.update_cached_stock_value(rn, cn, nv),
+            )
+            queued_operation_ids.append(queue_id)
+
+        stock_expense_value = clean_amount(padded_stock_row[expense_amount_col] if expense_amount_col is not None and expense_amount_col < len(padded_stock_row) else 0)
+        if paid_date_col is not None:
+            queue_id = self._enqueue_db_first_operation(
+                'stock',
+                'stock_update_paid_date',
+                {
+                    'kind': 'stock_update_cell',
+                    'stock_sheet_id': stock_sheet_id,
+                    'row': row_num,
+                    'col': paid_date_col + 1,
+                    'value': datetime.now(timezone.utc).date().isoformat() if status_text == 'PAID' else '',
+                },
+                cache_apply_callable=lambda rn=row_num, cn=paid_date_col + 1, nv=(datetime.now(timezone.utc).date().isoformat() if status_text == 'PAID' else ''): self.postgres_sync_manager.update_cached_stock_value(rn, cn, nv),
+            )
+            queued_operation_ids.append(queue_id)
+
+        if expense_amount_col is not None:
+            queue_id = self._enqueue_db_first_operation(
+                'stock',
+                'stock_update_expense_amount',
+                {
+                    'kind': 'stock_update_cell',
+                    'stock_sheet_id': stock_sheet_id,
+                    'row': row_num,
+                    'col': expense_amount_col + 1,
+                    'value': stock_expense_value,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=expense_amount_col + 1, nv=stock_expense_value: self.postgres_sync_manager.update_cached_stock_value(rn, cn, nv),
+            )
+            queued_operation_ids.append(queue_id)
+
+        if expense_description_col is not None:
+            stock_expense_description = 'PHONE SALE EXPENSE' if stock_expense_value > 0 else ''
+            queue_id = self._enqueue_db_first_operation(
+                'stock',
+                'stock_update_expense_description',
+                {
+                    'kind': 'stock_update_cell',
+                    'stock_sheet_id': stock_sheet_id,
+                    'row': row_num,
+                    'col': expense_description_col + 1,
+                    'value': stock_expense_description,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=expense_description_col + 1, nv=stock_expense_description: self.postgres_sync_manager.update_cached_stock_value(rn, cn, nv),
+            )
+            queued_operation_ids.append(queue_id)
+
+        if calculated_profit_col is not None:
+            stock_profit_value = round(max(0.0, comparison_price - cost_price_value - stock_expense_value) if status_text == 'PAID' else 0.0, 2)
+            queue_id = self._enqueue_db_first_operation(
+                'stock',
+                'stock_update_calculated_profit',
+                {
+                    'kind': 'stock_update_cell',
+                    'stock_sheet_id': stock_sheet_id,
+                    'row': row_num,
+                    'col': calculated_profit_col + 1,
+                    'value': stock_profit_value,
+                },
+                cache_apply_callable=lambda rn=row_num, cn=calculated_profit_col + 1, nv=stock_profit_value: self.postgres_sync_manager.update_cached_stock_value(rn, cn, nv),
+            )
+            queued_operation_ids.append(queue_id)
+
         if description_col is not None:
             request_body = {
                 'requests': [{
@@ -4772,6 +5164,63 @@ class BackendRuntime:
             )
             queued_operation_ids.append(queue_id)
 
+            if main_paid_date_col is not None:
+                queue_id = self._enqueue_db_first_operation(
+                    'inventory',
+                    'main_update_paid_date',
+                    {
+                        'kind': 'main_update_cell',
+                        'row': matched_inventory_row,
+                        'col': main_paid_date_col + 1,
+                        'value': datetime.now(timezone.utc).date().isoformat() if status_text == 'PAID' else '',
+                    },
+                    cache_apply_callable=lambda rn=matched_inventory_row, cn=main_paid_date_col + 1, nv=(datetime.now(timezone.utc).date().isoformat() if status_text == 'PAID' else ''): self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                )
+                queued_operation_ids.append(queue_id)
+
+            if main_expense_amount_col is not None:
+                queue_id = self._enqueue_db_first_operation(
+                    'inventory',
+                    'main_update_expense_amount',
+                    {
+                        'kind': 'main_update_cell',
+                        'row': matched_inventory_row,
+                        'col': main_expense_amount_col + 1,
+                        'value': stock_expense_value,
+                    },
+                    cache_apply_callable=lambda rn=matched_inventory_row, cn=main_expense_amount_col + 1, nv=stock_expense_value: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                )
+                queued_operation_ids.append(queue_id)
+
+            if main_expense_description_col is not None:
+                queue_id = self._enqueue_db_first_operation(
+                    'inventory',
+                    'main_update_expense_description',
+                    {
+                        'kind': 'main_update_cell',
+                        'row': matched_inventory_row,
+                        'col': main_expense_description_col + 1,
+                        'value': 'PHONE SALE EXPENSE' if stock_expense_value > 0 else '',
+                    },
+                    cache_apply_callable=lambda rn=matched_inventory_row, cn=main_expense_description_col + 1, nv=('PHONE SALE EXPENSE' if stock_expense_value > 0 else ''): self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                )
+                queued_operation_ids.append(queue_id)
+
+            if main_calculated_profit_col is not None:
+                main_profit_value = round(max(0.0, comparison_price - cost_price_value - stock_expense_value) if status_text == 'PAID' else 0.0, 2)
+                queue_id = self._enqueue_db_first_operation(
+                    'inventory',
+                    'main_update_calculated_profit',
+                    {
+                        'kind': 'main_update_cell',
+                        'row': matched_inventory_row,
+                        'col': main_calculated_profit_col + 1,
+                        'value': main_profit_value,
+                    },
+                    cache_apply_callable=lambda rn=matched_inventory_row, cn=main_calculated_profit_col + 1, nv=main_profit_value: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                )
+                queued_operation_ids.append(queue_id)
+
             if main_paid_col is not None:
                 existing_paid = clean_amount(matched_row_values[main_paid_col]) if main_paid_col < len(matched_row_values) else 0
                 existing_price = clean_amount(matched_row_values[main_price_col]) if main_price_col is not None and main_price_col < len(matched_row_values) else 0
@@ -4795,6 +5244,63 @@ class BackendRuntime:
                     cache_apply_callable=lambda rn=matched_inventory_row, cn=main_paid_col + 1, nv=resolved_amount: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
                 )
                 queued_operation_ids.append(queue_id)
+
+                if main_paid_date_col is not None:
+                    queue_id = self._enqueue_db_first_operation(
+                        'inventory',
+                        'main_update_paid_date',
+                        {
+                            'kind': 'main_update_cell',
+                            'row': matched_inventory_row,
+                            'col': main_paid_date_col + 1,
+                            'value': datetime.now(timezone.utc).date().isoformat() if status_text == 'PAID' else '',
+                        },
+                        cache_apply_callable=lambda rn=matched_inventory_row, cn=main_paid_date_col + 1, nv=(datetime.now(timezone.utc).date().isoformat() if status_text == 'PAID' else ''): self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                    )
+                    queued_operation_ids.append(queue_id)
+
+                if main_expense_amount_col is not None:
+                    queue_id = self._enqueue_db_first_operation(
+                        'inventory',
+                        'main_update_expense_amount',
+                        {
+                            'kind': 'main_update_cell',
+                            'row': matched_inventory_row,
+                            'col': main_expense_amount_col + 1,
+                            'value': stock_expense_value,
+                        },
+                        cache_apply_callable=lambda rn=matched_inventory_row, cn=main_expense_amount_col + 1, nv=stock_expense_value: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                    )
+                    queued_operation_ids.append(queue_id)
+
+                if main_expense_description_col is not None:
+                    queue_id = self._enqueue_db_first_operation(
+                        'inventory',
+                        'main_update_expense_description',
+                        {
+                            'kind': 'main_update_cell',
+                            'row': matched_inventory_row,
+                            'col': main_expense_description_col + 1,
+                            'value': 'PHONE SALE EXPENSE' if stock_expense_value > 0 else '',
+                        },
+                        cache_apply_callable=lambda rn=matched_inventory_row, cn=main_expense_description_col + 1, nv=('PHONE SALE EXPENSE' if stock_expense_value > 0 else ''): self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                    )
+                    queued_operation_ids.append(queue_id)
+
+                if main_calculated_profit_col is not None:
+                    main_profit_value = round(max(0.0, comparison_price - cost_price_value - stock_expense_value) if status_text == 'PAID' else 0.0, 2)
+                    queue_id = self._enqueue_db_first_operation(
+                        'inventory',
+                        'main_update_calculated_profit',
+                        {
+                            'kind': 'main_update_cell',
+                            'row': matched_inventory_row,
+                            'col': main_calculated_profit_col + 1,
+                            'value': main_profit_value,
+                        },
+                        cache_apply_callable=lambda rn=matched_inventory_row, cn=main_calculated_profit_col + 1, nv=main_profit_value: self.postgres_sync_manager.update_cached_table_value('main_values', rn, cn, nv),
+                    )
+                    queued_operation_ids.append(queue_id)
 
         # Ensure stock + inventory status changes are visible immediately in Sheets.
         try:
@@ -5594,8 +6100,16 @@ class BackendRuntime:
         main_swap_cash_col = svc_stock_header_index(main_headers_upper, 'SWAP CASH AMOUNT', 'SWAP CASH')
         main_deal_location_col = svc_stock_header_index(main_headers_upper, 'DEAL LOCATION')
         main_internal_note_col = svc_stock_header_index(main_headers_upper, 'INTERNAL NOTE', 'SERVICE NOTE', 'NOTE', 'NOTES')
+        main_paid_date_col = svc_stock_header_index(main_headers_upper, 'PAID DATE')
+        main_expense_amount_col = svc_stock_header_index(main_headers_upper, 'EXPENSE AMOUNT')
+        main_expense_description_col = svc_stock_header_index(main_headers_upper, 'EXPENSE DESCRIPTION')
+        main_calculated_profit_col = svc_stock_header_index(main_headers_upper, 'CALCULATED PROFIT')
         main_record_id_col = svc_stock_header_index(main_headers_upper, 'RECORD_ID', 'RECORD ID')
         cost_price_col = svc_stock_header_index(stock_headers_upper, 'COST PRICE', 'COST', 'BUYING PRICE')
+        stock_paid_date_col = svc_stock_header_index(stock_headers_upper, 'PAID DATE')
+        stock_expense_amount_col = svc_stock_header_index(stock_headers_upper, 'EXPENSE AMOUNT')
+        stock_expense_description_col = svc_stock_header_index(stock_headers_upper, 'EXPENSE DESCRIPTION')
+        stock_calculated_profit_col = svc_stock_header_index(stock_headers_upper, 'CALCULATED PROFIT')
         sold_by_text = str(sold_by or '').strip()
         next_stock_row = find_next_table_write_row(stock_values, stock_header_row_idx)
 
@@ -5973,6 +6487,15 @@ class BackendRuntime:
                     existing_extra_updates.append((main_deal_location_col + 1, deal_location))
                 if main_internal_note_col is not None:
                     existing_extra_updates.append((main_internal_note_col + 1, internal_note))
+                if main_paid_date_col is not None:
+                    existing_extra_updates.append((main_paid_date_col + 1, today_text if inventory_status == 'PAID' else ''))
+                if main_expense_amount_col is not None:
+                    existing_extra_updates.append((main_expense_amount_col + 1, phone_expense if phone_expense > 0 else 0))
+                if main_expense_description_col is not None:
+                    existing_extra_updates.append((main_expense_description_col + 1, 'PHONE SALE EXPENSE' if phone_expense > 0 else ''))
+                if main_calculated_profit_col is not None:
+                    realized_profit = max(0.0, sale_price - cost_price_at_sale - max(0.0, phone_expense)) if inventory_status == 'PAID' else 0.0
+                    existing_extra_updates.append((main_calculated_profit_col + 1, realized_profit))
 
                 for col_number, value in existing_extra_updates:
                     queue_meta = self._enqueue_db_first_operation(
@@ -6038,6 +6561,10 @@ class BackendRuntime:
                     'INTERNAL NOTE': internal_note,
                     'RECORD_ID': record_id,
                     'SUN S/N': str(next_sun_serial),
+                    'PAID DATE': today_text if inventory_status == 'PAID' else '',
+                    'EXPENSE AMOUNT': phone_expense if phone_expense > 0 else 0,
+                    'EXPENSE DESCRIPTION': 'PHONE SALE EXPENSE' if phone_expense > 0 else '',
+                    'CALCULATED PROFIT': max(0.0, sale_price - cost_price_at_sale - max(0.0, phone_expense)) if inventory_status == 'PAID' else 0,
                 }
                 main_row_values = self._build_sheet_row_values(main_headers, values_by_header)
                 main_record = self._build_sheet_record(main_headers, main_row_values)
@@ -6101,6 +6628,10 @@ class BackendRuntime:
                     incoming_values_by_header['SWAP TYPE'] = swap_type
                     incoming_values_by_header['SWAP DETAIL'] = swap_summary
                     incoming_values_by_header['SWAP CASH AMOUNT'] = swap_cash_amount if swap_cash_amount > 0 else ''
+                    incoming_values_by_header['PAID DATE'] = today_text if inventory_status == 'PAID' else ''
+                    incoming_values_by_header['EXPENSE AMOUNT'] = phone_expense if phone_expense > 0 else 0
+                    incoming_values_by_header['EXPENSE DESCRIPTION'] = 'PHONE SALE EXPENSE' if phone_expense > 0 else ''
+                    incoming_values_by_header['CALCULATED PROFIT'] = max(0.0, sale_price - cost_price_at_sale - max(0.0, phone_expense)) if inventory_status == 'PAID' else 0
                     if incoming_value > 0 and not str(incoming_values_by_header.get('COST PRICE') or '').strip():
                         incoming_values_by_header['COST PRICE'] = incoming_value
                     if name_of_seller_col is not None:

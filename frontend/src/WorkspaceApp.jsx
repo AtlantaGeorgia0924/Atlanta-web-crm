@@ -14,6 +14,7 @@ import {
   fetchDashboardLogo,
   fetchClients,
   fetchFoundationCashflowDashboard,
+  createFoundationAllowanceWithdrawal,
   fetchGoogleContacts,
   fetchHomeBootstrap,
   fetchLiveBill,
@@ -124,6 +125,12 @@ const ACTION_ITEMS = [
     type: 'view',
     title: 'Debtors',
     description: 'Review balances, preview bills, and apply payments.',
+  },
+  {
+    key: 'cashflow',
+    type: 'view',
+    title: 'Cash Flow',
+    description: 'Track expenses, allowance withdrawals, and financial summaries.',
   },
   {
     key: 'bill_notifications',
@@ -250,6 +257,8 @@ function roundCurrency(value) {
 function normalizeCashflowPayload(rawSummary, rawAllowance, defaultSummary, defaultAllowance) {
   const sourceSummary = rawSummary && typeof rawSummary === 'object' ? rawSummary : {};
   const sourceAllowance = rawAllowance && typeof rawAllowance === 'object' ? rawAllowance : {};
+  const weekRow = sourceSummary.week && typeof sourceSummary.week === 'object' ? sourceSummary.week : sourceSummary;
+  const monthRow = sourceSummary.month && typeof sourceSummary.month === 'object' ? sourceSummary.month : {};
 
   const summary = {
     ...defaultSummary,
@@ -261,31 +270,36 @@ function normalizeCashflowPayload(rawSummary, rawAllowance, defaultSummary, defa
     ...sourceAllowance,
   };
 
-  summary.current_week_allowance_expenses = roundCurrency(summary.current_week_expenses || 0);
+  const weekProfitSeen = roundCurrency(weekRow.profit_seen ?? summary.current_week_gross_profit ?? 0);
+  const weekExpenses = roundCurrency(weekRow.expenses_total ?? summary.current_week_expenses ?? 0);
+  const weekNetProfit = roundCurrency(weekRow.net_profit ?? summary.current_week_net_profit ?? (weekProfitSeen - weekExpenses));
+  const weekAllowance = roundCurrency(weekRow.allowance_amount ?? sourceAllowance.suggested_allowance ?? 0);
+  const monthNetProfit = roundCurrency(monthRow.net_profit ?? summary.monthly_net_profit ?? 0);
+  const monthAllowance = roundCurrency(monthRow.allowance_amount ?? summary.monthly_allowance_paid ?? 0);
 
-  const phoneProfit = roundCurrency(summary.current_week_phone_profit || 0);
-  const serviceProfit = roundCurrency(summary.current_week_service_profit || 0);
-  const weekGrossProfit = roundCurrency(summary.current_week_gross_profit || (phoneProfit + serviceProfit));
-  const weekExpenses = roundCurrency(summary.current_week_expenses || 0);
-  const weekNetProfit = roundCurrency(summary.current_week_net_profit || (weekGrossProfit - weekExpenses));
-
-  summary.current_week_gross_profit = weekGrossProfit;
-  summary.current_week_cash_in = weekGrossProfit;
+  summary.current_week_phone_profit = weekProfitSeen;
+  summary.current_week_service_profit = 0;
+  summary.current_week_gross_profit = weekProfitSeen;
+  summary.current_week_cash_in = weekProfitSeen;
+  summary.current_week_expenses = weekExpenses;
   summary.current_week_net_profit = weekNetProfit;
   summary.current_week_net_cash_flow = weekNetProfit;
   summary.allowance_base_net_profit = weekNetProfit;
-  summary.monthly_remaining_profit = roundCurrency(
-    summary.monthly_remaining_profit || ((summary.monthly_net_profit || summary.net_profit || 0) - (summary.monthly_allowance_paid || 0))
-  );
+  summary.current_week_allowance_expenses = weekAllowance;
+  summary.monthly_net_profit = monthNetProfit;
+  summary.monthly_allowance_paid = monthAllowance;
+  summary.monthly_remaining_profit = roundCurrency(monthRow.profit_left ?? summary.monthly_remaining_profit ?? (monthNetProfit - monthAllowance));
+  summary.next_week_allowance = weekAllowance;
 
-  const allowancePercentage = Number(allowance.allowance_percentage || 0.25);
+  const allowancePercentage = Number(sourceAllowance.allowance_percentage || 0.25);
   allowance.suggested_allowance = roundCurrency(
-    summary.next_week_allowance || Math.max(0, summary.allowance_base_net_profit || 0) * allowancePercentage
+    sourceAllowance.suggested_allowance ?? weekAllowance ?? Math.max(0, summary.allowance_base_net_profit || 0) * allowancePercentage
   );
 
   allowance.allowance_base_net_profit = roundCurrency(summary.allowance_base_net_profit || 0);
   allowance.allowance_expenses = roundCurrency(summary.current_week_allowance_expenses || 0);
-  allowance.previous_week_profit = roundCurrency(weekGrossProfit);
+  allowance.previous_week_profit = roundCurrency(weekProfitSeen);
+  allowance.allowance_percentage = allowancePercentage;
 
   return { summary, allowance };
 }
@@ -1265,6 +1279,7 @@ function CashFlowView({
   lastUpdatedAt,
   onReload,
   onCreateExpense,
+  onRecordAllowanceWithdrawal,
   onUndoLastAllowanceWithdrawal,
 }) {
   const summary = cashflowSummary || {};
@@ -1603,12 +1618,10 @@ function CashFlowView({
 
     setAllowanceActionBusy(true);
     try {
-      const saved = await onCreateExpense?.({
-        amount: remainingAllowanceToWithdraw,
-        category: 'WEEKLY ALLOWANCE',
-        description: `Allowance withdrawn for week ${weekLabel}`,
-        date: todayKey,
-        allowance_impact: 'personal_allowance',
+      const saved = await onRecordAllowanceWithdrawal?.({
+        week_start: weekStart.toISOString().slice(0, 10),
+        allowance_amount: remainingAllowanceToWithdraw,
+        withdrawn_by: '',
       });
       if (saved === false) {
         return;
@@ -6396,6 +6409,28 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
+  async function handleRecordAllowanceWithdrawal(withdrawalDraft) {
+    setCashflowExpenseBusy(true);
+    setCashflowExpenseError('');
+
+    try {
+      await createFoundationAllowanceWithdrawal({
+        weekStart: withdrawalDraft.week_start,
+        allowanceAmount: Number(withdrawalDraft.allowance_amount || 0),
+        withdrawnBy: withdrawalDraft.withdrawn_by || '',
+      });
+      await loadCashflowDashboard(false);
+      return true;
+    } catch (error) {
+      const message = error?.message || 'Could not save allowance withdrawal.';
+      setCashflowExpenseError(message);
+      setStatusText(message);
+      return false;
+    } finally {
+      setCashflowExpenseBusy(false);
+    }
+  }
+
   async function handleUndoLastAllowanceWithdrawal() {
     setCashflowExpenseBusy(true);
     setCashflowExpenseError('');
@@ -8349,6 +8384,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           lastUpdatedAt={cashflowUpdatedAt}
           onReload={loadCashflowDashboard}
           onCreateExpense={handleCreateCashflowExpense}
+          onRecordAllowanceWithdrawal={handleRecordAllowanceWithdrawal}
           onUndoLastAllowanceWithdrawal={handleUndoLastAllowanceWithdrawal}
         />
       );

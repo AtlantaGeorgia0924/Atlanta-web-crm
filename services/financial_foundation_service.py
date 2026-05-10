@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import json
+import uuid
 
 
 class FinancialFoundationService:
@@ -192,19 +193,23 @@ class FinancialFoundationService:
 
     def create_expense(self, amount, category='', description='', date=None, created_by=''):
         manager = self._require_manager()
+        expense_id = uuid.uuid4().hex
+        label_parts = [str(category or '').strip(), str(description or '').strip()]
+        stored_description = ' - '.join(part for part in label_parts if part)
+        if not stored_description:
+            stored_description = 'Manual expense'
         sql = """
-        INSERT INTO expenses (amount, category, description, date, created_by)
-        VALUES (%s, %s, %s, %s, %s)
-        RETURNING id, amount, category, description, date, created_by
+        INSERT INTO manual_expenses (id, amount, description, expense_date, is_reversed, reversed_at)
+        VALUES (%s, %s, %s, %s, FALSE, NULL)
+        RETURNING id, amount, description, expense_date, is_reversed, reversed_at
         """
         row = manager.fetchone_dict(
             sql,
             (
+                expense_id,
                 amount,
-                str(category or '').strip(),
-                str(description or '').strip(),
+                stored_description,
                 self._normalize_timestamp(date),
-                str(created_by or '').strip(),
             ),
         )
         return self._serialize_row(row)
@@ -213,11 +218,11 @@ class FinancialFoundationService:
         manager = self._require_manager()
         row = manager.fetchone_dict(
             """
-            SELECT id, amount, category, description, date, created_by
-            FROM expenses
+            SELECT id, amount, description, expense_date, is_reversed, reversed_at
+            FROM manual_expenses
             WHERE id = %s
             """,
-            (int(expense_id),),
+            (str(expense_id),),
         )
         return self._serialize_row(row)
 
@@ -225,9 +230,9 @@ class FinancialFoundationService:
         manager = self._require_manager()
         rows = manager.fetchall_dict(
             """
-            SELECT id, amount, category, description, date, created_by
-            FROM expenses
-            ORDER BY date DESC, id DESC
+            SELECT id, amount, description, expense_date, is_reversed, reversed_at
+            FROM manual_expenses
+            ORDER BY expense_date DESC, id DESC
             LIMIT %s OFFSET %s
             """,
             (max(1, int(limit or 200)), max(0, int(offset or 0))),
@@ -237,21 +242,21 @@ class FinancialFoundationService:
     def update_expense(self, expense_id, updates):
         manager = self._require_manager()
         updates = dict(updates or {})
-        if 'date' in updates:
-            updates['date'] = self._normalize_timestamp(updates.get('date'))
+        if 'expense_date' in updates:
+            updates['expense_date'] = self._normalize_timestamp(updates.get('expense_date'))
 
-        fields = ['amount', 'category', 'description', 'date', 'created_by']
+        fields = ['amount', 'description', 'expense_date', 'is_reversed', 'reversed_at']
         clauses, values = self._build_update_clause(fields, updates)
         if not clauses:
             return self.get_expense(expense_id)
 
-        values.append(int(expense_id))
+        values.append(str(expense_id))
         row = manager.fetchone_dict(
             f"""
-            UPDATE expenses
+            UPDATE manual_expenses
             SET {', '.join(clauses)}
             WHERE id = %s
-            RETURNING id, amount, category, description, date, created_by
+            RETURNING id, amount, description, expense_date, is_reversed, reversed_at
             """,
             tuple(values),
         )
@@ -260,10 +265,279 @@ class FinancialFoundationService:
     def delete_expense(self, expense_id):
         manager = self._require_manager()
         deleted = manager.fetchone(
-            "DELETE FROM expenses WHERE id = %s RETURNING id",
-            (int(expense_id),),
+            "DELETE FROM manual_expenses WHERE id = %s RETURNING id",
+            (str(expense_id),),
         )
         return bool(deleted)
+
+    @staticmethod
+    def _period_bounds(period_type, anchor_date=None):
+        anchor_date = anchor_date or date.today()
+        period_type = str(period_type or '').strip().lower()
+        if period_type == 'month':
+            start = anchor_date.replace(day=1)
+            if start.month == 12:
+                end = date(start.year + 1, 1, 1) - timedelta(days=1)
+            else:
+                end = date(start.year, start.month + 1, 1) - timedelta(days=1)
+            return start, end
+
+        # Default to the business week that starts on Saturday and ends on Friday.
+        days_since_saturday = (anchor_date.weekday() - 5) % 7
+        start = anchor_date - timedelta(days=days_since_saturday)
+        end = start + timedelta(days=6)
+        return start, end
+
+    @staticmethod
+    def _month_bounds(anchor_date=None):
+        return FinancialFoundationService._period_bounds('month', anchor_date=anchor_date)
+
+    @staticmethod
+    def _week_bounds(anchor_date=None):
+        return FinancialFoundationService._period_bounds('week', anchor_date=anchor_date)
+
+    def list_manual_expenses(self, limit=200, offset=0):
+        return self.list_expenses(limit=limit, offset=offset)
+
+    def reverse_manual_expense(self, expense_id, reversed_at=None):
+        manager = self._require_manager()
+        row = manager.fetchone_dict(
+            """
+            UPDATE manual_expenses
+            SET is_reversed = TRUE,
+                reversed_at = %s
+            WHERE id = %s
+            RETURNING id, amount, description, expense_date, is_reversed, reversed_at
+            """,
+            (self._normalize_timestamp(reversed_at), str(expense_id)),
+        )
+        return self._serialize_row(row)
+
+    def create_allowance_withdrawal(self, week_start, allowance_amount, withdrawn_by=''):
+        manager = self._require_manager()
+        week_start = self._normalize_timestamp(week_start).date()
+        now = datetime.now(timezone.utc)
+        existing = manager.fetchone_dict(
+            "SELECT id, withdrawn_status, allowance_amount FROM allowance_withdrawals WHERE week_start = %s",
+            (week_start,),
+        )
+        if existing and str(existing.get('withdrawn_status') or '').upper() == 'YES':
+            return {'error': 'Allowance already withdrawn for this week.'}
+
+        row = manager.fetchone_dict(
+            """
+            INSERT INTO allowance_withdrawals (id, week_start, allowance_amount, withdrawn_status, withdrawn_date, withdrawn_by)
+            VALUES (%s, %s, %s, 'YES', %s, %s)
+            ON CONFLICT (week_start) DO UPDATE SET
+                allowance_amount = EXCLUDED.allowance_amount,
+                withdrawn_status = 'YES',
+                withdrawn_date = EXCLUDED.withdrawn_date,
+                withdrawn_by = EXCLUDED.withdrawn_by
+            RETURNING id, week_start, allowance_amount, withdrawn_status, withdrawn_date, withdrawn_by
+            """,
+            (
+                uuid.uuid4().hex,
+                week_start,
+                allowance_amount,
+                now,
+                str(withdrawn_by or '').strip(),
+            ),
+        )
+        return self._serialize_row(row)
+
+    def undo_last_allowance_withdrawal(self):
+        manager = self._require_manager()
+        row = manager.fetchone_dict(
+            """
+            SELECT id, week_start, allowance_amount, withdrawn_status, withdrawn_date, withdrawn_by
+            FROM allowance_withdrawals
+            WHERE withdrawn_status = 'YES'
+            ORDER BY withdrawn_date DESC NULLS LAST, week_start DESC
+            LIMIT 1
+            """
+        )
+        if not row:
+            return None
+
+        updated = manager.fetchone_dict(
+            """
+            UPDATE allowance_withdrawals
+            SET withdrawn_status = 'NO',
+                withdrawn_date = NULL,
+                withdrawn_by = NULL
+            WHERE id = %s
+            RETURNING id, week_start, allowance_amount, withdrawn_status, withdrawn_date, withdrawn_by
+            """,
+            (row['id'],),
+        )
+        return self._serialize_row(updated)
+
+    def list_allowance_withdrawals(self, limit=200, offset=0):
+        manager = self._require_manager()
+        rows = manager.fetchall_dict(
+            """
+            SELECT id, week_start, allowance_amount, withdrawn_status, withdrawn_date, withdrawn_by
+            FROM allowance_withdrawals
+            ORDER BY week_start DESC, withdrawn_date DESC NULLS LAST
+            LIMIT %s OFFSET %s
+            """,
+            (max(1, int(limit or 200)), max(0, int(offset or 0))),
+        )
+        return self._serialize_rows(rows)
+
+    def _sum_paid_profit(self, table_name, period_start, period_end):
+        manager = self._require_manager()
+        row = manager.fetchone_dict(
+            f"""
+            SELECT COALESCE(SUM(COALESCE(calculated_profit, 0)), 0) AS total_profit
+            FROM {table_name}
+            WHERE paid_date IS NOT NULL
+              AND paid_date >= %s
+              AND paid_date <= %s
+              AND UPPER(COALESCE(payment_status, '')) = 'PAID'
+            """,
+            (period_start, period_end),
+        ) or {}
+        return self._to_number(row.get('total_profit', 0.0))
+
+    def _sum_manual_expenses(self, period_start, period_end):
+        manager = self._require_manager()
+        row = manager.fetchone_dict(
+            """
+            SELECT COALESCE(SUM(amount), 0) AS total_expenses
+            FROM manual_expenses
+            WHERE expense_date >= %s
+              AND expense_date <= %s
+              AND COALESCE(is_reversed, FALSE) = FALSE
+            """,
+            (period_start, period_end),
+        ) or {}
+        return self._to_number(row.get('total_expenses', 0.0))
+
+    def _sum_withdrawals(self, period_start, period_end):
+        manager = self._require_manager()
+        row = manager.fetchone_dict(
+            """
+            SELECT COALESCE(SUM(allowance_amount), 0) AS total_allowance
+            FROM allowance_withdrawals
+            WHERE withdrawn_status = 'YES'
+              AND withdrawn_date >= %s
+              AND withdrawn_date <= %s
+            """,
+            (period_start, period_end),
+        ) or {}
+        return self._to_number(row.get('total_allowance', 0.0))
+
+    def upsert_cashflow_summary(self, *, period_type, period_start, period_end, profit_seen, expenses_total, allowance_amount, profit_left):
+        manager = self._require_manager()
+        summary_id = uuid.uuid4().hex
+        row = manager.fetchone_dict(
+            """
+            INSERT INTO cashflow_summary (
+                id, period_type, period_start, period_end,
+                profit_seen, expenses_total, net_profit,
+                allowance_amount, profit_left, generated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (period_type, period_start, period_end) DO UPDATE SET
+                profit_seen = EXCLUDED.profit_seen,
+                expenses_total = EXCLUDED.expenses_total,
+                net_profit = EXCLUDED.net_profit,
+                allowance_amount = EXCLUDED.allowance_amount,
+                profit_left = EXCLUDED.profit_left,
+                generated_at = NOW()
+            RETURNING id, period_type, period_start, period_end, profit_seen, expenses_total, net_profit, allowance_amount, profit_left, generated_at
+            """,
+            (
+                summary_id,
+                period_type,
+                period_start,
+                period_end,
+                profit_seen,
+                expenses_total,
+                profit_seen - expenses_total,
+                allowance_amount,
+                profit_left,
+            ),
+        )
+        return self._serialize_row(row)
+
+    def rebuild_cashflow_summary_rows(self, *, anchor_date=None):
+        manager = self._require_manager()
+        anchor_date = anchor_date or date.today()
+        week_start, week_end = self._week_bounds(anchor_date)
+        month_start, month_end = self._month_bounds(anchor_date)
+
+        weekly_profit = round(
+            self._sum_paid_profit('operational_billing_rows', week_start, week_end)
+            + self._sum_paid_profit('operational_stock_rows', week_start, week_end),
+            2,
+        )
+        weekly_expenses = round(self._sum_manual_expenses(week_start, week_end), 2)
+        weekly_net = round(weekly_profit - weekly_expenses, 2)
+        weekly_allowance = round(max(0.0, weekly_net) * self._normalized_allowance_percentage(), 2)
+        weekly_profit_left = round(weekly_net - weekly_allowance, 2)
+
+        monthly_profit = round(
+            self._sum_paid_profit('operational_billing_rows', month_start, month_end)
+            + self._sum_paid_profit('operational_stock_rows', month_start, month_end),
+            2,
+        )
+        monthly_expenses = round(self._sum_manual_expenses(month_start, month_end), 2)
+        monthly_net = round(monthly_profit - monthly_expenses, 2)
+        monthly_allowance = round(self._sum_withdrawals(month_start, month_end), 2)
+        monthly_profit_left = round(monthly_net - monthly_allowance, 2)
+
+        week_row = self.upsert_cashflow_summary(
+            period_type='week',
+            period_start=week_start,
+            period_end=week_end,
+            profit_seen=weekly_profit,
+            expenses_total=weekly_expenses,
+            allowance_amount=weekly_allowance,
+            profit_left=weekly_profit_left,
+        )
+        month_row = self.upsert_cashflow_summary(
+            period_type='month',
+            period_start=month_start,
+            period_end=month_end,
+            profit_seen=monthly_profit,
+            expenses_total=monthly_expenses,
+            allowance_amount=monthly_allowance,
+            profit_left=monthly_profit_left,
+        )
+
+        return {
+            'week': week_row,
+            'month': month_row,
+        }
+
+    def get_cashflow_summary_rows(self):
+        manager = self._require_manager()
+        rows = manager.fetchall_dict(
+            """
+            SELECT id, period_type, period_start, period_end, profit_seen, expenses_total, net_profit, allowance_amount, profit_left, generated_at
+            FROM cashflow_summary
+            ORDER BY period_type, period_start DESC, period_end DESC
+            """
+        )
+        return self._serialize_rows(rows)
+
+    def get_current_cashflow_summary_rows(self):
+        manager = self._require_manager()
+        rows = manager.fetchall_dict(
+            """
+            SELECT id, period_type, period_start, period_end, profit_seen, expenses_total, net_profit, allowance_amount, profit_left, generated_at
+            FROM cashflow_summary
+            WHERE (period_type, period_start, period_end) IN (
+                ('week', %s, %s),
+                ('month', %s, %s)
+            )
+            ORDER BY period_type
+            """,
+            (*self._week_bounds(date.today()), *self._month_bounds(date.today())),
+        )
+        return self._serialize_rows(rows)
 
     def create_sale_ledger_entry(
         self,
