@@ -1508,6 +1508,35 @@ function CashFlowView({
       });
   }, [allTx, weekStart, weekEnd]);
 
+  const allowanceHistoryEntries = useMemo(() => {
+    return allTx
+      .filter((tx) => {
+        const source = String(tx?.source || '').trim().toLowerCase();
+        const category = String(tx?.category || '').trim().toUpperCase();
+        return source !== 'income' && category.includes('WEEKLY ALLOWANCE');
+      })
+      .map((tx) => {
+        const dateValue = parse_date_approx(tx?.payment_date || tx?.date || '');
+        const descriptionText = String(tx?.description || '').trim();
+        const weekFromDescriptionMatch = descriptionText.match(/for\s+(\d{4}-\d{2}-\d{2})/i);
+        return {
+          ...tx,
+          _dateValue: dateValue,
+          _dateText: tx?.payment_date || tx?.date || 'No date',
+          _weekStart: String(tx?.week_start || weekFromDescriptionMatch?.[1] || '').trim(),
+          _amount: Number(String(tx?.amount || '0').replace(/[^0-9.\-]/g, '')) || 0,
+          _by: String(tx?.withdrawn_by || tx?.created_by || '').trim(),
+        };
+      })
+      .sort((left, right) => {
+        const leftTime = left?._dateValue instanceof Date ? left._dateValue.getTime() : 0;
+        const rightTime = right?._dateValue instanceof Date ? right._dateValue.getTime() : 0;
+        return rightTime - leftTime;
+      });
+  }, [allTx]);
+
+  const allowanceHistoryTotal = allowanceHistoryEntries.reduce((sum, entry) => sum + (entry._amount || 0), 0);
+
   const withdrawnAllowanceThisWeek = weeklyAllowanceEntriesThisWeek
     .filter((tx) => (tx._amount || 0) > 0)
     .reduce((sum, tx) => sum + (tx._amount || 0), 0);
@@ -1917,6 +1946,46 @@ function CashFlowView({
               <span className="metric-note">{card.note}</span>
             </article>
           ))}
+        </div>
+      </section>
+
+      <section className="summary-frame">
+        <h3>Weekly Allowance History</h3>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          All weekly allowance withdrawals recorded so far.
+        </p>
+        {allowanceHistoryEntries.length ? (
+          <div className="table-wrap table-wrap--mobile-cards" style={{ marginTop: '12px' }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Week Start</th>
+                  <th style={{ textAlign: 'right' }}>Amount</th>
+                  <th>By</th>
+                  <th>Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allowanceHistoryEntries.map((entry, index) => (
+                  <tr key={`${entry._dateText}-${entry._amount}-${index}`}>
+                    <td>{entry._dateText}</td>
+                    <td>{entry._weekStart || '—'}</td>
+                    <td style={{ textAlign: 'right' }}>{formatCurrency(entry._amount || 0)}</td>
+                    <td>{entry._by || '—'}</td>
+                    <td>{entry.description || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="notice" style={{ marginTop: '12px' }}>
+            No weekly allowance withdrawals recorded yet.
+          </div>
+        )}
+        <div className="notice compact" style={{ marginTop: '12px' }}>
+          Total Withdrawn So Far: {formatCurrency(allowanceHistoryTotal)} ({formatCount(allowanceHistoryEntries.length)} entries)
         </div>
       </section>
 
