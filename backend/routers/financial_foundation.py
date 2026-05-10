@@ -161,6 +161,32 @@ def list_expenses(limit: int = 200, offset: int = 0, runtime=Depends(get_runtime
     return {'expenses': items, 'count': len(items), 'source': 'database'}
 
 
+@router.post('/expenses/{expense_id}/reverse', dependencies=[Depends(require_admin)])
+def reverse_expense(expense_id: str, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
+    normalized_id = str(expense_id or '').strip()
+    if not normalized_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Expense id is required.')
+
+    try:
+        current = runtime.financial_data_service.get_expense(normalized_id)
+        if not current:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Expense not found.')
+
+        if bool(current.get('is_reversed')):
+            return {'expense': current, 'already_reversed': True}
+
+        reversed_expense = runtime.financial_data_service.reverse_manual_expense(normalized_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    if not reversed_expense:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Expense not found.')
+
+    return {'expense': reversed_expense, 'already_reversed': False}
+
+
 @router.get('/allowance/withdrawals', dependencies=[Depends(require_admin)])
 def list_allowance_withdrawals(limit: int = 200, offset: int = 0, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:

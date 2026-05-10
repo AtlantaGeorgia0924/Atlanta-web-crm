@@ -9,6 +9,7 @@ import {
   applyNameFix,
   applyPayment,
   createFoundationExpense,
+  reverseFoundationExpense,
   createStolenDevice,
   deleteClient,
   fetchDashboardLogo,
@@ -1279,6 +1280,7 @@ function CashFlowView({
   lastUpdatedAt,
   onReload,
   onCreateExpense,
+  onReverseExpense,
   onRecordAllowanceWithdrawal,
   onUndoLastAllowanceWithdrawal,
 }) {
@@ -1556,6 +1558,52 @@ function CashFlowView({
     date: formatDateForInput(),
     allowance_impact: 'personal_allowance',
   });
+
+  const [expenseHistoryPage, setExpenseHistoryPage] = useState(1);
+
+  const expenseHistoryRows = useMemo(() => {
+    return (Array.isArray(expenses) ? expenses : [])
+      .map((expense, index) => {
+        const dateText = String(expense?.expense_date || expense?.date || expense?.payment_date || '').trim();
+        const parsedDate = parse_date_approx(dateText);
+        const reversedDateText = String(expense?.reversed_at || '').trim();
+        const parsedReversedDate = parse_date_approx(reversedDateText);
+        const amountValue = Number(expense?.amount || 0) || 0;
+        const isReversed = Boolean(expense?.is_reversed);
+        return {
+          ...expense,
+          _rowKey: String(expense?.id || expense?.row_num || `${dateText}-${amountValue}-${index}`),
+          _dateText: dateText || '—',
+          _dateValue: parsedDate,
+          _description: String(expense?.description || expense?.category || 'Expense').trim() || 'Expense',
+          _amount: amountValue,
+          _status: isReversed ? 'REVERSED' : 'ACTIVE',
+          _isReversed: isReversed,
+          _reversedDateText: reversedDateText || '—',
+          _reversedDateValue: parsedReversedDate,
+          _canReverse: Boolean(expense?.id) && !isReversed,
+        };
+      })
+      .sort((left, right) => {
+        const leftTime = left?._dateValue instanceof Date ? left._dateValue.getTime() : 0;
+        const rightTime = right?._dateValue instanceof Date ? right._dateValue.getTime() : 0;
+        return rightTime - leftTime;
+      });
+  }, [expenses]);
+
+  const EXPENSE_HISTORY_PAGE_SIZE = 10;
+  const expenseHistoryPageCount = Math.max(1, Math.ceil(expenseHistoryRows.length / EXPENSE_HISTORY_PAGE_SIZE));
+  const normalizedExpenseHistoryPage = Math.min(expenseHistoryPage, expenseHistoryPageCount);
+  const pagedExpenseHistoryRows = useMemo(() => {
+    const start = (normalizedExpenseHistoryPage - 1) * EXPENSE_HISTORY_PAGE_SIZE;
+    return expenseHistoryRows.slice(start, start + EXPENSE_HISTORY_PAGE_SIZE);
+  }, [expenseHistoryRows, normalizedExpenseHistoryPage]);
+
+  useEffect(() => {
+    if (expenseHistoryPage !== normalizedExpenseHistoryPage) {
+      setExpenseHistoryPage(normalizedExpenseHistoryPage);
+    }
+  }, [expenseHistoryPage, normalizedExpenseHistoryPage]);
 
   const recentExpenses = Array.isArray(expenses) ? expenses.slice(0, 8) : [];
   const weekExpenseAudit = useMemo(() => {
@@ -2157,6 +2205,91 @@ function CashFlowView({
             </button>
           </div>
         </form>
+      </section>
+
+      <section className="summary-frame">
+        <h3>Expenses History</h3>
+        <p className="metric-note" style={{ marginTop: '8px' }}>
+          Newest entries first. Reversed expenses remain visible for audit purposes.
+        </p>
+        {expenseHistoryRows.length ? (
+          <>
+            <div className="table-wrap table-wrap--mobile-cards" style={{ marginTop: '12px' }}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Description</th>
+                    <th style={{ textAlign: 'right' }}>Amount</th>
+                    <th>Status</th>
+                    <th>Reversed Date</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedExpenseHistoryRows.map((row) => (
+                    <tr key={row._rowKey}>
+                      <td>{row._dateText}</td>
+                      <td>{row._description}</td>
+                      <td style={{ textAlign: 'right' }}>{formatCurrency(row._amount || 0)}</td>
+                      <td>{row._status}</td>
+                      <td>{row._reversedDateText}</td>
+                      <td>
+                        {row._canReverse ? (
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={expenseBusy || loading}
+                            onClick={async () => {
+                              const shouldContinue = window.confirm(
+                                `Reverse expense ${formatCurrency(row._amount || 0)} on ${row._dateText}?`
+                              );
+                              if (!shouldContinue) {
+                                return;
+                              }
+                              await onReverseExpense?.(row.id);
+                            }}
+                          >
+                            Reverse
+                          </button>
+                        ) : (
+                          <span className="metric-note">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="button-row" style={{ marginTop: '12px', justifyContent: 'space-between' }}>
+              <span className="metric-note">
+                Page {formatCount(normalizedExpenseHistoryPage)} of {formatCount(expenseHistoryPageCount)} ({formatCount(expenseHistoryRows.length)} entries)
+              </span>
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={normalizedExpenseHistoryPage <= 1}
+                  onClick={() => setExpenseHistoryPage((page) => Math.max(1, page - 1))}
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={normalizedExpenseHistoryPage >= expenseHistoryPageCount}
+                  onClick={() => setExpenseHistoryPage((page) => Math.min(expenseHistoryPageCount, page + 1))}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="notice" style={{ marginTop: '12px' }}>
+            No expenses recorded yet.
+          </div>
+        )}
       </section>
 
       <section className="summary-frame">
@@ -6478,6 +6611,28 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
+  async function handleReverseCashflowExpense(expenseId) {
+    if (!expenseId) {
+      return false;
+    }
+
+    setCashflowExpenseBusy(true);
+    setCashflowExpenseError('');
+    try {
+      await reverseFoundationExpense(expenseId);
+      await loadCashflowDashboard(false);
+      setStatusText('Expense reversed successfully.');
+      return true;
+    } catch (error) {
+      const message = error?.message || 'Could not reverse expense.';
+      setCashflowExpenseError(message);
+      setStatusText(message);
+      return false;
+    } finally {
+      setCashflowExpenseBusy(false);
+    }
+  }
+
   async function handleRecordAllowanceWithdrawal(withdrawalDraft) {
     setCashflowExpenseBusy(true);
     setCashflowExpenseError('');
@@ -8453,6 +8608,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           lastUpdatedAt={cashflowUpdatedAt}
           onReload={loadCashflowDashboard}
           onCreateExpense={handleCreateCashflowExpense}
+          onReverseExpense={handleReverseCashflowExpense}
           onRecordAllowanceWithdrawal={handleRecordAllowanceWithdrawal}
           onUndoLastAllowanceWithdrawal={handleUndoLastAllowanceWithdrawal}
         />

@@ -222,6 +222,13 @@ export function createFoundationExpense({ amount, category = '', description = '
   });
 }
 
+export function reverseFoundationExpense(expenseId) {
+  return requestJson(`/api/foundation/expenses/${encodeURIComponent(String(expenseId || '').trim())}/reverse`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
 export function undoLastWeeklyAllowanceWithdrawal({ cashflowPin = '' } = {}) {
   return requestJson('/api/foundation/allowance/undo-last', {
     method: 'POST',
