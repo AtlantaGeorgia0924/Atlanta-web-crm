@@ -162,6 +162,7 @@ export async function requestJson(path, {
 	cacheTtlMs = 0,
 	cacheKey = '',
 	dedupeKey = '',
+	networkRetryAttempted = false,
 } = {}) {
 	const methodUpper = String(method || 'GET').toUpperCase();
 	const requestKey = cacheKey || dedupeKey || makeRequestKey({ method: methodUpper, path, query, body, auth });
@@ -242,6 +243,25 @@ export async function requestJson(path, {
 		}
 		if (signal?.aborted) {
 			throw error;
+		}
+		// Retry once for idempotent reads to absorb transient browser/network blips.
+		if (methodUpper === 'GET' && !networkRetryAttempted) {
+			await new Promise((resolve) => setTimeout(resolve, 500));
+			return requestJson(path, {
+				method,
+				query,
+				body,
+				headers,
+				signal,
+				timeoutMs,
+				auth,
+				skipUnauthorizedHandler,
+				retryOnUnauthorized,
+				cacheTtlMs,
+				cacheKey,
+				dedupeKey,
+				networkRetryAttempted: true,
+			});
 		}
 		const hostname = typeof window !== 'undefined' ? String(window.location.hostname || '').trim().toLowerCase() : '';
 		const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1';
