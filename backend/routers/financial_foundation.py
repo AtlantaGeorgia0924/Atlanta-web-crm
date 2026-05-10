@@ -180,6 +180,12 @@ def reverse_expense(expense_id: str, runtime=Depends(get_runtime), current_user=
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except Exception as exc:
+        runtime.logger.exception('Unexpected reverse expense error: %s', exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Expense reversal is temporarily unavailable. Please try again shortly.',
+        ) from exc
 
     if not reversed_expense:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Expense not found.')
