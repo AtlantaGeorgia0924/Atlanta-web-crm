@@ -226,6 +226,10 @@ class BackendRuntime:
         env_dsn = resolve_supabase_dsn(
             os.getenv('POSTGRES_DSN'),
             os.getenv('SUPABASE_DB_URL'),
+            # Also accept the auth-specific DSN var so a single Supabase DSN
+            # configured under APP_AUTH_POSTGRES_DSN covers both services.
+            os.getenv('APP_AUTH_POSTGRES_DSN'),
+            os.getenv('AUTH_POSTGRES_DSN'),
             # Accept DATABASE_URL only when it points to Supabase.
             os.getenv('DATABASE_URL'),
         )
