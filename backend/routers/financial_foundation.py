@@ -128,6 +128,25 @@ def _build_sheet_cashflow_fallback(runtime, force_refresh: bool = False):
         for item in expense_items
     ]
 
+    verification_report = {
+        'window': {
+            'week_start': summary.get('current_week_start') or '',
+            'week_end': summary.get('current_week_end') or '',
+            'month_start': '',
+            'month_end': '',
+        },
+        'paid_services_counted': int(summary.get('current_week_service_profit_reconciled_rows') or 0),
+        'paid_products_counted': int(summary.get('current_week_paid_products_count') or 0),
+        'total_weekly_profit': _to_number(summary.get('current_week_gross_profit') or summary.get('weekly_realized_profit') or 0),
+        'total_weekly_expenses': _to_number(summary.get('current_week_expenses') or 0),
+        'weekly_net_profit': _to_number(summary.get('current_week_net_profit') or 0),
+        'suggested_allowance': _to_number(weekly_allowance.get('suggested_allowance') or summary.get('next_week_allowance') or 0),
+        'total_monthly_profit': _to_number(summary.get('monthly_gross_profit') or summary.get('total_cash_in') or 0),
+        'total_monthly_expenses': _to_number(summary.get('total_expenses') or 0),
+        'monthly_net_profit': _to_number(summary.get('monthly_net_profit') or summary.get('net_profit') or 0),
+        'monthly_profit_left': _to_number(summary.get('monthly_remaining_profit') or summary.get('month_remainder_profit_after_paid_allowance') or 0),
+    }
+
     return {
         'summary': summary_payload,
         'rows': [week_row, month_row],
@@ -143,6 +162,8 @@ def _build_sheet_cashflow_fallback(runtime, force_refresh: bool = False):
             'week_total': _to_number(capital.get('week_total') or 0),
             'entries': capital.get('entries') or [],
         },
+        'verification_report': verification_report,
+        'live_pull': {'attempted': False, 'ok': False, 'error': 'sheet_fallback_mode'},
     }
 
 
@@ -356,6 +377,8 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
             'summary': fallback_payload.get('summary') or {},
             'rows': fallback_payload.get('rows') or [],
             'weekly_allowance': fallback_payload.get('weekly_allowance') or {},
+            'verification_report': fallback_payload.get('verification_report') or {},
+            'live_pull': fallback_payload.get('live_pull') or {},
         }
     except Exception as exc:
         runtime.logger.exception('Unexpected cashflow summary error; using sheet fallback: %s', exc)
@@ -364,6 +387,8 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
             'summary': fallback_payload.get('summary') or {},
             'rows': fallback_payload.get('rows') or [],
             'weekly_allowance': fallback_payload.get('weekly_allowance') or {},
+            'verification_report': fallback_payload.get('verification_report') or {},
+            'live_pull': fallback_payload.get('live_pull') or {},
         }
 
     summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
