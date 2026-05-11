@@ -7319,6 +7319,7 @@ class BackendRuntime:
             'status': 'ok' if self.postgres_ready else 'degraded',
             'active_db_host': self._postgres_dsn_host() or 'unknown',
             'postgres_ready': bool(self.postgres_ready),
+            'postgres_last_error': self.sync_state.get('last_error') or '' if not self.postgres_ready else '',
             'mirror_refresh_status': h.get('mirror_refresh_status', {}),
             'mirror_verification': h.get('mirror_verification', {}),
             'queue_size': h.get('queue_size', 0),
