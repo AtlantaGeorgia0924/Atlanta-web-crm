@@ -232,6 +232,7 @@ const STAFF_ALLOWED_VIEWS = new Set(['products', 'cart', 'bill_notifications']);
 const STOCK_VIEW_CACHE_KEY = 'atlanta_stock_view_cache_v1';
 const STOCK_FORM_CACHE_KEY = 'atlanta_stock_form_cache_v1';
 const WORKSPACE_CORE_CACHE_KEY = 'atlanta_workspace_core_cache_v1';
+const CASHFLOW_UNLOCK_CACHE_KEY = 'atlanta_cashflow_unlocked_v1';
 
 const STATUS_CLASS_MAP = {
   AVAILABLE: 'available',
@@ -5953,6 +5954,13 @@ const MemoClientsView = React.memo(ClientsView);
 function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const isAdmin = String(currentUser?.role || '').toLowerCase() === 'admin';
   const [activeView, setActiveView] = useState('products');
+  const [cashflowNavUnlocked, setCashflowNavUnlocked] = useState(() => {
+    try {
+      return sessionStorage.getItem(CASHFLOW_UNLOCK_CACHE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [statusText, setStatusText] = useState('Ready');
   const [workspaceError, setWorkspaceError] = useState('');
   const [lastLoadedAt, setLastLoadedAt] = useState(null);
@@ -6089,10 +6097,26 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
   const allowedViews = useMemo(() => {
     if (isAdmin) {
-      return new Set(Object.keys(VIEW_META));
+      const adminViews = new Set(Object.keys(VIEW_META));
+      if (!cashflowNavUnlocked) {
+        adminViews.delete('cashflow');
+      }
+      return adminViews;
     }
     return new Set(STAFF_ALLOWED_VIEWS);
-  }, [isAdmin]);
+  }, [cashflowNavUnlocked, isAdmin]);
+
+  useEffect(() => {
+    try {
+      if (cashflowNavUnlocked) {
+        sessionStorage.setItem(CASHFLOW_UNLOCK_CACHE_KEY, '1');
+      } else {
+        sessionStorage.removeItem(CASHFLOW_UNLOCK_CACHE_KEY);
+      }
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [cashflowNavUnlocked]);
 
   const billNotificationEntries = useMemo(() => {
     const now = Date.now();
@@ -6146,6 +6170,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       if (item.key === 'exit') {
         return true;
       }
+      if (item.key === 'cashflow') {
+        return isAdmin && cashflowNavUnlocked;
+      }
       if (item.type === 'action') {
         return isAdmin || item.key === 'import_phones' || item.key === 'logout' || item.key === 'refresh' || item.key === 'bill_notifications';
       }
@@ -6159,7 +6186,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       }
       return item;
     })
-  ), [billNotificationCount, isAdmin]);
+  ), [billNotificationCount, cashflowNavUnlocked, isAdmin]);
 
   const productSummaryColumns = useMemo(() => {
     const baseKeys = ['description', 'colour', 'storage', 'imei', 'seller'];
@@ -8848,7 +8875,19 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         revealedMetric={revealedMetric}
         setRevealedMetric={setRevealedMetric}
         onSecretCashflow={() => {
-          startTransition(() => setActiveView('cashflow'));
+          setCashflowNavUnlocked((current) => {
+            const next = !current;
+            if (next) {
+              startTransition(() => setActiveView('cashflow'));
+              setStatusText('Cash Flow unlocked.');
+            } else {
+              if (activeView === 'cashflow') {
+                startTransition(() => setActiveView('home'));
+              }
+              setStatusText('Cash Flow hidden from Home Page actions.');
+            }
+            return next;
+          });
         }}
         onStatisticClick={(label) => {
           switch (label) {
