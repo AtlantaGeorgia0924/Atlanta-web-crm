@@ -3255,6 +3255,36 @@ class BackendRuntime:
             self.sync_state['last_status'] = 'error'
             self.sync_state['last_error'] = str(exc)
             self.logger.exception('Failed to initialize backend PostgreSQL sync: %s', exc)
+            # Start a background thread that keeps retrying the connection every
+            # 30 seconds so the app recovers automatically once Supabase comes back.
+            threading.Thread(target=self._postgres_reconnect_loop, daemon=True).start()
+
+    def _postgres_reconnect_loop(self):
+        """Background reconnect loop — retries postgres init until it succeeds."""
+        attempt = 0
+        while not self.sync_state.get('ready'):
+            attempt += 1
+            wait = min(30 * attempt, 300)  # back-off up to 5 minutes
+            self.logger.info('Postgres reconnect loop: waiting %ds before attempt %d', wait, attempt)
+            import time as _time
+            _time.sleep(wait)
+            if self.sync_state.get('ready'):
+                break
+            try:
+                self.logger.info('Postgres reconnect attempt %d …', attempt)
+                self.postgres_sync_manager.ensure_schema()
+                self.financial_data_service.ensure_default_app_config()
+                self.sync_state['ready'] = True
+                self.sync_state['last_status'] = 'running'
+                self.sync_state['last_error'] = ''
+                threading.Thread(target=self._seed_once_async, daemon=True).start()
+                self.postgres_sync_manager.start_background_pull(self.pull_once)
+                self.postgres_sync_manager.start_background_queue_worker(self._replay_queue_operation, interval_sec=1)
+                self.logger.info('Postgres reconnect attempt %d succeeded — sync is now running', attempt)
+                break
+            except Exception as exc:
+                self.sync_state['last_error'] = str(exc)
+                self.logger.warning('Postgres reconnect attempt %d failed: %s', attempt, exc)
 
     def _replay_queue_operation(self, item):
         payload = item.get('payload_json') or {}

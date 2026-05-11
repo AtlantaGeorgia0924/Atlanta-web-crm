@@ -146,3 +146,40 @@ def replay_queue_now_endpoint(
         'limit': limit,
         'message': 'Queue replay job queued to run in the background.',
     }
+
+
+@router.post('/reconnect-postgres', dependencies=[Depends(require_admin)])
+def reconnect_postgres_endpoint(background_tasks: BackgroundTasks, runtime=Depends(get_runtime)):
+    """Trigger an immediate postgres reconnect attempt in the background.
+
+    Useful when Supabase was down at startup and postgres_ready is still False.
+    The reconnect runs asynchronously; poll /health to see when it succeeds.
+    """
+    if runtime.postgres_ready:
+        return {'already_ready': True, 'message': 'PostgreSQL is already connected.'}
+
+    if runtime.sync_state.get('last_status') == 'dsn_missing':
+        raise HTTPException(status_code=503, detail='postgres_dsn is not configured — cannot reconnect.')
+
+    def _attempt_reconnect():
+        try:
+            runtime.logger.info('Manual postgres reconnect triggered via API')
+            runtime.postgres_sync_manager.ensure_schema()
+            runtime.financial_data_service.ensure_default_app_config()
+            runtime.sync_state['ready'] = True
+            runtime.sync_state['last_status'] = 'running'
+            runtime.sync_state['last_error'] = ''
+            import threading as _threading
+            _threading.Thread(target=runtime._seed_once_async, daemon=True).start()
+            runtime.postgres_sync_manager.start_background_pull(runtime.pull_once)
+            runtime.postgres_sync_manager.start_background_queue_worker(runtime._replay_queue_operation, interval_sec=1)
+            runtime.logger.info('Manual postgres reconnect succeeded')
+        except Exception as exc:
+            runtime.sync_state['last_error'] = str(exc)
+            runtime.logger.warning('Manual postgres reconnect failed: %s', exc)
+
+    background_tasks.add_task(_attempt_reconnect)
+    return {
+        'reconnect_queued': True,
+        'message': 'Reconnect attempt started in background. Poll /health for postgres_ready status.',
+    }
