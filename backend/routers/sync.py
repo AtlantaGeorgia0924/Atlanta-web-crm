@@ -3,7 +3,6 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.dependencies import get_runtime, require_admin
 from backend.dependencies import get_runtime, require_admin, require_staff
 from services.sync_service import (
     build_client_phone_sheet_updates,
@@ -89,7 +88,10 @@ def _run_background_sync_job(runtime, job_name, **kwargs):
             runtime.refresh_workspace(force_refresh=bool(kwargs.get('force_refresh', False)))
             return
         if job_name == 'replay_queue_now':
-            runtime.replay_pending_queue_now(limit=int(kwargs.get('limit', 200) or 200))
+            runtime.replay_pending_queue_now(limit=int(kwargs.get('limit', 200) or 200), manual_trigger=True)
+            return
+        if job_name == 'push_to_sheets':
+            runtime.sync_supabase_cache_to_sheets(limit=int(kwargs.get('limit', 5000) or 5000))
             return
     except Exception as exc:
         runtime.logger.warning('Background sync job failed (%s): %s', job_name, exc)
@@ -148,6 +150,30 @@ def replay_queue_now_endpoint(
     }
 
 
+@router.post('/push-to-sheets', dependencies=[Depends(require_admin)])
+def push_to_sheets_endpoint(
+    background_tasks: BackgroundTasks,
+    limit: int = 5000,
+    runtime=Depends(get_runtime),
+    current_user=Depends(require_admin),
+):
+    if not runtime.postgres_ready:
+        raise HTTPException(status_code=503, detail='PostgreSQL sync manager is not ready')
+
+    background_tasks.add_task(
+        _run_background_sync_job,
+        runtime,
+        'push_to_sheets',
+        limit=limit,
+    )
+    return {
+        'queued': True,
+        'job': 'push_to_sheets',
+        'limit': limit,
+        'message': 'Manual backup sync to Google Sheets queued.',
+    }
+
+
 @router.post('/reconnect-postgres', dependencies=[Depends(require_admin)])
 def reconnect_postgres_endpoint(background_tasks: BackgroundTasks, runtime=Depends(get_runtime)):
     """Trigger an immediate postgres reconnect attempt in the background.
@@ -171,8 +197,9 @@ def reconnect_postgres_endpoint(background_tasks: BackgroundTasks, runtime=Depen
             runtime.sync_state['last_error'] = ''
             import threading as _threading
             _threading.Thread(target=runtime._seed_once_async, daemon=True).start()
-            runtime.postgres_sync_manager.start_background_pull(runtime.pull_once)
-            runtime.postgres_sync_manager.start_background_queue_worker(runtime._replay_queue_operation, interval_sec=1)
+            if runtime._automatic_sheet_sync_enabled():
+                runtime.postgres_sync_manager.start_background_pull(runtime.pull_once)
+                runtime.postgres_sync_manager.start_background_queue_worker(runtime._replay_queue_operation, interval_sec=1)
             runtime.logger.info('Manual postgres reconnect succeeded')
         except Exception as exc:
             runtime.sync_state['last_error'] = str(exc)

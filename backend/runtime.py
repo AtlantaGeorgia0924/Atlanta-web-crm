@@ -205,6 +205,7 @@ class BackendRuntime:
             'contacts_oauth_file': '',
             'enable_postgres_cache': True,
             'legacy_sheet_fallback': True,
+            'manual_sheet_sync_only': True,
             'startup_mode': 'cache_then_sync',
             'sync_pull_interval_sec': 90,
             'sync_conflict_policy': 'sheet_wins',
@@ -265,7 +266,17 @@ class BackendRuntime:
         elif config.get('payment_details'):
             config['payment_details'] = str(config.get('payment_details') or '').replace('\\n', '\n').strip()
 
+        env_manual_sheet_sync = os.getenv('MANUAL_SHEET_SYNC_ONLY')
+        if env_manual_sheet_sync is not None:
+            config['manual_sheet_sync_only'] = str(env_manual_sheet_sync).strip().lower() in {'1', 'true', 'yes', 'on'}
+
         return config
+
+    def _manual_sheet_sync_only(self):
+        return bool(self.config.get('manual_sheet_sync_only', True))
+
+    def _automatic_sheet_sync_enabled(self):
+        return not self._manual_sheet_sync_only()
 
     def _save_config_to_disk(self):
         with open(self.config_path, 'w') as config_file:
@@ -790,11 +801,7 @@ class BackendRuntime:
             )
             return self._normalize_cashflow_expense_row(row_values, row_num=row_num)
 
-        worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
-        with self._sheet_lock:
-            worksheet.append_row(row_values, value_input_option='USER_ENTERED')
-        self.logger.info('write_source=google_sheets_fallback kind=cashflow_append_row')
-        return self._normalize_cashflow_expense_row(row_values)
+        raise RuntimeError('Supabase is not ready. Cashflow writes require PostgreSQL and do not write directly to Google Sheets.')
 
     @staticmethod
     def _most_recent_saturday(today=None):
@@ -1069,10 +1076,7 @@ class BackendRuntime:
             )
             self.logger.info('write_source=postgres_primary kind=cashflow_delete_row row=%s', target_row_num)
         else:
-            worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
-            with self._sheet_lock:
-                worksheet.delete_rows(target_row_num)
-            self.logger.info('write_source=google_sheets_fallback kind=cashflow_delete_row row=%s', target_row_num)
+            raise RuntimeError('Supabase is not ready. Cashflow writes require PostgreSQL and do not write directly to Google Sheets.')
 
         return {
             'undone': True,
@@ -1248,10 +1252,7 @@ class BackendRuntime:
             )
             self.logger.info('write_source=postgres_primary kind=cashflow_update_row row=%s', target_row_num)
         else:
-            worksheet = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
-            with self._sheet_lock:
-                worksheet.update(f'A{target_row_num}:J{target_row_num}', [target_values], value_input_option='USER_ENTERED')
-            self.logger.info('write_source=google_sheets_fallback kind=cashflow_update_row row=%s', target_row_num)
+            raise RuntimeError('Supabase is not ready. Cashflow writes require PostgreSQL and do not write directly to Google Sheets.')
 
         return self._normalize_cashflow_expense_row(target_values, row_num=target_row_num)
 
@@ -3249,8 +3250,9 @@ class BackendRuntime:
             self.sync_state['ready'] = True
             self.sync_state['last_status'] = 'running'
             threading.Thread(target=self._seed_once_async, daemon=True).start()
-            self.postgres_sync_manager.start_background_pull(self.pull_once)
-            self.postgres_sync_manager.start_background_queue_worker(self._replay_queue_operation, interval_sec=1)
+            if self._automatic_sheet_sync_enabled():
+                self.postgres_sync_manager.start_background_pull(self.pull_once)
+                self.postgres_sync_manager.start_background_queue_worker(self._replay_queue_operation, interval_sec=1)
         except Exception as exc:
             self.sync_state['last_status'] = 'error'
             self.sync_state['last_error'] = str(exc)
@@ -3278,8 +3280,9 @@ class BackendRuntime:
                 self.sync_state['last_status'] = 'running'
                 self.sync_state['last_error'] = ''
                 threading.Thread(target=self._seed_once_async, daemon=True).start()
-                self.postgres_sync_manager.start_background_pull(self.pull_once)
-                self.postgres_sync_manager.start_background_queue_worker(self._replay_queue_operation, interval_sec=1)
+                if self._automatic_sheet_sync_enabled():
+                    self.postgres_sync_manager.start_background_pull(self.pull_once)
+                    self.postgres_sync_manager.start_background_queue_worker(self._replay_queue_operation, interval_sec=1)
                 self.logger.info('Postgres reconnect attempt %d succeeded — sync is now running', attempt)
                 break
             except Exception as exc:
@@ -3395,21 +3398,7 @@ class BackendRuntime:
 
     def _enqueue_db_first_operation(self, entity_name, operation, payload, cache_apply_callable=None, cache_rollback_callable=None):
         if not self.postgres_ready:
-            # Degraded-mode fallback: keep core business writes working even when
-            # PostgreSQL sync is unavailable. This writes directly to Sheets.
-            try:
-                self._replay_queue_operation({'payload_json': payload})
-                self.logger.warning(
-                    'write_source=google_sheets_fallback kind=%s reason=postgres_not_ready entity=%s operation=%s',
-                    payload.get('kind', ''),
-                    entity_name,
-                    operation,
-                )
-                return None
-            except Exception as exc:
-                raise RuntimeError(
-                    f'PostgreSQL sync is not ready and direct Google Sheets fallback write failed: {exc}'
-                ) from exc
+            raise RuntimeError('Supabase is not ready. Write operations require PostgreSQL and do not fall back to Google Sheets.')
 
         queue_id = self.postgres_sync_manager.enqueue_operation(entity_name, operation, payload)
         if queue_id is None:
@@ -3439,9 +3428,19 @@ class BackendRuntime:
         # Cache is already updated above so the UI sees changes immediately.
         return queue_id
 
-    def replay_pending_queue_now(self, limit=200):
+    def replay_pending_queue_now(self, limit=200, manual_trigger=False):
         if not self.postgres_ready:
             raise RuntimeError('PostgreSQL sync manager is not ready')
+
+        if self._manual_sheet_sync_only() and not manual_trigger:
+            pending = len(self.postgres_sync_manager.fetch_pending_operations(limit=500))
+            return {
+                'attempted': 0,
+                'processed': 0,
+                'failed': 0,
+                'remaining_pending': pending,
+                'manual_only_mode': True,
+            }
 
         items = self.postgres_sync_manager.fetch_pending_operations(limit=max(1, int(limit or 200)))
         processed = 0
@@ -3478,6 +3477,88 @@ class BackendRuntime:
         self._health_cache['queue_size'] = remaining
         self._health_cache['queue_failed'] = failed
         return result
+
+    def _write_sheet_values(self, worksheet, values):
+        rows = [list(row or []) for row in (values or [])]
+        with self._sheet_lock:
+            worksheet.clear()
+            if not rows:
+                worksheet.update('A1', [['']])
+                return
+            max_cols = max(len(row) for row in rows) if rows else 1
+            max_cols = max(1, int(max_cols or 1))
+            padded = [row + [''] * (max_cols - len(row)) for row in rows]
+            end_letter = column_index_to_letter(max_cols - 1)
+            worksheet.update(f'A1:{end_letter}{len(padded)}', padded, value_input_option='USER_ENTERED')
+
+    def sync_supabase_cache_to_sheets(self, *, limit=5000):
+        if not self.postgres_ready:
+            raise RuntimeError('Supabase sync manager is not ready.')
+        if not self._ensure_sheet_connection():
+            raise RuntimeError(self.sync_state.get('sheet_error') or 'Google Sheets connection unavailable')
+
+        started = time.perf_counter()
+        status_payload = {
+            'status': 'failed',
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+            'error': '',
+            'mode': 'manual_push',
+        }
+        try:
+            main_values = self._load_cached_rows('main_values')
+            stock_values = self._load_cached_rows('stock_values')
+            cashflow_values = self._load_cached_rows('cashflow_expense_values')
+
+            if not main_values:
+                raise RuntimeError('Supabase cache is missing main_values; cannot sync backup yet.')
+
+            stock_sheet_id = self._resolve_stock_sheet_id()
+            if not stock_sheet_id:
+                raise RuntimeError('Stock sheet ID is missing.')
+
+            stock_ws = self._resolve_stock_worksheet(stock_sheet_id)
+            cashflow_ws = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
+
+            self._write_sheet_values(self.main_sheet, main_values)
+            self._write_sheet_values(stock_ws, stock_values)
+            self._write_sheet_values(cashflow_ws, cashflow_values)
+
+            pending_items = self.postgres_sync_manager.fetch_pending_operations(limit=max(1, int(limit or 5000)))
+            for item in pending_items:
+                try:
+                    self.postgres_sync_manager.mark_operation_done(item.get('id'))
+                except Exception:
+                    pass
+
+            remaining = len(self.postgres_sync_manager.fetch_pending_operations(limit=500))
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
+
+            status_payload.update({
+                'status': 'success',
+                'error': '',
+                'duration_ms': duration_ms,
+                'main_rows': len(main_values),
+                'stock_rows': len(stock_values),
+                'cashflow_rows': len(cashflow_values),
+                'processed': len(pending_items),
+                'failed': 0,
+                'remaining_pending': remaining,
+            })
+            return dict(status_payload)
+        except Exception as exc:
+            status_payload.update({
+                'status': 'failed',
+                'error': str(exc),
+            })
+            raise
+        finally:
+            try:
+                self.postgres_sync_manager.set_meta('backup_sync_status', status_payload)
+            except Exception:
+                pass
+            self._health_cache['backup_sync_status'] = dict(status_payload)
+            self._health_cache['queue_size'] = status_payload.get('remaining_pending', self._health_cache.get('queue_size', 0))
+            self._health_cache['queue_failed'] = status_payload.get('failed', self._health_cache.get('queue_failed', 0))
 
     def get_main_records(self, force_refresh=False):
         if not force_refresh:
@@ -7289,14 +7370,23 @@ class BackendRuntime:
             except Exception as exc:
                 self.logger.warning('Failed to fetch pending queue operations: %s', exc)
 
+        backup_sync_status = dict(self._health_cache.get('backup_sync_status') or {})
+        if self.postgres_ready and not backup_sync_status:
+            try:
+                backup_sync_status = dict(self.postgres_sync_manager.get_meta('backup_sync_status') or {})
+            except Exception:
+                backup_sync_status = {}
+
         return {
             'sync_state': dict(self.sync_state),
+            'manual_sheet_sync_only': self._manual_sheet_sync_only(),
             'postgres_driver_available': PSYCOPG2_AVAILABLE,
             'sheets_connected': bool(self.sync_state.get('sheets_connected')),
             'sheet_id': self._extract_sheet_id(self.config.get('sheet_id', '')),
             'stock_sheet_id': self._resolve_stock_sheet_id(),
             'postgres_snapshot': snapshot,
             'queue_pending': queue_pending,
+            'backup_sync_status': backup_sync_status,
         }
 
     def get_production_health(self):

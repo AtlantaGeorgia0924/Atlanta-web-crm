@@ -425,25 +425,14 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
-        runtime.logger.warning('Cashflow summary DB path unavailable; falling back to sheet summary: %s', exc)
-        fallback_payload = _build_sheet_cashflow_fallback(runtime, force_refresh=force_refresh)
-        return {
-            'summary': fallback_payload.get('summary') or {},
-            'rows': fallback_payload.get('rows') or [],
-            'weekly_allowance': fallback_payload.get('weekly_allowance') or {},
-            'verification_report': fallback_payload.get('verification_report') or {},
-            'live_pull': fallback_payload.get('live_pull') or {},
-        }
+        runtime.logger.warning('Cashflow summary DB path unavailable: %s', exc)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except Exception as exc:
-        runtime.logger.exception('Unexpected cashflow summary error; using sheet fallback: %s', exc)
-        fallback_payload = _build_sheet_cashflow_fallback(runtime, force_refresh=force_refresh)
-        return {
-            'summary': fallback_payload.get('summary') or {},
-            'rows': fallback_payload.get('rows') or [],
-            'weekly_allowance': fallback_payload.get('weekly_allowance') or {},
-            'verification_report': fallback_payload.get('verification_report') or {},
-            'live_pull': fallback_payload.get('live_pull') or {},
-        }
+        runtime.logger.exception('Unexpected cashflow summary error: %s', exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Cashflow summary is temporarily unavailable. Please try again shortly.',
+        ) from exc
 
     summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
     return {

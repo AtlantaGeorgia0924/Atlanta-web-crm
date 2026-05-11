@@ -36,6 +36,7 @@ import {
   pullNow,
   redoPayment,
   refreshWorkspace,
+  syncToGoogleSheets,
   checkStolenDeviceImei,
   syncGoogleContacts,
   undoPayment,
@@ -5727,11 +5728,15 @@ function BillNotificationsView({ entries, onOpenDebtors, onSendEntry, sendingKey
   );
 }
 
-function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onReloadStatus }) {
+function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onReloadStatus, onSyncToSheets }) {
   const syncState = syncStatus?.sync_state || {};
   const postgresSnapshot = syncStatus?.postgres_snapshot || {};
   const cacheCounts = postgresSnapshot?.cache_counts || {};
+  const backupSync = syncStatus?.backup_sync_status || {};
   const latestErrorText = formatRuntimeSnapshot(postgresSnapshot.latest_error || syncState.last_error, 'None');
+  const backupStatusText = String(backupSync.status || 'not_run').replace(/_/g, ' ');
+  const backupUpdatedAtText = formatRuntimeSnapshot(backupSync.updated_at, 'Never');
+  const backupErrorText = formatRuntimeSnapshot(backupSync.error, 'None');
   const quotaWarning = /quota exceeded/i.test(latestErrorText) && /read requests/i.test(latestErrorText);
 
   return (
@@ -5757,6 +5762,11 @@ function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onR
             <span className="metric-label">Queue Pending</span>
             <strong className="metric-value">{formatCount(syncStatus?.queue_pending)}</strong>
             <span className="metric-note">Operations still waiting to replay.</span>
+          </article>
+          <article className="metric-card metric-card--soft">
+            <span className="metric-label">Last Backup Sync</span>
+            <strong className="metric-value">{backupUpdatedAtText}</strong>
+            <span className="metric-note">Manual Supabase to Google Sheets backup.</span>
           </article>
           <article className="metric-card metric-card--soft">
             <span className="metric-label">Pull Interval</span>
@@ -5805,6 +5815,9 @@ function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onR
             <button type="button" className="secondary-button" onClick={onPullNow} disabled={syncBusy}>
               Pull Sheets Now
             </button>
+            <button type="button" className="secondary-button" onClick={onSyncToSheets} disabled={syncBusy}>
+              Sync to Google Sheets
+            </button>
             <button type="button" className="secondary-button" onClick={onReloadStatus} disabled={syncBusy}>
               Reload Status
             </button>
@@ -5829,6 +5842,14 @@ function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onR
             <div className="meta-row">
               <span>Latest error</span>
               <strong>{latestErrorText}</strong>
+            </div>
+            <div className="meta-row">
+              <span>Backup sync status</span>
+              <strong>{backupStatusText}</strong>
+            </div>
+            <div className="meta-row">
+              <span>Backup sync error</span>
+              <strong>{backupErrorText}</strong>
             </div>
             <div className="meta-row">
               <span>API Source</span>
@@ -7926,6 +7947,19 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
+  async function handleSyncToSheets() {
+    setSyncBusy(true);
+    try {
+      await syncToGoogleSheets({ limit: 5000 });
+      await loadCoreWorkspace(false);
+      setStatusText('Manual backup sync to Google Sheets has been queued.');
+    } catch (error) {
+      setStatusText(error.message || 'Could not start manual sync to Google Sheets.');
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
   async function loadUsers() {
     if (!isAdmin) {
       return;
@@ -8954,6 +8988,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           onPullNow={handlePullNow}
           onRefreshWorkspace={handleFullRefresh}
           onReloadStatus={() => loadCoreWorkspace(false)}
+          onSyncToSheets={handleSyncToSheets}
         />
       );
     }

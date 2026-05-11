@@ -426,3 +426,10 @@ export function refreshWorkspace({ forceRefresh = true } = {}) {
     query: { force_refresh: forceRefresh },
   });
 }
+
+export function syncToGoogleSheets({ limit = 5000 } = {}) {
+  return requestJson('/api/sync/push-to-sheets', {
+    method: 'POST',
+    query: { limit },
+  });
+}
