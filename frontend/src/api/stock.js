@@ -96,6 +96,16 @@ export async function deleteStockRow({ rowNum, forceRefresh = false }) {
   });
 }
 
+export async function softDeleteStockRow({ rowNum, forceRefresh = false }) {
+  return requestJson('/api/stock/live/soft-delete-row', {
+    method: 'POST',
+    body: {
+      row_num: rowNum,
+      force_refresh: forceRefresh,
+    },
+  });
+}
+
 export async function updatePendingDealPayment({ rowNum, paymentStatus, amountPaid = null, forceRefresh = false }) {
   return requestJson('/api/stock/live/pending/payment', {
     method: 'POST',

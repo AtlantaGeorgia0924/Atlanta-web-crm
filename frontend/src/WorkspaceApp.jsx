@@ -1,7 +1,7 @@
 import React, { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
 import { getApiLabel, invalidateApiCache } from './api/http';
-import { addServiceRecord, checkoutSaleCart, deleteStockRow, fetchPendingServiceDeals, fetchStockDashboard, returnServiceDeal, returnStockItem, updatePendingDealMeta, updatePendingDealPayment, updatePendingServiceMeta, updateServiceDealPayment, updateStockRow } from './api/stock';
+import { addServiceRecord, checkoutSaleCart, deleteStockRow, fetchPendingServiceDeals, fetchStockDashboard, returnServiceDeal, returnStockItem, softDeleteStockRow, updatePendingDealMeta, updatePendingDealPayment, updatePendingServiceMeta, updateServiceDealPayment, updateStockRow } from './api/stock';
 import { createUser, fetchUsers, updateUser } from './api/users';
 import {
   addStockRecord,
@@ -2876,6 +2876,8 @@ function ProductSummaryTable({
   returningPendingKey = '',
   onDeleteRow,
   deletingRowNum = null,
+  onSoftDeleteRow,
+  softDeletingRowNum = null,
   isOverlayLoading = false,
 }) {
   const cartRowSet = new Set(cartRowNumbers);
@@ -2960,6 +2962,7 @@ function ProductSummaryTable({
             ))}
             {showAmountPaidColumn ? <th>Amount Paid</th> : null}
             {onAddToCart ? <th>Cart</th> : null}
+            {onSoftDeleteRow ? <th>Soft Delete</th> : null}
             {onDeleteRow ? <th>Delete</th> : null}
           </tr>
         </thead>
@@ -3033,6 +3036,18 @@ function ProductSummaryTable({
                     }
                   </td>
                 ) : null}
+                {onSoftDeleteRow ? (
+                  <td className="row-actions-cell" data-label="Soft Delete">
+                    <button
+                      type="button"
+                      className="table-action-button"
+                      onClick={() => onSoftDeleteRow(row)}
+                      disabled={Number(softDeletingRowNum) === Number(row.row_num)}
+                    >
+                      {Number(softDeletingRowNum) === Number(row.row_num) ? 'Archiving...' : 'Soft Delete'}
+                    </button>
+                  </td>
+                ) : null}
                 {onDeleteRow ? (
                   <td className="row-actions-cell" data-label="Delete">
                     <button
@@ -3049,7 +3064,7 @@ function ProductSummaryTable({
             ))
           ) : (
             <tr>
-              <td colSpan={summaryColumns.length + (showAmountPaidColumn ? 1 : 0) + (onAddToCart ? 1 : 0) + (onDeleteRow ? 1 : 0) + 3} className="empty-state">
+              <td colSpan={summaryColumns.length + (showAmountPaidColumn ? 1 : 0) + (onAddToCart ? 1 : 0) + (onSoftDeleteRow ? 1 : 0) + (onDeleteRow ? 1 : 0) + 3} className="empty-state">
                 {emptyText}
               </td>
             </tr>
@@ -4351,6 +4366,8 @@ function ProductsView({
   summaryColumns,
   onDeleteProduct,
   deletingProductRowNum,
+  onSoftDeleteProduct,
+  softDeletingProductRowNum,
   canDeleteProducts = false,
 }) {
   const headers = stockView?.headers || [];
@@ -4436,6 +4453,8 @@ function ProductsView({
           emptyText="No products matched the current filters."
           summaryColumns={summaryColumns}
           onOpenDetails={onOpenProductDetails}
+          onSoftDeleteRow={canDeleteProducts ? onSoftDeleteProduct : null}
+          softDeletingRowNum={softDeletingProductRowNum}
           onDeleteRow={canDeleteProducts ? onDeleteProduct : null}
           deletingRowNum={deletingProductRowNum}
           isOverlayLoading={isRefreshing}
@@ -6039,6 +6058,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [selectedProductDetail, setSelectedProductDetail] = useState(null);
   const [isSavingProductDetail, setIsSavingProductDetail] = useState(false);
   const [deletingProductRowNum, setDeletingProductRowNum] = useState(null);
+  const [softDeletingProductRowNum, setSoftDeletingProductRowNum] = useState(null);
   const [saleCartItems, setSaleCartItems] = useState([]);
   const [cartBusy, setCartBusy] = useState(false);
   const [serviceDraft, setServiceDraft] = useState({
@@ -8531,6 +8551,34 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
+  async function handleSoftDeleteProduct(row) {
+    const rowNum = Number(row?.row_num || 0);
+    if (!rowNum) {
+      setStatusText('Invalid stock row selected for soft delete.');
+      return;
+    }
+    const description = getProductCellValue(row, stockView?.headers || [], ['DESCRIPTION', 'MODEL', 'DEVICE', 'DESC']) || 'this product';
+    const proceed = window.confirm(`Soft delete product row #${rowNum} (${description})? This keeps the row for audit and marks it as REMOVED.`);
+    if (!proceed) {
+      return;
+    }
+
+    setSoftDeletingProductRowNum(rowNum);
+    try {
+      await softDeleteStockRow({ rowNum, forceRefresh: true });
+      setSaleCartItems((current) => current.filter((item) => Number(item.stock_row_num) !== rowNum));
+      if (selectedProductDetail && Number(selectedProductDetail.row_num) === rowNum) {
+        setSelectedProductDetail(null);
+      }
+      await loadStock(true);
+      setStatusText(`Soft deleted product row #${rowNum}.`);
+    } catch (error) {
+      setStatusText(error.message || `Could not soft delete product row #${rowNum}.`);
+    } finally {
+      setSoftDeletingProductRowNum(null);
+    }
+  }
+
   async function handleAction(item) {
     if (item.type === 'view') {
       if (!allowedViews.has(item.key)) {
@@ -8623,6 +8671,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           onCheckStolenImei={handleCheckStolenImei}
           currentTimeLabel={currentTimeLabel}
           summaryColumns={productSummaryColumns}
+          onSoftDeleteProduct={handleSoftDeleteProduct}
+          softDeletingProductRowNum={softDeletingProductRowNum}
           onDeleteProduct={handleDeleteProduct}
           deletingProductRowNum={deletingProductRowNum}
           canDeleteProducts={isAdmin}
@@ -8663,6 +8713,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           onCheckStolenImei={handleCheckStolenImei}
           currentTimeLabel={currentTimeLabel}
           summaryColumns={productSummaryColumns}
+          onSoftDeleteProduct={handleSoftDeleteProduct}
+          softDeletingProductRowNum={softDeletingProductRowNum}
           onDeleteProduct={handleDeleteProduct}
           deletingProductRowNum={deletingProductRowNum}
           canDeleteProducts={isAdmin}

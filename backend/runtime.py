@@ -5599,6 +5599,52 @@ class BackendRuntime:
             'deleted_row': deleted_snapshot,
         }
 
+    def soft_delete_stock_row(self, row_num, force_refresh=False):
+        values, header_row_idx, headers, headers_upper, _, _ = self._ensure_stock_required_columns(force_refresh=force_refresh)
+        row_num = int(row_num or 0)
+        first_data_row = header_row_idx + 2
+        if row_num < first_data_row or row_num > len(values):
+            return {'error': f'Stock row {row_num} is not available.'}
+
+        row_values = list(values[row_num - 1] or [])
+        header_to_col = {str(header or '').strip().upper(): idx for idx, header in enumerate(headers or [])}
+
+        def _at(*candidates):
+            for candidate in candidates:
+                idx = header_to_col.get(str(candidate or '').strip().upper())
+                if idx is not None and idx < len(row_values):
+                    return str(row_values[idx] or '').strip()
+            return ''
+
+        existing_note = _at('INTERNAL NOTE', 'NOTE')
+        marker = f"SOFT DELETED {datetime.now(timezone.utc).date().isoformat()}"
+        next_note = marker if not existing_note else f"{existing_note} | {marker}"
+
+        result = self.update_stock_row(
+            row_num,
+            {
+                'PRODUCT STATUS': 'REMOVED',
+                'STATUS OF DEVICE': 'REMOVED',
+                'STOCK STATUS': 'REMOVED',
+                'ITEM STATUS': 'REMOVED',
+                'AVAILABILITY/DATE SOLD': 'REMOVED',
+                'DATE SOLD': 'REMOVED',
+                'SOLD DATE': 'REMOVED',
+                'INTERNAL NOTE': next_note,
+                'NOTE': next_note,
+            },
+            force_refresh=force_refresh,
+        )
+        if result.get('error'):
+            return result
+
+        return {
+            'soft_deleted': True,
+            'row_num': row_num,
+            'updated_count': int(result.get('updated_count') or 0),
+            'updates': result.get('updates') or [],
+        }
+
     def get_client_registry(self, force_reload=False):
         with self._clients_lock:
             return dict(self._load_clients_from_disk() if force_reload else self._load_clients_from_disk())
