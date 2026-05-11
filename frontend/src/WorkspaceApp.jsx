@@ -15,6 +15,7 @@ import {
   fetchDashboardLogo,
   fetchClients,
   fetchFoundationCashflowDashboard,
+  fetchFoundationWeeklyAllowance,
   createFoundationAllowanceWithdrawal,
   fetchGoogleContacts,
   fetchHomeBootstrap,
@@ -6656,8 +6657,27 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       }
     } catch (error) {
       const message = error?.message || 'Could not load cashflow dashboard.';
-      setCashflowError(message);
-      setStatusText(message);
+      let weeklyFallbackApplied = false;
+      try {
+        const weeklyFallback = await fetchFoundationWeeklyAllowance();
+        if (weeklyFallback && typeof weeklyFallback === 'object') {
+          const fallbackAllowance = {
+            suggested_allowance: Number(weeklyFallback.allowance_amount || 0),
+            calculation_date: weeklyFallback.generated_at || '',
+            previous_week_profit: Number(weeklyFallback.profit_seen || 0),
+          };
+          setWeeklyAllowance(fallbackAllowance);
+          weeklyFallbackApplied = true;
+        }
+      } catch {
+        // Ignore fallback failures; preserve last successful cashflow state if any.
+      }
+
+      const nextMessage = weeklyFallbackApplied
+        ? 'Live cashflow dashboard is temporarily slow. Showing the latest weekly allowance while full data reloads.'
+        : message;
+      setCashflowError(nextMessage);
+      setStatusText(nextMessage);
     } finally {
       setCashflowLoading(false);
     }

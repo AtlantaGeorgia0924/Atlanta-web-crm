@@ -194,6 +194,7 @@ export function fetchFoundationCashflowSummary({ signal } = {}) {
 export function fetchFoundationWeeklyAllowance({ signal, cashflowPin = '' } = {}) {
   return requestJson('/api/foundation/weekly-allowance', {
     signal,
+    timeoutMs: 15_000,
     headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
     cacheTtlMs: SHORT_CACHE_MS,
   });
@@ -203,6 +204,7 @@ export function fetchFoundationCashflowDashboard({ forceRefresh = false, signal,
   return requestJson('/api/foundation/cashflow-dashboard', {
     query: { force_refresh: forceRefresh },
     signal,
+    timeoutMs: forceRefresh ? 35_000 : 20_000,
     headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
     cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
   });
