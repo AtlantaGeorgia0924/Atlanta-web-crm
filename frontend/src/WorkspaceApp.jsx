@@ -6023,8 +6023,6 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [undoEnabled, setUndoEnabled] = useState(false);
   const [redoEnabled, setRedoEnabled] = useState(false);
   const [whatsappHistoryByName, setWhatsappHistoryByName] = useState({});
-  const stockPreloadStartedRef = useRef(false);
-  const stockFormPreloadStartedRef = useRef(false);
   const stockRequestSeqRef = useRef(0);
   const stockAbortControllerRef = useRef(null);
   const stockStaleDropCountRef = useRef(0);
@@ -7205,19 +7203,6 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   }, [activeView, debouncedProductFilterMode, debouncedCartFilterMode]);
 
   useEffect(() => {
-    if (stockPreloadStartedRef.current) {
-      return;
-    }
-    if (stockView?.all_rows_cache?.length) {
-      stockPreloadStartedRef.current = true;
-      return;
-    }
-
-    stockPreloadStartedRef.current = true;
-    loadStock(false, false);
-  }, [stockView]);
-
-  useEffect(() => {
     if (!isAdmin) {
       return;
     }
@@ -7246,19 +7231,6 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
     loadStockForm(false, false);
   }, [activeView]);
-
-  useEffect(() => {
-    if (stockFormPreloadStartedRef.current) {
-      return;
-    }
-    if (stockForm && typeof stockForm === 'object') {
-      stockFormPreloadStartedRef.current = true;
-      return;
-    }
-
-    stockFormPreloadStartedRef.current = true;
-    loadStockForm(false, false);
-  }, [stockForm]);
 
   useEffect(() => {
     if (activeView !== 'clients' && activeView !== 'cart') {
@@ -8478,7 +8450,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           'REPRESENTATIVE NAME': representativeName,
           'REPRESENTATIVE PHONE': representativePhone,
         },
-        forceRefresh: true,
+        forceRefresh: false,
       });
       setServiceDraft({
         name: '',
@@ -8497,9 +8469,11 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         status: 'UNPAID',
       });
       await loadCoreWorkspace(false);
-      // Pull latest cashflow sheet values so new service income/expense reflects immediately.
       if (isAdmin) {
-        await loadCashflowDashboard(true);
+        // Keep add-service responsive; refresh cashflow in the background.
+        window.setTimeout(() => {
+          loadCashflowDashboard(false);
+        }, 20);
       }
       setServiceModalOpen(false);
       setStatusText('Service row queued into inventory successfully.');

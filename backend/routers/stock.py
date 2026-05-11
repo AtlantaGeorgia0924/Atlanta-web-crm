@@ -1,4 +1,5 @@
 import time
+import threading
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,6 +23,49 @@ router = APIRouter(
     tags=['stock'],
     dependencies=[Depends(get_current_user)],
 )
+
+STOCK_VIEW_CACHE_TTL_SECONDS = 20
+_stock_view_cache_lock = threading.Lock()
+_stock_view_cache: dict[tuple, dict] = {}
+
+
+def _stock_view_cache_key(*, filter_text: str, filter_mode: str, page: int, page_size: int, is_staff: bool):
+    return (
+        str(filter_text or '').strip().lower(),
+        str(filter_mode or 'all').strip().lower() or 'all',
+        int(page or 1),
+        int(page_size or 0),
+        bool(is_staff),
+    )
+
+
+def _load_stock_view_cache(key: tuple):
+    now = time.time()
+    with _stock_view_cache_lock:
+        entry = _stock_view_cache.get(key)
+        if not entry:
+            return None
+        expires_at = float(entry.get('expires_at') or 0)
+        if expires_at <= now:
+            _stock_view_cache.pop(key, None)
+            return None
+        payload = entry.get('payload')
+    return payload if isinstance(payload, dict) else None
+
+
+def _store_stock_view_cache(key: tuple, payload: dict):
+    if not isinstance(payload, dict):
+        return
+    with _stock_view_cache_lock:
+        _stock_view_cache[key] = {
+            'expires_at': time.time() + STOCK_VIEW_CACHE_TTL_SECONDS,
+            'payload': payload,
+        }
+
+
+def _invalidate_stock_view_cache():
+    with _stock_view_cache_lock:
+        _stock_view_cache.clear()
 
 
 def _normalized_header_name(value: str):
@@ -421,13 +465,27 @@ def build_live_stock_view(
 ):
     started = time.perf_counter()
     total_rows = 0
+    is_staff = _is_staff_user(current_user)
+    cache_key = None
     try:
+        if not force_refresh:
+            cache_key = _stock_view_cache_key(
+                filter_text=filter_text,
+                filter_mode=filter_mode,
+                page=page,
+                page_size=page_size,
+                is_staff=is_staff,
+            )
+            cached_payload = _load_stock_view_cache(cache_key)
+            if cached_payload is not None:
+                return cached_payload
+
         stock_view = _serialize_stock_view(runtime.get_stock_view_payload(
             filter_text=filter_text,
             filter_mode=filter_mode,
             force_refresh=force_refresh,
         ))
-        if _is_staff_user(current_user):
+        if is_staff:
             stock_view = _sanitize_stock_view_for_staff(stock_view)
 
         all_rows = list(stock_view.get('all_rows_cache') or [])
@@ -441,6 +499,9 @@ def build_live_stock_view(
             stock_view['page'] = safe_page
             stock_view['page_size'] = safe_page_size
             stock_view['all_rows_cache'] = all_rows[start:end]
+
+        if not force_refresh and cache_key is not None:
+            _store_stock_view_cache(cache_key, stock_view)
         return stock_view
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -553,6 +614,7 @@ def update_live_stock_row(payload: StockLiveUpdateRowRequest, runtime=Depends(ge
 
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
+    _invalidate_stock_view_cache()
     return result
 
 
@@ -565,6 +627,7 @@ def add_live_service_record(payload: StockLiveServiceAddRequest, runtime=Depends
 
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
+    _invalidate_stock_view_cache()
     return result
 
 
@@ -582,6 +645,7 @@ def return_live_service_record(payload: StockLiveReturnRequest, runtime=Depends(
 
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
+    _invalidate_stock_view_cache()
     return result
 
 
@@ -599,6 +663,7 @@ def update_live_service_payment(payload: StockLivePendingPaymentUpdateRequest, r
 
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
+    _invalidate_stock_view_cache()
     return result
 
 
@@ -611,6 +676,7 @@ def return_live_stock_item(payload: StockLiveReturnRequest, runtime=Depends(get_
 
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
+    _invalidate_stock_view_cache()
     return result
 
 
@@ -623,6 +689,7 @@ def delete_live_stock_row(payload: StockLiveReturnRequest, runtime=Depends(get_r
 
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
+    _invalidate_stock_view_cache()
     return result
 
 
@@ -635,6 +702,7 @@ def soft_delete_live_stock_row(payload: StockLiveReturnRequest, runtime=Depends(
 
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
+    _invalidate_stock_view_cache()
     return result
 
 
@@ -652,6 +720,7 @@ def update_live_pending_payment(payload: StockLivePendingPaymentUpdateRequest, r
 
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
+    _invalidate_stock_view_cache()
     return result
 
 
@@ -671,6 +740,7 @@ def update_live_pending_meta(payload: StockLivePendingMetaUpdateRequest, runtime
 
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
+    _invalidate_stock_view_cache()
     return result
 
 
@@ -687,6 +757,7 @@ def update_live_service_meta(payload: StockLiveServiceMetaUpdateRequest, runtime
 
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
+    _invalidate_stock_view_cache()
     return result
 
 
@@ -717,6 +788,7 @@ def checkout_live_stock_cart(
 
     if result.get('error'):
         raise HTTPException(status_code=400, detail=result['error'])
+    _invalidate_stock_view_cache()
     return result
 
 
@@ -725,6 +797,7 @@ def refresh_workspace_endpoint(runtime=Depends(get_runtime), current_user=Depend
     """Allows staff and admin to refresh the workspace (pull latest from sheets)."""
     try:
         result = runtime._process_client_sheet_sync(force_refresh=True, include_autofill=False)
+        _invalidate_stock_view_cache()
         return {
             'status': 'success',
             'message': 'Workspace refreshed successfully',

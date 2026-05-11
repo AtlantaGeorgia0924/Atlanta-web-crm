@@ -9,6 +9,7 @@ export async function fetchStockDashboard({ filterText = '', filterMode = 'all',
     }
     ,
     signal,
+    timeoutMs: forceRefresh ? 30_000 : 15_000,
     cacheTtlMs: forceRefresh ? 0 : 15_000,
   });
 }
@@ -20,6 +21,7 @@ export async function checkoutSaleCart({ items, forceRefresh = false }) {
       items,
       force_refresh: forceRefresh,
     },
+    timeoutMs: 20_000,
   });
 }
 
@@ -31,6 +33,7 @@ export async function updateStockRow({ rowNum, valuesByHeader, forceRefresh = fa
       values_by_header: valuesByHeader,
       force_refresh: forceRefresh,
     },
+    timeoutMs: 15_000,
   });
 }
 
@@ -41,6 +44,7 @@ export async function addServiceRecord({ valuesByHeader, forceRefresh = false })
       values_by_header: valuesByHeader,
       force_refresh: forceRefresh,
     },
+    timeoutMs: 15_000,
   });
 }
 
@@ -50,6 +54,7 @@ export async function fetchPendingServiceDeals({ forceRefresh = false, signal } 
       force_refresh: forceRefresh,
     },
     signal,
+    timeoutMs: forceRefresh ? 20_000 : 10_000,
     cacheTtlMs: forceRefresh ? 0 : 10_000,
   });
 }
