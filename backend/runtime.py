@@ -5525,6 +5525,80 @@ class BackendRuntime:
             'row_num': row_num,
         }
 
+    def delete_stock_row(self, row_num, force_refresh=False):
+        values, header_row_idx, headers, headers_upper, _, _ = self._ensure_stock_required_columns(force_refresh=force_refresh)
+        row_num = int(row_num or 0)
+        first_data_row = header_row_idx + 2
+        if row_num < first_data_row or row_num > len(values):
+            return {'error': f'Stock row {row_num} is not available.'}
+
+        stock_sheet_id = self._resolve_stock_sheet_id()
+        if not stock_sheet_id:
+            return {'error': 'Stock sheet id is missing.'}
+
+        try:
+            worksheet = self._resolve_stock_worksheet(stock_sheet_id)
+        except Exception as exc:
+            return {'error': f'Could not resolve stock worksheet: {exc}'}
+
+        row_values = list(values[row_num - 1] or [])
+        header_to_col = {str(header or '').strip().upper(): idx for idx, header in enumerate(headers or [])}
+
+        def _at(*candidates):
+            for candidate in candidates:
+                idx = header_to_col.get(str(candidate or '').strip().upper())
+                if idx is not None and idx < len(row_values):
+                    return str(row_values[idx] or '').strip()
+            return ''
+
+        deleted_snapshot = {
+            'row_num': row_num,
+            'record_id': _at('RECORD_ID'),
+            'imei': _at('IMEI'),
+            'description': _at('DESCRIPTION', 'MODEL', 'DEVICE', 'DESC'),
+            'buyer_name': _at('NAME OF BUYER', 'NAME', 'CLIENT NAME'),
+        }
+
+        request_body = {
+            'requests': [{
+                'deleteDimension': {
+                    'range': {
+                        'sheetId': worksheet.id,
+                        'dimension': 'ROWS',
+                        'startIndex': row_num - 1,
+                        'endIndex': row_num,
+                    }
+                }
+            }]
+        }
+
+        try:
+            with self._sheet_lock:
+                self.sheets_api_service.spreadsheets().batchUpdate(
+                    spreadsheetId=stock_sheet_id,
+                    body=request_body,
+                ).execute()
+                updated_values = worksheet.get_all_values()
+        except Exception as exc:
+            return {'error': f'Could not delete stock row #{row_num}: {exc}'}
+
+        if self.postgres_ready:
+            try:
+                self.postgres_sync_manager.upsert_sheet_cache('stock_values', updated_values)
+                main_records = self._load_cached_rows('main_records')
+                if not main_records:
+                    main_records = self.get_main_records(force_refresh=False)
+                cashflow_expense_values = self._load_cached_rows('cashflow_expense_values')
+                self._refresh_operational_mirrors(main_records, updated_values, cashflow_expense_values)
+            except Exception as exc:
+                self.logger.warning('Failed to refresh postgres caches after deleting stock row #%s: %s', row_num, exc)
+
+        return {
+            'deleted': True,
+            'row_num': row_num,
+            'deleted_row': deleted_snapshot,
+        }
+
     def get_client_registry(self, force_reload=False):
         with self._clients_lock:
             return dict(self._load_clients_from_disk() if force_reload else self._load_clients_from_disk())

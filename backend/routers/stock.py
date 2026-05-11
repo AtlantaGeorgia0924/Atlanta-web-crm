@@ -614,6 +614,18 @@ def return_live_stock_item(payload: StockLiveReturnRequest, runtime=Depends(get_
     return result
 
 
+@router.post('/live/delete-row', dependencies=[Depends(require_admin)])
+def delete_live_stock_row(payload: StockLiveReturnRequest, runtime=Depends(get_runtime), current_user=Depends(require_admin)):
+    try:
+        result = runtime.delete_stock_row(payload.row_num, force_refresh=payload.force_refresh)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if result.get('error'):
+        raise HTTPException(status_code=400, detail=result['error'])
+    return result
+
+
 @router.post('/live/pending/payment')
 def update_live_pending_payment(payload: StockLivePendingPaymentUpdateRequest, runtime=Depends(get_runtime)):
     try:

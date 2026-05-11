@@ -1,7 +1,7 @@
 import React, { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 
 import { getApiLabel, invalidateApiCache } from './api/http';
-import { addServiceRecord, checkoutSaleCart, fetchPendingServiceDeals, fetchStockDashboard, returnServiceDeal, returnStockItem, updatePendingDealMeta, updatePendingDealPayment, updatePendingServiceMeta, updateServiceDealPayment, updateStockRow } from './api/stock';
+import { addServiceRecord, checkoutSaleCart, deleteStockRow, fetchPendingServiceDeals, fetchStockDashboard, returnServiceDeal, returnStockItem, updatePendingDealMeta, updatePendingDealPayment, updatePendingServiceMeta, updateServiceDealPayment, updateStockRow } from './api/stock';
 import { createUser, fetchUsers, updateUser } from './api/users';
 import {
   addStockRecord,
@@ -2874,6 +2874,8 @@ function ProductSummaryTable({
   onReturnPendingDeal,
   updatingPendingKey = '',
   returningPendingKey = '',
+  onDeleteRow,
+  deletingRowNum = null,
   isOverlayLoading = false,
 }) {
   const cartRowSet = new Set(cartRowNumbers);
@@ -2958,6 +2960,7 @@ function ProductSummaryTable({
             ))}
             {showAmountPaidColumn ? <th>Amount Paid</th> : null}
             {onAddToCart ? <th>Cart</th> : null}
+            {onDeleteRow ? <th>Delete</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -3030,11 +3033,23 @@ function ProductSummaryTable({
                     }
                   </td>
                 ) : null}
+                {onDeleteRow ? (
+                  <td className="row-actions-cell" data-label="Delete">
+                    <button
+                      type="button"
+                      className="table-action-button"
+                      onClick={() => onDeleteRow(row)}
+                      disabled={Number(deletingRowNum) === Number(row.row_num)}
+                    >
+                      {Number(deletingRowNum) === Number(row.row_num) ? 'Deleting...' : 'Delete'}
+                    </button>
+                  </td>
+                ) : null}
               </tr>
             ))
           ) : (
             <tr>
-              <td colSpan={summaryColumns.length + (showAmountPaidColumn ? 1 : 0) + (onAddToCart ? 4 : 3)} className="empty-state">
+              <td colSpan={summaryColumns.length + (showAmountPaidColumn ? 1 : 0) + (onAddToCart ? 1 : 0) + (onDeleteRow ? 1 : 0) + 3} className="empty-state">
                 {emptyText}
               </td>
             </tr>
@@ -4334,6 +4349,9 @@ function ProductsView({
   onCheckStolenImei,
   currentTimeLabel,
   summaryColumns,
+  onDeleteProduct,
+  deletingProductRowNum,
+  canDeleteProducts = false,
 }) {
   const headers = stockView?.headers || [];
   const rows = stockView?.all_rows_cache || [];
@@ -4418,6 +4436,8 @@ function ProductsView({
           emptyText="No products matched the current filters."
           summaryColumns={summaryColumns}
           onOpenDetails={onOpenProductDetails}
+          onDeleteRow={canDeleteProducts ? onDeleteProduct : null}
+          deletingRowNum={deletingProductRowNum}
           isOverlayLoading={isRefreshing}
         />
 
@@ -6018,6 +6038,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [stockErrorText, setStockErrorText] = useState('');
   const [selectedProductDetail, setSelectedProductDetail] = useState(null);
   const [isSavingProductDetail, setIsSavingProductDetail] = useState(false);
+  const [deletingProductRowNum, setDeletingProductRowNum] = useState(null);
   const [saleCartItems, setSaleCartItems] = useState([]);
   const [cartBusy, setCartBusy] = useState(false);
   const [serviceDraft, setServiceDraft] = useState({
@@ -8482,6 +8503,34 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
   }
 
+  async function handleDeleteProduct(row) {
+    const rowNum = Number(row?.row_num || 0);
+    if (!rowNum) {
+      setStatusText('Invalid stock row selected for deletion.');
+      return;
+    }
+    const description = getProductCellValue(row, stockView?.headers || [], ['DESCRIPTION', 'MODEL', 'DEVICE', 'DESC']) || 'this product';
+    const proceed = window.confirm(`Delete product row #${rowNum} (${description})? This will remove it from the sheet and Supabase mirror.`);
+    if (!proceed) {
+      return;
+    }
+
+    setDeletingProductRowNum(rowNum);
+    try {
+      await deleteStockRow({ rowNum, forceRefresh: true });
+      setSaleCartItems((current) => current.filter((item) => Number(item.stock_row_num) !== rowNum));
+      if (selectedProductDetail && Number(selectedProductDetail.row_num) === rowNum) {
+        setSelectedProductDetail(null);
+      }
+      await loadStock(true);
+      setStatusText(`Deleted product row #${rowNum} from sheet and sync cache.`);
+    } catch (error) {
+      setStatusText(error.message || `Could not delete product row #${rowNum}.`);
+    } finally {
+      setDeletingProductRowNum(null);
+    }
+  }
+
   async function handleAction(item) {
     if (item.type === 'view') {
       if (!allowedViews.has(item.key)) {
@@ -8574,6 +8623,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           onCheckStolenImei={handleCheckStolenImei}
           currentTimeLabel={currentTimeLabel}
           summaryColumns={productSummaryColumns}
+          onDeleteProduct={handleDeleteProduct}
+          deletingProductRowNum={deletingProductRowNum}
+          canDeleteProducts={isAdmin}
         />
       );
     }
@@ -8611,6 +8663,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           onCheckStolenImei={handleCheckStolenImei}
           currentTimeLabel={currentTimeLabel}
           summaryColumns={productSummaryColumns}
+          onDeleteProduct={handleDeleteProduct}
+          deletingProductRowNum={deletingProductRowNum}
+          canDeleteProducts={isAdmin}
         />
       );
     }
