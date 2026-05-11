@@ -18,6 +18,11 @@ _cashflow_cache: dict = {
 }
 _CASHFLOW_CACHE_MAX_AGE_SECONDS = 60 * 60 * 6  # serve stale for up to 6 hours
 
+# Fail fast on cashflow reads when backend DB calls stall. This keeps API
+# responses under platform timeout limits and lets clients render cached data.
+_CASHFLOW_READ_TIMEOUT_SECONDS = 8
+_CASHFLOW_REBUILD_TIMEOUT_SECONDS = 20
+
 
 def _store_cashflow_cache(payload: dict) -> None:
     with _cashflow_cache_lock:
@@ -33,6 +38,26 @@ def _load_cashflow_cache() -> dict | None:
         if age > _CASHFLOW_CACHE_MAX_AGE_SECONDS:
             return None
         return dict(_cashflow_cache['payload'])
+
+
+def _run_with_timeout(func, timeout_seconds: float, timeout_message: str):
+    result_holder = {'value': None}
+    error_holder = {'error': None}
+
+    def _target():
+        try:
+            result_holder['value'] = func()
+        except Exception as exc:
+            error_holder['error'] = exc
+
+    worker = threading.Thread(target=_target, daemon=True, name='cashflow-timeout-guard')
+    worker.start()
+    worker.join(max(0.1, float(timeout_seconds or 0)))
+    if worker.is_alive():
+        raise TimeoutError(timeout_message)
+    if error_holder['error'] is not None:
+        raise error_holder['error']
+    return result_holder['value']
 
 
 router = APIRouter(
@@ -487,13 +512,40 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
         runtime.logger.warning('Cashflow dashboard: no cache available, returning empty degraded response')
         return _fast_degraded_cashflow_response('postgres_not_ready')
 
+    op_timeout = _CASHFLOW_REBUILD_TIMEOUT_SECONDS if force_refresh else _CASHFLOW_READ_TIMEOUT_SECONDS
+
     try:
-        rebuilt_rows, verification, pull_meta = _rebuild_cashflow_from_live(runtime, force_refresh=force_refresh)
-        summary_rows = runtime.financial_data_service.get_current_cashflow_summary_rows()
-        expense_items = runtime.financial_data_service.list_expenses(limit=500, offset=0)
-        withdrawal_items = runtime.financial_data_service.list_allowance_withdrawals(limit=500, offset=0)
+        rebuilt_rows, verification, pull_meta = _run_with_timeout(
+            lambda: _rebuild_cashflow_from_live(runtime, force_refresh=force_refresh),
+            op_timeout,
+            'cashflow_rebuild_timeout',
+        )
+        summary_rows = _run_with_timeout(
+            lambda: runtime.financial_data_service.get_current_cashflow_summary_rows(),
+            _CASHFLOW_READ_TIMEOUT_SECONDS,
+            'cashflow_summary_timeout',
+        )
+        expense_items = _run_with_timeout(
+            lambda: runtime.financial_data_service.list_expenses(limit=500, offset=0),
+            _CASHFLOW_READ_TIMEOUT_SECONDS,
+            'cashflow_expenses_timeout',
+        )
+        withdrawal_items = _run_with_timeout(
+            lambda: runtime.financial_data_service.list_allowance_withdrawals(limit=500, offset=0),
+            _CASHFLOW_READ_TIMEOUT_SECONDS,
+            'cashflow_withdrawals_timeout',
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        runtime.logger.warning('Cashflow dashboard timeout; checking cache: %s', exc)
+        cached = _load_cashflow_cache()
+        if cached:
+            cached['degraded'] = True
+            cached['degraded_reason'] = str(exc)
+            cached['live_pull'] = {'attempted': False, 'ok': False, 'error': str(exc)}
+            return cached
+        return _fast_degraded_cashflow_response(str(exc))
     except RuntimeError as exc:
         runtime.logger.warning('Cashflow dashboard DB path unavailable; checking cache: %s', exc)
         cached = _load_cashflow_cache()
@@ -565,9 +617,20 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
 @router.get('/weekly-allowance', dependencies=[Depends(require_admin)])
 def get_weekly_allowance(runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        summary_rows = runtime.financial_data_service.get_current_cashflow_summary_rows()
+        summary_rows = _run_with_timeout(
+            lambda: runtime.financial_data_service.get_current_cashflow_summary_rows(),
+            _CASHFLOW_READ_TIMEOUT_SECONDS,
+            'weekly_allowance_timeout',
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        runtime.logger.warning('Weekly allowance timeout; checking cache: %s', exc)
+        cached = _load_cashflow_cache() or {}
+        cached_week = dict((cached.get('weekly_allowance') or {}))
+        if cached_week:
+            return cached_week
+        return dict(_fast_degraded_cashflow_response(str(exc)).get('weekly_allowance') or {})
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
