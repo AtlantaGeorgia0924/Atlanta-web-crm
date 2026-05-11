@@ -6647,7 +6647,12 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setCashflowUpdatedAt(new Date());
 
       if (result?.degraded) {
-        setCashflowError('Cash Flow data is temporarily unavailable while the database recovers. Values will appear automatically once the connection is restored.');
+        const isCached = String(result?.degraded_reason || '').includes('cache');
+        setCashflowError(
+          isCached
+            ? 'Showing last saved data \u2014 live database is temporarily unavailable. Values will update once the connection is restored.'
+            : 'Cash Flow data is temporarily unavailable while the database recovers. Values will appear automatically once the connection is restored.'
+        );
       } else {
         setCashflowError('');
       }

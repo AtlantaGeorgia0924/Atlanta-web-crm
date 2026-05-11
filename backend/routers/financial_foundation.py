@@ -1,10 +1,39 @@
 import time
+import threading
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from backend.dependencies import get_current_user, get_runtime, require_admin
+
+# ---------------------------------------------------------------------------
+# In-process cache for the last successful cashflow dashboard response.
+# Used to serve stale-but-useful data while postgres is unavailable.
+# ---------------------------------------------------------------------------
+_cashflow_cache_lock = threading.Lock()
+_cashflow_cache: dict = {
+    'payload': None,
+    'stored_at': 0.0,
+}
+_CASHFLOW_CACHE_MAX_AGE_SECONDS = 60 * 60 * 6  # serve stale for up to 6 hours
+
+
+def _store_cashflow_cache(payload: dict) -> None:
+    with _cashflow_cache_lock:
+        _cashflow_cache['payload'] = payload
+        _cashflow_cache['stored_at'] = time.time()
+
+
+def _load_cashflow_cache() -> dict | None:
+    with _cashflow_cache_lock:
+        if not _cashflow_cache['payload']:
+            return None
+        age = time.time() - _cashflow_cache['stored_at']
+        if age > _CASHFLOW_CACHE_MAX_AGE_SECONDS:
+            return None
+        return dict(_cashflow_cache['payload'])
+
 
 router = APIRouter(
     prefix='/api/foundation',
@@ -447,7 +476,15 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
     # which can take 30+ seconds; on Render that causes a connection reset and
     # the browser receives "Could not reach the API" instead of a usable response.
     if not bool(getattr(runtime, 'postgres_ready', False)):
-        runtime.logger.warning('Cashflow dashboard: postgres not ready, returning fast degraded response')
+        runtime.logger.warning('Cashflow dashboard: postgres not ready, checking in-process cache')
+        cached = _load_cashflow_cache()
+        if cached:
+            cached['degraded'] = True
+            cached['degraded_reason'] = 'postgres_not_ready_served_from_cache'
+            cached['live_pull'] = {'attempted': False, 'ok': False, 'error': 'postgres_not_ready'}
+            runtime.logger.info('Cashflow dashboard: returning cached response (age %.0fs)', time.time() - _cashflow_cache['stored_at'])
+            return cached
+        runtime.logger.warning('Cashflow dashboard: no cache available, returning empty degraded response')
         return _fast_degraded_cashflow_response('postgres_not_ready')
 
     try:
@@ -458,10 +495,22 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
-        runtime.logger.warning('Cashflow dashboard DB path unavailable; returning fast degraded response: %s', exc)
+        runtime.logger.warning('Cashflow dashboard DB path unavailable; checking cache: %s', exc)
+        cached = _load_cashflow_cache()
+        if cached:
+            cached['degraded'] = True
+            cached['degraded_reason'] = str(exc)
+            cached['live_pull'] = {'attempted': False, 'ok': False, 'error': str(exc)}
+            return cached
         return _fast_degraded_cashflow_response(str(exc))
     except Exception as exc:
-        runtime.logger.exception('Unexpected cashflow dashboard error; returning fast degraded response: %s', exc)
+        runtime.logger.exception('Unexpected cashflow dashboard error; checking cache: %s', exc)
+        cached = _load_cashflow_cache()
+        if cached:
+            cached['degraded'] = True
+            cached['degraded_reason'] = str(exc)
+            cached['live_pull'] = {'attempted': False, 'ok': False, 'error': str(exc)}
+            return cached
         return _fast_degraded_cashflow_response(str(exc))
 
     summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
@@ -500,6 +549,8 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
         'verification_report': verification,
         'live_pull': pull_meta,
     }
+    # Cache the successful response so we can serve it during future DB outages.
+    _store_cashflow_cache(dict(result))
     runtime.logger.info(
         'query_timing kind=dashboard_read_cashflow duration_ms=%.2f force_refresh=%s expense_count=%s transaction_count=%s read_mode=%s',
         round((time.perf_counter() - started) * 1000, 2),
