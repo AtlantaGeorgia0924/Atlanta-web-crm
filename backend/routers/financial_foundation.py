@@ -20,8 +20,8 @@ _CASHFLOW_CACHE_MAX_AGE_SECONDS = 60 * 60 * 6  # serve stale for up to 6 hours
 
 # Fail fast on cashflow reads when backend DB calls stall. This keeps API
 # responses under platform timeout limits and lets clients render cached data.
-_CASHFLOW_READ_TIMEOUT_SECONDS = 8
-_CASHFLOW_REBUILD_TIMEOUT_SECONDS = 20
+_CASHFLOW_READ_TIMEOUT_SECONDS = 3
+_CASHFLOW_REBUILD_TIMEOUT_SECONDS = 6
 
 
 def _store_cashflow_cache(payload: dict) -> None:
