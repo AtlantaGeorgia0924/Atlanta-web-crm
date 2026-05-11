@@ -402,9 +402,54 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
     }
 
 
+def _fast_degraded_cashflow_response(reason: str = 'postgres_not_ready'):
+    """Return an immediately-available empty cashflow payload when the DB is down.
+
+    This avoids triggering slow Google Sheets API calls on every dashboard load,
+    which can exceed Render's 30-second request timeout and cause the client to
+    receive a connection-reset error instead of a proper API response.
+    """
+    empty_row = {
+        'period_type': '',
+        'period_start': '',
+        'period_end': '',
+        'profit_seen': 0,
+        'expenses_total': 0,
+        'net_profit': 0,
+        'allowance_amount': 0,
+        'profit_left': 0,
+        'generated_at': '',
+    }
+    return {
+        'summary': {},
+        'rows': [],
+        'weekly_allowance': dict(empty_row, period_type='week'),
+        'monthly_allowance': dict(empty_row, period_type='month'),
+        'expenses': [],
+        'expense_source': 'degraded',
+        'expense_sheet_title': 'CASH FLOW',
+        'withdrawals': [],
+        'transactions': [],
+        'capital': {'month_total': 0, 'week_total': 0, 'entries': []},
+        'verification_report': {},
+        'live_pull': {'attempted': False, 'ok': False, 'error': reason},
+        'degraded': True,
+        'degraded_reason': reason,
+    }
+
+
 @router.get('/cashflow-dashboard', dependencies=[Depends(require_admin)])
 def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     started = time.perf_counter()
+
+    # Short-circuit before any DB or Sheets calls when postgres is not ready.
+    # The sheet fallback involves multiple sequential Google Sheets API requests
+    # which can take 30+ seconds; on Render that causes a connection reset and
+    # the browser receives "Could not reach the API" instead of a usable response.
+    if not bool(getattr(runtime, 'postgres_ready', False)):
+        runtime.logger.warning('Cashflow dashboard: postgres not ready, returning fast degraded response')
+        return _fast_degraded_cashflow_response('postgres_not_ready')
+
     try:
         rebuilt_rows, verification, pull_meta = _rebuild_cashflow_from_live(runtime, force_refresh=force_refresh)
         summary_rows = runtime.financial_data_service.get_current_cashflow_summary_rows()
@@ -413,29 +458,11 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except RuntimeError as exc:
-        runtime.logger.warning('Cashflow dashboard DB path unavailable; falling back to sheet summary: %s', exc)
-        fallback_payload = _build_sheet_cashflow_fallback(runtime, force_refresh=force_refresh)
-        runtime.logger.info(
-            'query_timing kind=dashboard_read_cashflow_fallback duration_ms=%.2f force_refresh=%s expense_count=%s transaction_count=%s read_mode=%s',
-            round((time.perf_counter() - started) * 1000, 2),
-            bool(force_refresh),
-            len(fallback_payload.get('expenses') or []),
-            len(fallback_payload.get('transactions') or []),
-            'sheet_fallback',
-        )
-        return fallback_payload
+        runtime.logger.warning('Cashflow dashboard DB path unavailable; returning fast degraded response: %s', exc)
+        return _fast_degraded_cashflow_response(str(exc))
     except Exception as exc:
-        runtime.logger.exception('Unexpected cashflow dashboard error; using sheet fallback: %s', exc)
-        fallback_payload = _build_sheet_cashflow_fallback(runtime, force_refresh=force_refresh)
-        runtime.logger.info(
-            'query_timing kind=dashboard_read_cashflow_fallback duration_ms=%.2f force_refresh=%s expense_count=%s transaction_count=%s read_mode=%s',
-            round((time.perf_counter() - started) * 1000, 2),
-            bool(force_refresh),
-            len(fallback_payload.get('expenses') or []),
-            len(fallback_payload.get('transactions') or []),
-            'sheet_fallback',
-        )
-        return fallback_payload
+        runtime.logger.exception('Unexpected cashflow dashboard error; returning fast degraded response: %s', exc)
+        return _fast_degraded_cashflow_response(str(exc))
 
     summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
     normalized_transactions = [

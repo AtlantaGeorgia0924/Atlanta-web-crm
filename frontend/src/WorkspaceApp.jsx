@@ -6646,7 +6646,11 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setCashflowExpenseError('');
       setCashflowUpdatedAt(new Date());
 
-      setCashflowError('');
+      if (result?.degraded) {
+        setCashflowError('Cash Flow data is temporarily unavailable while the database recovers. Values will appear automatically once the connection is restored.');
+      } else {
+        setCashflowError('');
+      }
     } catch (error) {
       const message = error?.message || 'Could not load cashflow dashboard.';
       setCashflowError(message);
