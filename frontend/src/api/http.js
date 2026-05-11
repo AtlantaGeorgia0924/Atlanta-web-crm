@@ -239,6 +239,24 @@ export async function requestJson(path, {
 		});
 	} catch (error) {
 		if (timeoutController?.signal?.aborted && timeoutController.signal.reason === 'timeout') {
+			if (methodUpper === 'GET' && !networkRetryAttempted) {
+				await new Promise((resolve) => setTimeout(resolve, 750));
+				return requestJson(path, {
+					method,
+					query,
+					body,
+					headers,
+					signal,
+					timeoutMs: timeoutMs ? Math.max(Number(timeoutMs) * 1.5, Number(timeoutMs) + 5000) : timeoutMs,
+					auth,
+					skipUnauthorizedHandler,
+					retryOnUnauthorized,
+					cacheTtlMs,
+					cacheKey,
+					dedupeKey,
+					networkRetryAttempted: true,
+				});
+			}
 			throw new Error('Request timed out while contacting the API. Please try again.');
 		}
 		if (signal?.aborted) {
