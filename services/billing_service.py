@@ -468,8 +468,9 @@ def parse_sheet_date(date_value):
         year = int(date_parts_match.group(3))
         if year < 100:
             year += 2000
-        day = first
-        month = second
+        # Business data entry for slash/dot dates is month/day in this workspace.
+        month = first
+        day = second
         if first > 12 and second <= 12:
             day = first
             month = second
