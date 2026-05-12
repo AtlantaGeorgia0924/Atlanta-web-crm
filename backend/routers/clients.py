@@ -228,6 +228,21 @@ def live_import_sheet_phones_endpoint(force_refresh: bool = False, runtime=Depen
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@router.post('/live/import-contacts-from-sheet')
+def live_import_contacts_from_sheet_endpoint(runtime=Depends(get_runtime)):
+    import time
+    start_time = time.monotonic()
+    
+    try:
+        result = runtime.import_contacts_from_sheet(force_refresh=False)
+        result['timing_ms'] = round((time.monotonic() - start_time) * 1000)
+        return result
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get('/live/change-history')
 def live_client_change_history(limit: int = 100, runtime=Depends(get_runtime)):
     try:

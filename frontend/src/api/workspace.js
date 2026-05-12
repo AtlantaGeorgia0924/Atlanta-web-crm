@@ -66,6 +66,7 @@ export function applyPayment({ nameInput, paymentAmount, manualServiceRowIdx = n
       manual_service_row_idx: manualServiceRowIdx,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_billing_rows',
   });
 }
 
@@ -81,6 +82,7 @@ export function updateDebtorService({ nameInput, rowIdx, price = null, amountPai
       new_name: newName,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_billing_rows',
   });
 }
 
@@ -93,6 +95,7 @@ export function updateSalesTodayPayment({ rowNum, paymentStatus, amountPaid = nu
       amount_paid: amountPaid,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_billing_rows',
   });
 }
 
@@ -104,6 +107,7 @@ export function returnDebtorService({ nameInput, rowIdx, forceRefresh = false })
       row_idx: rowIdx,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_billing_rows',
   });
 }
 
@@ -111,6 +115,7 @@ export function undoPayment() {
   return requestJson('/api/billing/payments/undo', {
     method: 'POST',
     body: {},
+    writeTable: 'operational_billing_rows',
   });
 }
 
@@ -118,6 +123,7 @@ export function redoPayment() {
   return requestJson('/api/billing/payments/redo', {
     method: 'POST',
     body: {},
+    writeTable: 'operational_billing_rows',
   });
 }
 
@@ -187,16 +193,19 @@ export function searchServices({ query = '', forceRefresh = false, signal } = {}
   });
 }
 
-export function fetchFoundationCashflowSummary({ signal } = {}) {
-  return requestJson('/api/foundation/cashflow-summary', { signal, cacheTtlMs: SHORT_CACHE_MS });
+export function fetchFoundationCashflowSummary({ forceRefresh = false, signal } = {}) {
+  return requestJson('/api/foundation/cashflow-summary', {
+    signal,
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
+  });
 }
 
-export function fetchFoundationWeeklyAllowance({ signal, cashflowPin = '' } = {}) {
+export function fetchFoundationWeeklyAllowance({ forceRefresh = false, signal, cashflowPin = '' } = {}) {
   return requestJson('/api/foundation/weekly-allowance', {
     signal,
     timeoutMs: 15_000,
     headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
-    cacheTtlMs: SHORT_CACHE_MS,
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
   });
 }
 
@@ -221,6 +230,7 @@ export function createFoundationExpense({ amount, category = '', description = '
       allowance_impact: allowanceImpact,
     },
     headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
+    writeTable: 'manual_expenses',
   });
 }
 
@@ -228,6 +238,7 @@ export function reverseFoundationExpense(expenseId) {
   return requestJson(`/api/foundation/expenses/${encodeURIComponent(String(expenseId || '').trim())}/reverse`, {
     method: 'POST',
     body: {},
+    writeTable: 'manual_expenses',
   });
 }
 
@@ -236,6 +247,7 @@ export function undoLastWeeklyAllowanceWithdrawal({ cashflowPin = '' } = {}) {
     method: 'POST',
     body: {},
     headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
+    writeTable: 'allowance_withdrawals',
   });
 }
 
@@ -248,6 +260,7 @@ export function createFoundationAllowanceWithdrawal({ weekStart = '', allowanceA
       withdrawn_by: withdrawnBy,
     },
     headers: cashflowPin ? { 'X-Cashflow-PIN': String(cashflowPin) } : {},
+    writeTable: 'allowance_withdrawals',
   });
 }
 
@@ -258,6 +271,7 @@ export function changeCashflowPin({ currentPin, newPin }) {
       current_pin: currentPin,
       new_pin: newPin,
     },
+    writeTable: 'app_config',
   });
 }
 
@@ -280,6 +294,7 @@ export function upsertClient({ previousName = null, name, phone, gender = null, 
       sync_sheet: syncSheet,
       force_refresh: forceRefresh,
     },
+    writeTable: 'clients',
   });
 }
 
@@ -290,6 +305,7 @@ export function deleteClient({ name, syncSheet = true }) {
       name,
       sync_sheet: syncSheet,
     },
+    writeTable: 'clients',
   });
 }
 
@@ -297,6 +313,12 @@ export function importSheetPhones({ forceRefresh = false } = {}) {
   return requestJson('/api/stock/live/import-sheet-phones', {
     method: 'POST',
     query: { force_refresh: forceRefresh },
+  });
+}
+
+export function importContactsFromSheet() {
+  return requestJson('/api/clients/live/import-contacts-from-sheet', {
+    method: 'POST',
   });
 }
 
@@ -338,6 +360,7 @@ export function applyNameFix({ mismatchEntry, correctName, forceRefresh = false 
       correct_name: correctName,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_billing_rows',
   });
 }
 
@@ -348,6 +371,7 @@ export function applyAllNameFixes({ mismatchEntries, forceRefresh = false }) {
       mismatch_entries: mismatchEntries,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_billing_rows',
   });
 }
 
@@ -368,6 +392,7 @@ export function addStockRecord({ valuesByHeader, forceRefresh = false, allowStol
       force_refresh: forceRefresh,
       allow_stolen_warning_override: allowStolenWarningOverride,
     },
+    writeTable: 'operational_stock_rows',
   });
 }
 
@@ -396,6 +421,7 @@ export function createStolenDevice({ phoneName = '', imeiRaw, note = '', source 
       note,
       source,
     },
+    writeTable: 'stolen_devices',
   });
 }
 
@@ -409,11 +435,15 @@ export function updateStolenDevice({ recordId, phoneName = null, note = null, so
       is_active: isActive,
       cleared_note: clearedNote,
     },
+    writeTable: 'stolen_devices',
   });
 }
 
-export function fetchSyncStatus({ signal } = {}) {
-  return requestJson('/api/sync/status', { signal, cacheTtlMs: SHORT_CACHE_MS });
+export function fetchSyncStatus({ signal, forceRefresh = false } = {}) {
+  return requestJson('/api/sync/status', {
+    signal,
+    cacheTtlMs: forceRefresh ? 0 : SHORT_CACHE_MS,
+  });
 }
 
 export function pullNow() {
@@ -425,6 +455,111 @@ export function refreshWorkspace({ forceRefresh = true } = {}) {
     method: 'POST',
     query: { force_refresh: forceRefresh },
   });
+}
+
+/**
+ * Perform a complete workspace refresh directly from Supabase with timing diagnostics.
+ * Fetches all critical data sections and returns timing information for each endpoint.
+ * @returns {Promise<Object>} { success, data, errors, timing }
+ */
+export async function performFullWorkspaceRefresh() {
+  const startTime = performance.now();
+  const results = {};
+  const errors = [];
+  const timings = {};
+
+  const withTimeout = async (promise, timeoutMs, label) => {
+    if (!timeoutMs || timeoutMs <= 0) {
+      return promise;
+    }
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        window.setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  };
+
+  const fetchWithTiming = async (label, fetchFn, timeoutMs = 30_000) => {
+    const startFetch = performance.now();
+    try {
+      const result = await withTimeout(fetchFn(), timeoutMs, label);
+      const duration = performance.now() - startFetch;
+      timings[label] = { duration: Math.round(duration), status: 'success' };
+      results[label] = result;
+      return { success: true, result };
+    } catch (error) {
+      const duration = performance.now() - startFetch;
+      timings[label] = { duration: Math.round(duration), status: 'error', error: error.message };
+      errors.push({ endpoint: label, error: error.message });
+      return { success: false, error };
+    }
+  };
+
+  // Fetch all sections in parallel for maximum performance
+  await Promise.all([
+    // Billing & Dashboard Data
+    fetchWithTiming('home-bootstrap', () =>
+      fetchHomeBootstrap({ forceRefresh: true })
+    ),
+    fetchWithTiming('unpaid-today', () =>
+      fetchUnpaidToday({ forceRefresh: true })
+    ),
+    fetchWithTiming('unpaid-bills', () =>
+      fetchUnpaidTodayBills({ forceRefresh: true })
+    ),
+    fetchWithTiming('whatsapp-history', () =>
+      fetchWhatsappHistory({ forceRefresh: true })
+    ),
+    fetchWithTiming('pending-service-deals', () =>
+      fetchPendingServiceDeals({ forceRefresh: true })
+    ),
+
+    // Stock Data
+    fetchWithTiming('stock-dashboard', () =>
+      fetchStockDashboard({ filterMode: 'all', forceRefresh: true })
+    ),
+    fetchWithTiming('stock-form', () =>
+      fetchStockForm({ forceRefresh: true })
+    ),
+
+    // Financial & Foundation Data
+    fetchWithTiming('cashflow-summary', () =>
+      fetchFoundationCashflowSummary({ forceRefresh: true })
+    ),
+    fetchWithTiming(
+      'cashflow-dashboard',
+      () => fetchFoundationCashflowDashboard({ forceRefresh: true }),
+      40_000,
+    ),
+    fetchWithTiming('weekly-allowance', () =>
+      fetchFoundationWeeklyAllowance({ forceRefresh: true })
+    ),
+
+    // Clients & Supporting Data
+    fetchWithTiming('clients', () =>
+      fetchClients({ forceReload: true })
+    ),
+    fetchWithTiming('sync-status', () =>
+      fetchSyncStatus({ forceRefresh: true })
+    ),
+  ]);
+
+  const totalDuration = performance.now() - startTime;
+
+  return {
+    success: errors.length === 0,
+    data: results,
+    errors,
+    timing: {
+      total: Math.round(totalDuration),
+      byEndpoint: timings,
+      successCount: Object.values(timings).filter(t => t.status === 'success').length,
+      errorCount: Object.values(timings).filter(t => t.status === 'error').length,
+    },
+  };
 }
 
 export function syncToGoogleSheets({ limit = 5000 } = {}) {

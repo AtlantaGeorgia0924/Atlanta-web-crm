@@ -349,13 +349,19 @@ def build_live_payment_plan(payload: LivePaymentPlanRequest, runtime=Depends(get
 
 @router.post('/payments/apply')
 def apply_payment_endpoint(payload: ApplyPaymentRequest, runtime=Depends(get_runtime)):
+    import time
+    start_time = time.monotonic()
+    
     try:
+        # IMPORTANT: Never force_refresh on apply_payment - always use cached data.
+        # If user needs fresh data, they should use Refresh Workspace first.
         result = runtime.apply_payment(
             payload.name_input,
             payload.payment_amount,
             manual_service_row_idx=payload.manual_service_row_idx,
-            force_refresh=payload.force_refresh,
+            force_refresh=False,  # Always use cache
         )
+        result['timing_ms'] = round((time.monotonic() - start_time) * 1000)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

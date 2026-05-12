@@ -22,6 +22,7 @@ export async function checkoutSaleCart({ items, forceRefresh = false }) {
       force_refresh: forceRefresh,
     },
     timeoutMs: 45_000,
+    writeTable: 'operational_stock_rows',
   });
 }
 
@@ -34,6 +35,7 @@ export async function updateStockRow({ rowNum, valuesByHeader, forceRefresh = fa
       force_refresh: forceRefresh,
     },
     timeoutMs: 30_000,
+    writeTable: 'operational_stock_rows',
   });
 }
 
@@ -45,6 +47,7 @@ export async function addServiceRecord({ valuesByHeader, forceRefresh = false })
       force_refresh: forceRefresh,
     },
     timeoutMs: 30_000,
+    writeTable: 'operational_billing_rows',
   });
 }
 
@@ -66,6 +69,7 @@ export async function returnServiceDeal({ rowNum, forceRefresh = false }) {
       row_num: rowNum,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_billing_rows',
   });
 }
 
@@ -78,6 +82,7 @@ export async function updateServiceDealPayment({ rowNum, paymentStatus, amountPa
       amount_paid: amountPaid,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_billing_rows',
   });
 }
 
@@ -88,6 +93,7 @@ export async function returnStockItem({ rowNum, forceRefresh = false }) {
       row_num: rowNum,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_stock_rows',
   });
 }
 
@@ -98,6 +104,7 @@ export async function deleteStockRow({ rowNum, forceRefresh = false }) {
       row_num: rowNum,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_stock_rows',
   });
 }
 
@@ -108,6 +115,7 @@ export async function softDeleteStockRow({ rowNum, forceRefresh = false }) {
       row_num: rowNum,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_stock_rows',
   });
 }
 
@@ -120,6 +128,7 @@ export async function updatePendingDealPayment({ rowNum, paymentStatus, amountPa
       amount_paid: amountPaid,
       force_refresh: forceRefresh,
     },
+    writeTable: 'operational_stock_rows',
   });
 }
 
@@ -130,7 +139,7 @@ export async function updatePendingDealMeta({ rowNum, valuesByHeader, forceRefre
       row_num: rowNum,
       values_by_header: valuesByHeader,
       force_refresh: forceRefresh,
-    },
+    },    writeTable: 'operational_billing_rows',    writeTable: 'operational_stock_rows',
   });
 }
 

@@ -13,6 +13,7 @@ export function createUser({ username, password, role = 'staff', isActive = true
       role,
       is_active: isActive,
     },
+    writeTable: 'users',
   });
 }
 
@@ -28,5 +29,6 @@ export function updateUser({ userId, role, isActive }) {
   return requestJson(`/api/users/${encodeURIComponent(String(userId))}`, {
     method: 'PATCH',
     body,
+    writeTable: 'users',
   });
 }

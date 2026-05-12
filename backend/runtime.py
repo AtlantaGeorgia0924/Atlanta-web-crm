@@ -3491,6 +3491,322 @@ class BackendRuntime:
             end_letter = column_index_to_letter(max_cols - 1)
             worksheet.update(f'A1:{end_letter}{len(padded)}', padded, value_input_option='USER_ENTERED')
 
+    @staticmethod
+    def _sheet_cell_text(value):
+        if value is None:
+            return ''
+        if isinstance(value, bool):
+            return 'TRUE' if value else 'FALSE'
+        if isinstance(value, (datetime,)):
+            return value.isoformat()
+        if isinstance(value, (dict, list)):
+            try:
+                return json.dumps(value, separators=(',', ':'), ensure_ascii=True)
+            except Exception:
+                return str(value)
+        return str(value)
+
+    def _ensure_backup_worksheet(self, title, default_headers):
+        worksheet = None
+        with self._sheet_lock:
+            try:
+                worksheet = self.main_spreadsheet.worksheet(title)
+            except Exception:
+                worksheet = self.main_spreadsheet.add_worksheet(
+                    title=title,
+                    rows=max(2000, 2),
+                    cols=max(26, len(default_headers) + 6),
+                )
+
+            values = worksheet.get_all_values()
+
+            if not values or not any(str(cell or '').strip() for cell in (values[0] if values else [])):
+                end_letter = column_index_to_letter(max(0, len(default_headers) - 1))
+                worksheet.update(
+                    f'A1:{end_letter}1',
+                    [list(default_headers)],
+                    value_input_option='USER_ENTERED',
+                )
+                values = worksheet.get_all_values()
+
+            headers = [str(cell or '').strip() for cell in ((values[0] if values else []) or [])]
+            normalized_existing = {self._normalize_optional_header_name(header) for header in headers if str(header or '').strip()}
+            missing_headers = [
+                header for header in default_headers
+                if self._normalize_optional_header_name(header) not in normalized_existing
+            ]
+            if missing_headers:
+                headers = [*headers, *missing_headers]
+                end_letter = column_index_to_letter(max(0, len(headers) - 1))
+                worksheet.update(
+                    f'A1:{end_letter}1',
+                    [headers],
+                    value_input_option='USER_ENTERED',
+                )
+                values = worksheet.get_all_values()
+                headers = [str(cell or '').strip() for cell in ((values[0] if values else []) or [])]
+
+        return worksheet, headers, values
+
+    def _header_lookup(self, headers):
+        lookup = {}
+        for index, header in enumerate(list(headers or [])):
+            normalized = self._normalize_optional_header_name(header)
+            if normalized and normalized not in lookup:
+                lookup[normalized] = index
+        return lookup
+
+    def _row_lookup_by_match_columns(self, rows, header_lookup, match_columns):
+        lookup = {}
+        for row_num, row in enumerate(list(rows or []), start=2):
+            for column_name in match_columns:
+                idx = header_lookup.get(self._normalize_optional_header_name(column_name))
+                if idx is None:
+                    continue
+                value = str((row[idx] if idx < len(row) else '') or '').strip()
+                if not value:
+                    continue
+                lookup[(self._normalize_optional_header_name(column_name), value)] = row_num
+        return lookup
+
+    def _upsert_backup_dataset(
+        self,
+        *,
+        worksheet_title,
+        default_headers,
+        source_rows,
+        match_columns,
+    ):
+        worksheet, headers, all_values = self._ensure_backup_worksheet(worksheet_title, default_headers)
+        data_rows = list(all_values[1:] if len(all_values) > 1 else [])
+        header_lookup = self._header_lookup(headers)
+        existing_lookup = self._row_lookup_by_match_columns(data_rows, header_lookup, match_columns)
+
+        updates = []
+        append_rows = []
+        inserted = 0
+        updated = 0
+        errors = []
+
+        for source in list(source_rows or []):
+            try:
+                source_map = {
+                    key: self._sheet_cell_text(value)
+                    for key, value in dict(source or {}).items()
+                }
+
+                target_row_num = None
+                for match_column in match_columns:
+                    match_value = str(source_map.get(match_column, '') or '').strip()
+                    if not match_value:
+                        continue
+                    target_row_num = existing_lookup.get((self._normalize_optional_header_name(match_column), match_value))
+                    if target_row_num:
+                        break
+
+                if target_row_num:
+                    row_index = target_row_num - 2
+                    existing_row = list(data_rows[row_index] if row_index < len(data_rows) else [])
+                    row_changed = False
+                    for key, value in source_map.items():
+                        col_index = header_lookup.get(self._normalize_optional_header_name(key))
+                        if col_index is None:
+                            continue
+                        current = str((existing_row[col_index] if col_index < len(existing_row) else '') or '')
+                        if current == value:
+                            continue
+                        updates.append({
+                            'range': f'{column_index_to_letter(col_index)}{target_row_num}',
+                            'values': [[value]],
+                        })
+                        row_changed = True
+                    if row_changed:
+                        updated += 1
+                    continue
+
+                new_row = [''] * len(headers)
+                for key, value in source_map.items():
+                    col_index = header_lookup.get(self._normalize_optional_header_name(key))
+                    if col_index is None:
+                        continue
+                    new_row[col_index] = value
+                append_rows.append(new_row)
+                inserted += 1
+            except Exception as exc:
+                errors.append(str(exc))
+
+        with self._sheet_lock:
+            if updates:
+                worksheet.batch_update(updates, value_input_option='USER_ENTERED')
+            if append_rows:
+                worksheet.append_rows(append_rows, value_input_option='USER_ENTERED', table_range='A1')
+
+        return {
+            'worksheet': worksheet_title,
+            'inserted': inserted,
+            'updated': updated,
+            'errors': len(errors),
+            'error_messages': errors,
+        }
+
+    @staticmethod
+    def _compose_cashflow_period_key(period_type, period_start, period_end):
+        t = str(period_type or '').strip().lower()
+        s = str(period_start or '').strip()
+        e = str(period_end or '').strip()
+        if not (t and s and e):
+            return ''
+        return f'{t}:{s}:{e}'
+
+    def _fetch_backup_dataset_rows(self, *, limit=5000):
+        bounded_limit = max(1, int(limit or 5000))
+
+        billing_rows_db = self.postgres_sync_manager.fetchall_dict(
+            """
+            SELECT id, record_id, source_hash, sheet_row_num, imei, customer_name,
+                   payment_status, payment_date, paid_date, expense_amount,
+                   expense_description, calculated_profit, payload_json,
+                   created_at, updated_at
+            FROM operational_billing_rows
+            ORDER BY updated_at ASC, id ASC
+            LIMIT %s
+            """,
+            (bounded_limit,),
+        )
+        stock_rows_db = self.postgres_sync_manager.fetchall_dict(
+            """
+            SELECT id, record_id, source_hash, sheet_row_num, imei, customer_name,
+                   payment_status, payment_date, paid_date, expense_amount,
+                   expense_description, calculated_profit, payload_json,
+                   created_at, updated_at
+            FROM operational_stock_rows
+            ORDER BY updated_at ASC, id ASC
+            LIMIT %s
+            """,
+            (bounded_limit,),
+        )
+        manual_expenses_db = self.postgres_sync_manager.fetchall_dict(
+            """
+            SELECT id, amount, description, expense_date, is_reversed, reversed_at
+            FROM manual_expenses
+            ORDER BY expense_date ASC, id ASC
+            LIMIT %s
+            """,
+            (bounded_limit,),
+        )
+        allowance_db = self.postgres_sync_manager.fetchall_dict(
+            """
+            SELECT id, week_start, allowance_amount, withdrawn_status, withdrawn_date, withdrawn_by
+            FROM allowance_withdrawals
+            ORDER BY week_start ASC, id ASC
+            LIMIT %s
+            """,
+            (bounded_limit,),
+        )
+        cashflow_db = self.postgres_sync_manager.fetchall_dict(
+            """
+            SELECT id, period_type, period_start, period_end, profit_seen, expenses_total,
+                   net_profit, allowance_amount, profit_left, generated_at
+            FROM cashflow_summary
+            ORDER BY period_start ASC, period_end ASC, id ASC
+            LIMIT %s
+            """,
+            (bounded_limit,),
+        )
+
+        billing_rows = []
+        for row in billing_rows_db:
+            record_id = str(row.get('record_id') or '').strip()
+            source_hash = str(row.get('source_hash') or '').strip()
+            billing_rows.append({
+                'sync_key': record_id or source_hash or f"billing-row-{row.get('id')}",
+                'record_id': record_id,
+                'source_hash': source_hash,
+                'sheet_row_num': row.get('sheet_row_num'),
+                'imei': row.get('imei'),
+                'customer_name': row.get('customer_name'),
+                'payment_status': row.get('payment_status'),
+                'payment_date': row.get('payment_date'),
+                'paid_date': row.get('paid_date'),
+                'expense_amount': row.get('expense_amount'),
+                'expense_description': row.get('expense_description'),
+                'calculated_profit': row.get('calculated_profit'),
+                'payload_json': row.get('payload_json'),
+                'created_at': row.get('created_at'),
+                'updated_at': row.get('updated_at'),
+            })
+
+        stock_rows = []
+        for row in stock_rows_db:
+            record_id = str(row.get('record_id') or '').strip()
+            source_hash = str(row.get('source_hash') or '').strip()
+            stock_rows.append({
+                'sync_key': record_id or source_hash or f"stock-row-{row.get('id')}",
+                'record_id': record_id,
+                'source_hash': source_hash,
+                'sheet_row_num': row.get('sheet_row_num'),
+                'imei': row.get('imei'),
+                'customer_name': row.get('customer_name'),
+                'payment_status': row.get('payment_status'),
+                'payment_date': row.get('payment_date'),
+                'paid_date': row.get('paid_date'),
+                'expense_amount': row.get('expense_amount'),
+                'expense_description': row.get('expense_description'),
+                'calculated_profit': row.get('calculated_profit'),
+                'payload_json': row.get('payload_json'),
+                'created_at': row.get('created_at'),
+                'updated_at': row.get('updated_at'),
+            })
+
+        manual_expenses = []
+        for row in manual_expenses_db:
+            manual_expenses.append({
+                'id': str(row.get('id') or '').strip(),
+                'amount': row.get('amount'),
+                'description': row.get('description'),
+                'expense_date': row.get('expense_date'),
+                'is_reversed': row.get('is_reversed'),
+                'reversed_at': row.get('reversed_at'),
+            })
+
+        allowance_withdrawals = []
+        for row in allowance_db:
+            allowance_withdrawals.append({
+                'id': str(row.get('id') or '').strip(),
+                'week_start': row.get('week_start'),
+                'allowance_amount': row.get('allowance_amount'),
+                'withdrawn_status': row.get('withdrawn_status'),
+                'withdrawn_date': row.get('withdrawn_date'),
+                'withdrawn_by': row.get('withdrawn_by'),
+            })
+
+        cashflow_summary = []
+        for row in cashflow_db:
+            period_type = row.get('period_type')
+            period_start = row.get('period_start')
+            period_end = row.get('period_end')
+            cashflow_summary.append({
+                'id': str(row.get('id') or '').strip(),
+                'period_key': self._compose_cashflow_period_key(period_type, period_start, period_end),
+                'period_type': period_type,
+                'period_start': period_start,
+                'period_end': period_end,
+                'profit_seen': row.get('profit_seen'),
+                'expenses_total': row.get('expenses_total'),
+                'net_profit': row.get('net_profit'),
+                'allowance_amount': row.get('allowance_amount'),
+                'profit_left': row.get('profit_left'),
+                'generated_at': row.get('generated_at'),
+            })
+
+        return {
+            'billing_services': billing_rows,
+            'stock_products': stock_rows,
+            'manual_expenses': manual_expenses,
+            'allowance_withdrawals': allowance_withdrawals,
+            'cashflow_summary': cashflow_summary,
+        }
+
     def sync_supabase_cache_to_sheets(self, *, limit=5000):
         if not self.postgres_ready:
             raise RuntimeError('Supabase sync manager is not ready.')
@@ -3505,23 +3821,80 @@ class BackendRuntime:
             'mode': 'manual_push',
         }
         try:
-            main_values = self._load_cached_rows('main_values')
-            stock_values = self._load_cached_rows('stock_values')
-            cashflow_values = self._load_cached_rows('cashflow_expense_values')
+            datasets = self._fetch_backup_dataset_rows(limit=limit)
 
-            if not main_values:
-                raise RuntimeError('Supabase cache is missing main_values; cannot sync backup yet.')
+            dataset_specs = [
+                {
+                    'name': 'billing_services',
+                    'worksheet': 'BACKUP_BILLING_SERVICES',
+                    'headers': [
+                        'sync_key', 'record_id', 'source_hash', 'sheet_row_num', 'imei', 'customer_name',
+                        'payment_status', 'payment_date', 'paid_date', 'expense_amount',
+                        'expense_description', 'calculated_profit', 'payload_json', 'created_at', 'updated_at',
+                    ],
+                    'match_columns': ['sync_key', 'record_id', 'source_hash'],
+                },
+                {
+                    'name': 'stock_products',
+                    'worksheet': 'BACKUP_STOCK_PRODUCTS',
+                    'headers': [
+                        'sync_key', 'record_id', 'source_hash', 'sheet_row_num', 'imei', 'customer_name',
+                        'payment_status', 'payment_date', 'paid_date', 'expense_amount',
+                        'expense_description', 'calculated_profit', 'payload_json', 'created_at', 'updated_at',
+                    ],
+                    'match_columns': ['sync_key', 'record_id', 'source_hash'],
+                },
+                {
+                    'name': 'manual_expenses',
+                    'worksheet': 'BACKUP_MANUAL_EXPENSES',
+                    'headers': ['id', 'amount', 'description', 'expense_date', 'is_reversed', 'reversed_at'],
+                    'match_columns': ['id'],
+                },
+                {
+                    'name': 'allowance_withdrawals',
+                    'worksheet': 'BACKUP_ALLOWANCE_WITHDRAWALS',
+                    'headers': ['id', 'week_start', 'allowance_amount', 'withdrawn_status', 'withdrawn_date', 'withdrawn_by'],
+                    'match_columns': ['id', 'week_start'],
+                },
+                {
+                    'name': 'cashflow_summary',
+                    'worksheet': 'BACKUP_CASHFLOW_SUMMARY',
+                    'headers': [
+                        'id', 'period_key', 'period_type', 'period_start', 'period_end',
+                        'profit_seen', 'expenses_total', 'net_profit', 'allowance_amount', 'profit_left', 'generated_at',
+                    ],
+                    'match_columns': ['id', 'period_key'],
+                },
+            ]
 
-            stock_sheet_id = self._resolve_stock_sheet_id()
-            if not stock_sheet_id:
-                raise RuntimeError('Stock sheet ID is missing.')
+            dataset_results = {}
+            total_inserted = 0
+            total_updated = 0
+            total_errors = 0
+            failed_datasets = 0
 
-            stock_ws = self._resolve_stock_worksheet(stock_sheet_id)
-            cashflow_ws = self._resolve_cashflow_expense_worksheet(create_if_missing=True)
-
-            self._write_sheet_values(self.main_sheet, main_values)
-            self._write_sheet_values(stock_ws, stock_values)
-            self._write_sheet_values(cashflow_ws, cashflow_values)
+            for spec in dataset_specs:
+                dataset_name = spec['name']
+                try:
+                    result = self._upsert_backup_dataset(
+                        worksheet_title=spec['worksheet'],
+                        default_headers=spec['headers'],
+                        source_rows=datasets.get(dataset_name) or [],
+                        match_columns=spec['match_columns'],
+                    )
+                except Exception as exc:
+                    failed_datasets += 1
+                    result = {
+                        'worksheet': spec['worksheet'],
+                        'inserted': 0,
+                        'updated': 0,
+                        'errors': 1,
+                        'error_messages': [str(exc)],
+                    }
+                dataset_results[dataset_name] = result
+                total_inserted += int(result.get('inserted') or 0)
+                total_updated += int(result.get('updated') or 0)
+                total_errors += int(result.get('errors') or 0)
 
             pending_items = self.postgres_sync_manager.fetch_pending_operations(limit=max(1, int(limit or 5000)))
             for item in pending_items:
@@ -3533,17 +3906,35 @@ class BackendRuntime:
             remaining = len(self.postgres_sync_manager.fetch_pending_operations(limit=500))
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
 
+            if failed_datasets >= len(dataset_specs):
+                overall_status = 'failed'
+            elif total_errors > 0:
+                overall_status = 'partial'
+            else:
+                overall_status = 'success'
+
             status_payload.update({
-                'status': 'success',
+                'status': overall_status,
                 'error': '',
                 'duration_ms': duration_ms,
-                'main_rows': len(main_values),
-                'stock_rows': len(stock_values),
-                'cashflow_rows': len(cashflow_values),
+                'datasets': dataset_results,
+                'inserted': total_inserted,
+                'updated': total_updated,
+                'sync_errors': total_errors,
                 'processed': len(pending_items),
                 'failed': 0,
                 'remaining_pending': remaining,
             })
+
+            if overall_status != 'success':
+                first_error = ''
+                for dataset_name in ('billing_services', 'stock_products', 'manual_expenses', 'allowance_withdrawals', 'cashflow_summary'):
+                    messages = (dataset_results.get(dataset_name) or {}).get('error_messages') or []
+                    if messages:
+                        first_error = messages[0]
+                        break
+                status_payload['error'] = first_error or 'Some backup datasets failed to upsert.'
+
             return dict(status_payload)
         except Exception as exc:
             status_payload.update({
@@ -5983,6 +6374,109 @@ class BackendRuntime:
             'directory_rows': payload.get('directory_rows', []),
         }
 
+    def import_contacts_from_sheet(self, force_refresh=False):
+        import time as _time
+
+        t_total_start = _time.monotonic()
+
+        # --- Fetch from Google Sheets (use cache first) ---
+        t_fetch_start = _time.monotonic()
+        try:
+            # IMPORTANT: Never force_refresh here - use cache first, only fall back to Google Sheets if needed
+            values, columns = self._get_main_sheet_columns(force_refresh=False)
+        except Exception as exc:
+            raise RuntimeError(f'Google Sheets unavailable: {exc}') from exc
+        t_fetch_ms = round((_time.monotonic() - t_fetch_start) * 1000)
+
+        name_col = columns.get('name_col')
+        phone_col = columns.get('phone_col')
+
+        if not values or name_col is None or phone_col is None:
+            self.logger.warning('import_contacts_from_sheet: no values or column indices found')
+            return {
+                'total_rows': 0,
+                'inserted': 0,
+                'updated': 0,
+                'skipped': 0,
+                'errors': 0,
+                'timing': {'fetch_ms': t_fetch_ms, 'upsert_ms': 0, 'total_ms': 0},
+                'registry': self.get_client_registry(force_reload=True),
+                'entries': [],
+                'stats': {},
+            }
+
+        data_rows = values[1:]  # skip header
+        total_rows = len(data_rows)
+        self.logger.info('import_contacts_from_sheet: fetched %d data rows in %dms', total_rows, t_fetch_ms)
+
+        # --- Upsert into client registry ---
+        t_upsert_start = _time.monotonic()
+        inserted = 0
+        updated = 0
+        skipped = 0
+        errors = 0
+
+        with self._clients_lock:
+            registry = self._load_clients_from_disk()
+
+            for row in data_rows:
+                try:
+                    if name_col >= len(row) or phone_col >= len(row):
+                        skipped += 1
+                        continue
+
+                    raw_name = str(row[name_col]).strip()
+                    raw_phone = str(row[phone_col]).strip()
+
+                    if not raw_name or not raw_phone:
+                        skipped += 1
+                        continue
+
+                    phone = normalize_phone_number(raw_phone)
+                    if not phone:
+                        skipped += 1
+                        continue
+
+                    was_added, changed, _ = set_client_phone(raw_name, phone, registry)
+                    if was_added:
+                        inserted += 1
+                    elif changed:
+                        updated += 1
+                    else:
+                        skipped += 1
+                except Exception as exc:
+                    self.logger.warning('import_contacts_from_sheet: row error: %s', exc)
+                    errors += 1
+
+            if inserted or updated:
+                registry = self._save_clients_to_disk(registry)
+
+        t_upsert_ms = round((_time.monotonic() - t_upsert_start) * 1000)
+        t_total_ms = round((_time.monotonic() - t_total_start) * 1000)
+
+        self.logger.info(
+            'import_contacts_from_sheet: total=%d inserted=%d updated=%d skipped=%d errors=%d '
+            'fetch=%dms upsert=%dms total=%dms',
+            total_rows, inserted, updated, skipped, errors, t_fetch_ms, t_upsert_ms, t_total_ms,
+        )
+
+        payload = self.get_client_registry_payload(force_reload=True)
+        return {
+            'total_rows': total_rows,
+            'inserted': inserted,
+            'updated': updated,
+            'skipped': skipped,
+            'errors': errors,
+            'timing': {
+                'fetch_ms': t_fetch_ms,
+                'upsert_ms': t_upsert_ms,
+                'total_ms': t_total_ms,
+            },
+            'registry': payload.get('registry', registry),
+            'entries': payload.get('entries', []),
+            'stats': payload.get('stats', {}),
+        }
+
     def sync_clients_to_sheet_phone_column(self, force_refresh=False):
         values, columns = self._get_main_sheet_columns(force_refresh=force_refresh)
         name_col = columns.get('name_col')
@@ -6100,20 +6594,61 @@ class BackendRuntime:
         }
 
     def refresh_workspace(self, force_refresh=False):
+        """Refresh workspace data from Supabase only (fast path).
+        
+        IMPORTANT: This is the normal workspace refresh that should be FAST.
+        It ONLY pulls from the database, no Google Sheets operations.
+        
+        For syncing data back to Google Sheets, users should use the
+        manual "Sync to Google Sheets" button which calls sync_workspace_to_sheets().
+        """
+        import time as _time
+        start_time = _time.monotonic()
+        
+        # Only do database refresh - no Sheet operations
+        pull_result = {}
+        if self.postgres_ready:
+            try:
+                pull_result = self.pull_once() if self.postgres_ready else {}
+            except Exception as exc:
+                self.logger.warning('refresh_workspace: pull_once failed: %s', exc)
+        
+        duration_ms = round((_time.monotonic() - start_time) * 1000)
+        
+        return {
+            'status': 'success',
+            'pull_result': pull_result,
+            'timing_ms': duration_ms,
+            'message': 'Workspace refreshed from Supabase in {}ms'.format(duration_ms),
+        }
+    
+    def sync_workspace_to_sheets(self, force_refresh=False):
+        """Explicitly sync workspace data back to Google Sheets (manual operation).
+        
+        This should ONLY be called by the manual "Sync to Google Sheets" button.
+        This is NOT called during normal workspace refresh.
+        """
+        import time as _time
+        start_time = _time.monotonic()
+        
+        # Perform all Sheet sync operations
         import_result = self.import_sheet_phone_numbers_to_clients(force_refresh=force_refresh)
         directory_result = self.sync_client_directory_sheet(force_reload=True)
         phone_update_result = self.sync_clients_to_sheet_phone_column(force_refresh=force_refresh)
         validation_result = self.apply_sheet_name_validation()
         autofill_result = self.apply_sheet_phone_autofill_formulas(force_refresh=force_refresh)
-        pull_result = self.pull_once() if self.postgres_ready else {}
-
+        
+        duration_ms = round((_time.monotonic() - start_time) * 1000)
+        
         return {
+            'status': 'success',
             'import_result': import_result,
             'directory_result': directory_result,
             'phone_update_result': phone_update_result,
             'validation_result': validation_result,
             'autofill_result': autofill_result,
-            'pull_result': pull_result,
+            'timing_ms': duration_ms,
+            'message': 'Workspace synced to Google Sheets in {}ms'.format(duration_ms),
         }
 
     def upsert_client(self, name, phone, gender=None, previous_name=None, sync_sheet=True, force_refresh=False):

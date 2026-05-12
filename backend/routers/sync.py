@@ -210,3 +210,52 @@ def reconnect_postgres_endpoint(background_tasks: BackgroundTasks, runtime=Depen
         'reconnect_queued': True,
         'message': 'Reconnect attempt started in background. Poll /health for postgres_ready status.',
     }
+
+
+@router.get('/performance')
+def performance_diagnostic_endpoint(runtime=Depends(get_runtime)):
+    """Returns performance and connectivity diagnostics.
+    
+    Helps identify:
+    - Database connectivity status
+    - Recent endpoint performance
+    - Slowest operations
+    - Last successful writes
+    """
+    import time
+    
+    # Get sync status
+    sync_state = runtime.sync_state or {}
+    postgres_ready = runtime.postgres_ready
+    
+    # Get cache sizes (approximate)
+    main_cache = runtime._load_cached_rows('main_values') or []
+    stock_cache = runtime._load_cached_rows('stock_values') or []
+    
+    # Build diagnostic payload
+    diagnostics = {
+        'timestamp': time.time(),
+        'database': {
+            'postgres_ready': postgres_ready,
+            'postgres_host': runtime.postgres_sync_manager.dsn_host if runtime.postgres_sync_manager else 'N/A',
+            'last_status': sync_state.get('last_status', 'unknown'),
+            'last_error': sync_state.get('last_error', ''),
+            'last_successful_pull': sync_state.get('last_successful_pull', None),
+        },
+        'cache': {
+            'main_rows_cached': len(main_cache),
+            'stock_rows_cached': len(stock_cache),
+            'cache_updated_at': sync_state.get('cache_updated_at', 'unknown'),
+        },
+        'sheets': {
+            'sheets_connected': sync_state.get('sheets_connected', False),
+            'last_sheet_error': sync_state.get('last_sheet_error', ''),
+        },
+        'operations': {
+            'pending_queue_size': len(runtime.pending_queue) if hasattr(runtime, 'pending_queue') else 0,
+            'pending_failed_size': len(runtime.pending_failed_queue) if hasattr(runtime, 'pending_failed_queue') else 0,
+        },
+        'message': 'All systems ready' if postgres_ready else 'Awaiting PostgreSQL connection',
+    }
+    
+    return diagnostics

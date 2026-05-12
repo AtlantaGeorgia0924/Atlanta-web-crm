@@ -4,6 +4,39 @@ let refreshInFlight = null;
 const responseCache = new Map();
 const inFlightRequests = new Map();
 
+function emitDatabaseWriteEvent(detail) {
+	if (typeof window === 'undefined') {
+		return;
+	}
+	try {
+		window.dispatchEvent(new CustomEvent('atlanta:database-write', { detail }));
+	} catch {
+		// Ignore event dispatch errors.
+	}
+}
+
+function inferRecordId(payload) {
+	if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+		const directKeys = ['record_id', 'id', 'user_id', 'queued_operation_id', 'queue_id', 'row_num'];
+		for (const key of directKeys) {
+			const value = payload[key];
+			if (value !== undefined && value !== null && String(value).trim()) {
+				return String(value);
+			}
+		}
+		if (payload.item && typeof payload.item === 'object') {
+			const nested = inferRecordId(payload.item);
+			if (nested) {
+				return nested;
+			}
+		}
+		if (Array.isArray(payload.queued_operation_ids) && payload.queued_operation_ids.length) {
+			return String(payload.queued_operation_ids[0] || '').trim();
+		}
+	}
+	return '';
+}
+
 function getApiDiagnosticsStore() {
 	if (typeof window === 'undefined') {
 		return null;
@@ -162,11 +195,13 @@ export async function requestJson(path, {
 	cacheTtlMs = 0,
 	cacheKey = '',
 	dedupeKey = '',
+	writeTable = '',
 	networkRetryAttempted = false,
 } = {}) {
 	const methodUpper = String(method || 'GET').toUpperCase();
 	const requestKey = cacheKey || dedupeKey || makeRequestKey({ method: methodUpper, path, query, body, auth });
 	const now = Date.now();
+	const isWriteOperation = Boolean(writeTable);
 
 	if (methodUpper === 'GET' && cacheTtlMs > 0) {
 		const cached = responseCache.get(requestKey);
@@ -332,6 +367,7 @@ export async function requestJson(path, {
 					auth,
 					skipUnauthorizedHandler,
 					retryOnUnauthorized: false,
+					writeTable,
 				});
 			}
 		}
@@ -361,12 +397,43 @@ export async function requestJson(path, {
 		clearApiCache();
 	}
 
+	if (isWriteOperation && payload && typeof payload === 'object' && !Array.isArray(payload)) {
+		const savedAt = String(payload.saved_at || new Date().toISOString());
+		const recordId = String(payload.record_id || inferRecordId(payload) || '');
+		const table = String(payload.table || writeTable || 'unknown');
+		payload.success = true;
+		payload.table = table;
+		payload.record_id = recordId;
+		payload.saved_at = savedAt;
+		emitDatabaseWriteEvent({
+			status: 'success',
+			success: true,
+			table,
+			record_id: recordId,
+			saved_at: savedAt,
+			path,
+		});
+	}
+
 	return payload;
 	})();
 
 	inFlightRequests.set(requestKey, executeRequest);
 	try {
 		return await executeRequest;
+	} catch (error) {
+		if (isWriteOperation) {
+			emitDatabaseWriteEvent({
+				status: 'failed',
+				success: false,
+				table: String(writeTable || 'unknown'),
+				record_id: '',
+				saved_at: new Date().toISOString(),
+				error: String(error?.message || 'Failed to save to Supabase'),
+				path,
+			});
+		}
+		throw error;
 	} finally {
 		inFlightRequests.delete(requestKey);
 	}

@@ -60,6 +60,48 @@ textarea:focus {
   gap: 22px;
 }
 
+.db-toast-stack {
+  position: sticky;
+  top: 14px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.db-toast {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(4px);
+}
+
+.db-toast strong {
+  font-size: 0.94rem;
+}
+
+.db-toast span {
+  font-size: 0.82rem;
+  opacity: 0.9;
+}
+
+.db-toast--success {
+  background: rgba(233, 252, 241, 0.95);
+  border-color: rgba(44, 131, 72, 0.38);
+  color: #1e5f33;
+}
+
+.db-toast--error {
+  background: rgba(255, 238, 236, 0.96);
+  border-color: rgba(178, 61, 47, 0.35);
+  color: #8d2f24;
+}
+
 .hero-frame {
   display: flex;
   justify-content: space-between;

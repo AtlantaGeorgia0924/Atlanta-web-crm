@@ -33,6 +33,7 @@ import {
   fetchWhatsappHistory,
   importSheetPhones,
   markWhatsappSent,
+  performFullWorkspaceRefresh,
   pullNow,
   redoPayment,
   refreshWorkspace,
@@ -46,6 +47,7 @@ import {
   returnDebtorService,
   updateDebtorService,
   upsertClient,
+  importContactsFromSheet,
 } from './api/workspace';
 
 const PRODUCT_FILTERS = [
@@ -4901,6 +4903,8 @@ function ClientsView({
   onSaveClient,
   onDeleteClient,
   onImportPhones,
+  onImportContactsFromSheet,
+  contactImportBusy,
   googleContacts,
   googleSearch,
   setGoogleSearch,
@@ -5071,11 +5075,17 @@ function ClientsView({
 
           <div className="form-stack">
             <div className="button-row">
-              <button type="button" className="primary-button" onClick={onSyncGoogleContacts} disabled={googleContactsBusy}>
+              <button type="button" className="primary-button" onClick={onSyncGoogleContacts} disabled={googleContactsBusy || contactImportBusy}>
                 {googleContactsBusy ? 'Syncing Contacts...' : 'Sync Google Contacts'}
               </button>
               <button type="button" className="secondary-button" onClick={onApplyGoogleContact} disabled={!selectedGoogleContact || clientsBusy}>
                 Use Selected Contact
+              </button>
+            </div>
+
+            <div className="button-row">
+              <button type="button" className="secondary-button" onClick={onImportContactsFromSheet} disabled={contactImportBusy || googleContactsBusy}>
+                {contactImportBusy ? 'Importing Contacts...' : 'Import Contacts from Sheet'}
               </button>
             </div>
 
@@ -5728,7 +5738,7 @@ function BillNotificationsView({ entries, onOpenDebtors, onSendEntry, sendingKey
   );
 }
 
-function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onReloadStatus, onSyncToSheets }) {
+function SettingsView({ syncStatus, syncBusy, isFullWorkspaceRefreshing, onPullNow, onRefreshWorkspace, onReloadStatus, onSyncToSheets }) {
   const syncState = syncStatus?.sync_state || {};
   const postgresSnapshot = syncStatus?.postgres_snapshot || {};
   const cacheCounts = postgresSnapshot?.cache_counts || {};
@@ -5809,8 +5819,8 @@ function SettingsView({ syncStatus, syncBusy, onPullNow, onRefreshWorkspace, onR
           </div>
 
           <div className="button-column">
-            <button type="button" className="primary-button" onClick={onRefreshWorkspace} disabled={syncBusy}>
-              {syncBusy ? 'Refreshing...' : 'Refresh Whole Workspace'}
+            <button type="button" className="primary-button" onClick={onRefreshWorkspace} disabled={syncBusy || isFullWorkspaceRefreshing}>
+              {isFullWorkspaceRefreshing ? '🔄 Refreshing from Supabase...' : 'Refresh Whole Workspace'}
             </button>
             <button type="button" className="secondary-button" onClick={onPullNow} disabled={syncBusy}>
               Pull Sheets Now
@@ -6120,6 +6130,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const [googleContactsBusy, setGoogleContactsBusy] = useState(false);
   const [googleContactsError, setGoogleContactsError] = useState('');
   const [googleContactsLoadAttempted, setGoogleContactsLoadAttempted] = useState(false);
+  const [contactImportBusy, setContactImportBusy] = useState(false);
 
   const [nameFixData, setNameFixData] = useState({ mismatches: [], count: 0 });
   const [selectedMismatchRaw, setSelectedMismatchRaw] = useState('');
@@ -6130,6 +6141,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
   const [syncStatus, setSyncStatus] = useState(null);
   const [syncBusy, setSyncBusy] = useState(false);
+  const [isFullWorkspaceRefreshing, setIsFullWorkspaceRefreshing] = useState(false);
+  const [databaseWriteToasts, setDatabaseWriteToasts] = useState([]);
+  const databaseToastTimersRef = useRef(new Map());
   const [cashflowSummary, setCashflowSummary] = useState(null);
   const [weeklyAllowance, setWeeklyAllowance] = useState(null);
   const [cashflowExpenses, setCashflowExpenses] = useState([]);
@@ -7114,25 +7128,156 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   }
 
   async function handleFullRefresh() {
-    setSyncBusy(true);
+    setIsFullWorkspaceRefreshing(true);
+    setStatusText('🔄 Refreshing workspace from Supabase...');
+
     try {
-      await refreshWorkspace({ forceRefresh: true });
-      await loadCoreWorkspace(true);
-      await loadStock(true);
-      await loadStockForm(true, true);
-      await loadSelectedDebtorDetails(selectedDebtor, true);
-      const nameFixResult = activeView === 'home' || activeView === 'fix'
-        ? await loadNameFixes({ forceRefresh: true, silent: true })
-        : true;
-      setStatusText(
-        nameFixResult === null
-          ? 'Workspace refreshed, but the Fix scan is unavailable right now.'
-          : 'Workspace refreshed from sheet and cache.'
-      );
+      const refreshResult = await performFullWorkspaceRefresh();
+
+      if (refreshResult.data['home-bootstrap']) {
+        const bootstrapData = refreshResult.data['home-bootstrap'];
+        if (bootstrapData?.debtors) {
+          setDebtorsData(bootstrapData.debtors);
+          const availableNames = (bootstrapData.debtors.sorted_debtors || []).map(([name]) => name);
+          const nextSelected = availableNames.includes(selectedDebtor) ? selectedDebtor : availableNames[0] || '';
+          startTransition(() => setSelectedDebtor(nextSelected));
+        }
+        if (bootstrapData?.sales_snapshot) {
+          setSalesSnapshot(bootstrapData.sales_snapshot);
+        }
+        if (bootstrapData?.sync_status) {
+          setSyncStatus(bootstrapData.sync_status);
+        }
+      }
+
+      if (refreshResult.data['stock-dashboard']) {
+        setStockView(refreshResult.data['stock-dashboard']);
+      }
+
+      if (refreshResult.data['stock-form']) {
+        setStockForm(refreshResult.data['stock-form']);
+      }
+
+      if (refreshResult.data['unpaid-today']) {
+        setUnpaidTodaySummary(refreshResult.data['unpaid-today']);
+      }
+
+      if (refreshResult.data['whatsapp-history']) {
+        setWhatsappHistoryByName(refreshResult.data['whatsapp-history']?.by_name || {});
+      }
+
+      if (refreshResult.data['pending-service-deals']) {
+        setServicePendingDeals(refreshResult.data['pending-service-deals']);
+      }
+
+      if (refreshResult.data['clients']) {
+        setClientsData(normalizeClientsPayload(refreshResult.data['clients']));
+      }
+
+      if (refreshResult.data['cashflow-dashboard']) {
+        const cashflowData = refreshResult.data['cashflow-dashboard'];
+        const defaultSummary = {
+          current_week_profit_seen: 0,
+          current_week_expenses: 0,
+          current_week_net_profit: 0,
+          current_week_allowance_expenses: 0,
+          expense_source: 'database',
+        };
+        const defaultAllowance = {
+          suggested_allowance: 0,
+          calculation_date: '',
+          previous_week_profit: 0,
+        };
+        const normalized = normalizeCashflowPayload(
+          cashflowData?.summary,
+          cashflowData?.weekly_allowance,
+          defaultSummary,
+          defaultAllowance,
+        );
+        setCashflowSummary(normalized.summary);
+        setWeeklyAllowance(normalized.allowance);
+        setCashflowExpenses(Array.isArray(cashflowData?.expenses) ? cashflowData.expenses : []);
+        setCashflowTransactions(Array.isArray(cashflowData?.transactions) ? cashflowData.transactions : []);
+        setCashflowCapital(cashflowData?.capital || { month_total: 0, week_total: 0, entries: [] });
+        setCashflowExpenseSource(cashflowData?.expense_source || normalized.summary?.expense_source || 'database');
+        setCashflowExpenseSheetTitle(cashflowData?.expense_sheet_title || 'CASH FLOW');
+        setCashflowUpdatedAt(new Date());
+      }
+
+      if (refreshResult.data['sync-status']) {
+        setSyncStatus(refreshResult.data['sync-status']);
+      }
+
+      const endpointTimings = Object.entries(refreshResult.timing.byEndpoint)
+        .map(([endpoint, timing]) => `${endpoint}: ${timing.duration}ms${timing.status === 'error' ? ' (error)' : ''}`)
+        .join(' | ');
+
+      const successEntry = {
+        id: `refresh-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        status: 'success',
+        table: 'workspace',
+        record_id: `${refreshResult.timing.total}ms total`,
+        saved_at: new Date().toISOString(),
+        message: 'Workspace refreshed from Supabase successfully ✓',
+        details: `Total: ${refreshResult.timing.total}ms | ${endpointTimings}`,
+      };
+
+      setDatabaseWriteToasts((current) => {
+        const next = [...current, successEntry];
+        return next.slice(-5);
+      });
+
+      const timeoutId = window.setTimeout(() => {
+        setDatabaseWriteToasts((current) => current.filter((toast) => toast.id !== successEntry.id));
+        const timerMap = databaseToastTimersRef.current;
+        if (timerMap && timerMap.has(successEntry.id)) {
+          timerMap.delete(successEntry.id);
+        }
+      }, 6500);
+
+      databaseToastTimersRef.current.set(successEntry.id, timeoutId);
+
+      setStatusText(`Workspace refreshed from Supabase (${refreshResult.timing.total}ms)`);
+
+      if (refreshResult.errors.length > 0) {
+        const errorSummary = refreshResult.errors.map((e) => e.endpoint).join(', ');
+        setWorkspaceError(`Refresh completed with errors: ${errorSummary}`);
+      } else {
+        setWorkspaceError('');
+      }
+
+      setLastLoadedAt(new Date());
     } catch (error) {
-      setStatusText(error.message || 'Could not refresh the workspace.');
+      const errorMessage = error.message || 'Could not refresh the workspace';
+
+      const errorEntry = {
+        id: `refresh-error-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        status: 'failed',
+        table: 'workspace',
+        record_id: 'N/A',
+        saved_at: new Date().toISOString(),
+        message: `Workspace refresh failed: ${errorMessage}`,
+      };
+
+      setDatabaseWriteToasts((current) => {
+        const next = [...current, errorEntry];
+        return next.slice(-5);
+      });
+
+      const timeoutId = window.setTimeout(() => {
+        setDatabaseWriteToasts((current) => current.filter((toast) => toast.id !== errorEntry.id));
+        const timerMap = databaseToastTimersRef.current;
+        if (timerMap && timerMap.has(errorEntry.id)) {
+          timerMap.delete(errorEntry.id);
+        }
+      }, 6500);
+
+      databaseToastTimersRef.current.set(errorEntry.id, timeoutId);
+
+      setStatusText(errorMessage);
+      setWorkspaceError(errorMessage);
     } finally {
-      setSyncBusy(false);
+      setIsFullWorkspaceRefreshing(false);
     }
   }
 
@@ -7167,6 +7312,18 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       active = false;
     };
   }, [isAdmin]);
+
+  useEffect(() => {
+    return () => {
+        const timerMap = databaseToastTimersRef.current;
+        if (timerMap && timerMap.size) {
+          for (const timerId of timerMap.values()) {
+            window.clearTimeout(timerId);
+          }
+          timerMap.clear();
+        }
+      };
+    }, []);
 
   useEffect(() => {
     if (allowedViews.has(activeView)) {
@@ -7830,6 +7987,58 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setStatusText(error.message || 'Could not import phone numbers from the sheet.');
     } finally {
       setClientsBusy(false);
+    }
+  }
+
+  async function handleImportContactsFromSheet() {
+    setContactImportBusy(true);
+    try {
+      const result = await importContactsFromSheet();
+      applyClientRegistryToState(result);
+
+      const { inserted = 0, updated = 0, skipped = 0, errors = 0, total_rows = 0, timing = {} } = result;
+      const timingLabel = timing.total_ms != null ? ` (${timing.total_ms}ms)` : '';
+      const successEntry = {
+        id: `contact-import-${Date.now()}`,
+        status: 'success',
+        table: 'contacts',
+        record_id: null,
+        saved_at: new Date().toISOString(),
+        message: 'Contacts imported successfully.',
+        details: `Rows: ${total_rows} | Inserted: ${inserted} | Updated: ${updated} | Skipped: ${skipped} | Errors: ${errors}${timingLabel}`,
+      };
+
+      setDatabaseWriteToasts((current) => [...current, successEntry].slice(-5));
+      const toastTimer = window.setTimeout(() => {
+        setDatabaseWriteToasts((current) => current.filter((t) => t.id !== successEntry.id));
+        const timerMap = databaseToastTimersRef.current;
+        if (timerMap && timerMap.has(successEntry.id)) timerMap.delete(successEntry.id);
+      }, 6500);
+      databaseToastTimersRef.current.set(successEntry.id, toastTimer);
+
+      setStatusText(`Contacts imported: ${inserted} inserted, ${updated} updated, ${skipped} skipped${errors ? `, ${errors} errors` : ''}.`);
+    } catch (error) {
+      const message = error.message || 'Could not import contacts from the sheet.';
+      const errorEntry = {
+        id: `contact-import-err-${Date.now()}`,
+        status: 'error',
+        table: 'contacts',
+        record_id: null,
+        saved_at: new Date().toISOString(),
+        message: `Contacts import failed: ${message}`,
+        details: null,
+      };
+      setDatabaseWriteToasts((current) => [...current, errorEntry].slice(-5));
+      const toastTimer = window.setTimeout(() => {
+        setDatabaseWriteToasts((current) => current.filter((t) => t.id !== errorEntry.id));
+        const timerMap = databaseToastTimersRef.current;
+        if (timerMap && timerMap.has(errorEntry.id)) timerMap.delete(errorEntry.id);
+      }, 6500);
+      databaseToastTimersRef.current.set(errorEntry.id, toastTimer);
+
+      setStatusText(message);
+    } finally {
+      setContactImportBusy(false);
     }
   }
 
@@ -8859,6 +9068,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           onSaveClient={handleSaveClient}
           onDeleteClient={handleDeleteClient}
           onImportPhones={handleImportSheetPhones}
+          onImportContactsFromSheet={handleImportContactsFromSheet}
+          contactImportBusy={contactImportBusy}
           googleContacts={googleContactsView}
           googleSearch={googleSearch}
           setGoogleSearch={setGoogleSearch}
@@ -8985,6 +9196,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         <MemoSettingsView
           syncStatus={syncStatus}
           syncBusy={syncBusy}
+          isFullWorkspaceRefreshing={isFullWorkspaceRefreshing}
           onPullNow={handlePullNow}
           onRefreshWorkspace={handleFullRefresh}
           onReloadStatus={() => loadCoreWorkspace(false)}
@@ -9131,6 +9343,20 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
             </ViewErrorBoundary>
           </section>
         </section>
+
+        {databaseWriteToasts.length ? (
+          <div className="db-toast-stack" role="status" aria-live="polite">
+            {databaseWriteToasts.map((toast) => (
+              <article
+                key={toast.id}
+                className={`db-toast ${toast.status === 'success' ? 'db-toast--success' : 'db-toast--error'}`}
+              >
+                <strong>{toast.message}</strong>
+                {toast.details ? <span>{toast.details}</span> : null}
+              </article>
+            ))}
+          </div>
+        ) : null}
       </main>
     </div>
   );
