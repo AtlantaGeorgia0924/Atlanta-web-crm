@@ -420,7 +420,6 @@ def set_app_config(
 @router.get('/cashflow-summary', dependencies=[Depends(require_admin)])
 def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        rebuilt_rows, verification, pull_meta = _rebuild_cashflow_from_live(runtime, force_refresh=force_refresh)
         summary_rows = runtime.financial_data_service.get_current_cashflow_summary_rows()
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
@@ -439,9 +438,9 @@ def get_cashflow_summary(force_refresh: bool = False, runtime=Depends(get_runtim
         'summary': summary,
         'rows': summary_rows,
         'weekly_allowance': summary.get('week') or {},
-        'rebuild': rebuilt_rows,
-        'verification_report': verification,
-        'live_pull': pull_meta,
+        'rebuild': {},
+        'verification_report': {},
+        'live_pull': {'attempted': False, 'ok': True, 'error': ''},
     }
 
 
@@ -501,14 +500,7 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
         runtime.logger.warning('Cashflow dashboard: no cache available, returning empty degraded response')
         return _fast_degraded_cashflow_response('postgres_not_ready')
 
-    op_timeout = _CASHFLOW_REBUILD_TIMEOUT_SECONDS if force_refresh else _CASHFLOW_READ_TIMEOUT_SECONDS
-
     try:
-        rebuilt_rows, verification, pull_meta = _run_with_timeout(
-            lambda: _rebuild_cashflow_from_live(runtime, force_refresh=force_refresh),
-            op_timeout,
-            'cashflow_rebuild_timeout',
-        )
         summary_rows = _run_with_timeout(
             lambda: runtime.financial_data_service.get_current_cashflow_summary_rows(),
             _CASHFLOW_READ_TIMEOUT_SECONDS,
@@ -586,9 +578,9 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
         'withdrawals': withdrawal_items,
         'transactions': normalized_transactions,
         'capital': {'month_total': 0, 'week_total': 0, 'entries': []},
-        'rebuild': rebuilt_rows,
-        'verification_report': verification,
-        'live_pull': pull_meta,
+        'rebuild': {},
+        'verification_report': {},
+        'live_pull': {'attempted': False, 'ok': True, 'error': ''},
     }
     # Cache the successful response so we can serve it during future DB outages.
     _store_cashflow_cache(dict(result))

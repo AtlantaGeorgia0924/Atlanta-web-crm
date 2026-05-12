@@ -237,6 +237,7 @@ const STOCK_VIEW_CACHE_KEY = 'atlanta_stock_view_cache_v1';
 const STOCK_FORM_CACHE_KEY = 'atlanta_stock_form_cache_v1';
 const WORKSPACE_CORE_CACHE_KEY = 'atlanta_workspace_core_cache_v1';
 const CASHFLOW_UNLOCK_CACHE_KEY = 'atlanta_cashflow_unlocked_v1';
+const SECRET_CASHFLOW_TAPS_REQUIRED = 7;
 
 const STATUS_CLASS_MAP = {
   AVAILABLE: 'available',
@@ -1096,7 +1097,7 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
         setSecretTapCount(0);
       }, 2500);
 
-      if (next >= 7) {
+      if (next >= SECRET_CASHFLOW_TAPS_REQUIRED) {
         clearTimeout(secretTapResetRef.current);
         secretTapResetRef.current = null;
         onSecretCashflow?.();
@@ -1171,7 +1172,7 @@ function HomeView({ debtorsData, salesSnapshot, stockView, nameFixData, syncStat
             type="button"
             onClick={handleSecretCashflowTap}
             aria-label="Open cash flow"
-            title={`Open Cash Flow Dashboard (${Math.max(0, 7 - secretTapCount)} taps left)`}
+            title={`Open Cash Flow Dashboard (${Math.max(0, SECRET_CASHFLOW_TAPS_REQUIRED - secretTapCount)} taps left)`}
             style={{
               width: '28px',
               height: '28px',
@@ -7482,7 +7483,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     }
 
     invalidateApiCache('/api/foundation/');
-    loadCashflowDashboard(true);
+    loadCashflowDashboard(false);
   }, [activeView, isAdmin]);
 
   useEffect(() => {

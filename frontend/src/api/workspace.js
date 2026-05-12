@@ -467,6 +467,7 @@ export async function performFullWorkspaceRefresh() {
   const results = {};
   const errors = [];
   const timings = {};
+  const FAST_REFRESH_TIMEOUT_MS = 15_000;
 
   const withTimeout = async (promise, timeoutMs, label) => {
     if (!timeoutMs || timeoutMs <= 0) {
@@ -482,7 +483,7 @@ export async function performFullWorkspaceRefresh() {
     ]);
   };
 
-  const fetchWithTiming = async (label, fetchFn, timeoutMs = 30_000) => {
+  const fetchWithTiming = async (label, fetchFn, timeoutMs = FAST_REFRESH_TIMEOUT_MS) => {
     const startFetch = performance.now();
     try {
       const result = await withTimeout(fetchFn(), timeoutMs, label);
@@ -502,48 +503,41 @@ export async function performFullWorkspaceRefresh() {
   await Promise.all([
     // Billing & Dashboard Data
     fetchWithTiming('home-bootstrap', () =>
-      fetchHomeBootstrap({ forceRefresh: true })
+      fetchHomeBootstrap({ forceRefresh: false })
     ),
     fetchWithTiming('unpaid-today', () =>
-      fetchUnpaidToday({ forceRefresh: true })
+      fetchUnpaidToday({ forceRefresh: false })
     ),
     fetchWithTiming('unpaid-bills', () =>
-      fetchUnpaidTodayBills({ forceRefresh: true })
+      fetchUnpaidTodayBills({ forceRefresh: false })
     ),
     fetchWithTiming('whatsapp-history', () =>
-      fetchWhatsappHistory({ forceRefresh: true })
+      fetchWhatsappHistory({ forceRefresh: false })
     ),
     fetchWithTiming('pending-service-deals', () =>
-      fetchPendingServiceDeals({ forceRefresh: true })
+      fetchPendingServiceDeals({ forceRefresh: false })
     ),
 
     // Stock Data
     fetchWithTiming('stock-dashboard', () =>
-      fetchStockDashboard({ filterMode: 'all', forceRefresh: true })
+      fetchStockDashboard({ filterMode: 'all', forceRefresh: false })
     ),
     fetchWithTiming('stock-form', () =>
-      fetchStockForm({ forceRefresh: true })
+      fetchStockForm({ forceRefresh: false })
     ),
 
     // Financial & Foundation Data
-    fetchWithTiming('cashflow-summary', () =>
-      fetchFoundationCashflowSummary({ forceRefresh: true })
-    ),
     fetchWithTiming(
       'cashflow-dashboard',
-      () => fetchFoundationCashflowDashboard({ forceRefresh: true }),
-      40_000,
-    ),
-    fetchWithTiming('weekly-allowance', () =>
-      fetchFoundationWeeklyAllowance({ forceRefresh: true })
+      () => fetchFoundationCashflowDashboard({ forceRefresh: false }),
     ),
 
     // Clients & Supporting Data
     fetchWithTiming('clients', () =>
-      fetchClients({ forceReload: true })
+      fetchClients({ forceReload: false })
     ),
     fetchWithTiming('sync-status', () =>
-      fetchSyncStatus({ forceRefresh: true })
+      fetchSyncStatus({ forceRefresh: false })
     ),
   ]);
 

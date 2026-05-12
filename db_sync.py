@@ -327,12 +327,14 @@ class PostgresSyncManager:
 
         CREATE INDEX IF NOT EXISTS idx_operational_stock_imei ON operational_stock_rows(imei);
         CREATE INDEX IF NOT EXISTS idx_operational_stock_payment_status ON operational_stock_rows(payment_status);
+        CREATE INDEX IF NOT EXISTS idx_operational_stock_paid_date ON operational_stock_rows(paid_date);
         CREATE INDEX IF NOT EXISTS idx_operational_stock_payment_date ON operational_stock_rows(payment_date);
         CREATE INDEX IF NOT EXISTS idx_operational_stock_created_at ON operational_stock_rows(created_at);
         CREATE INDEX IF NOT EXISTS idx_operational_stock_customer_name ON operational_stock_rows(customer_name);
 
         CREATE INDEX IF NOT EXISTS idx_operational_billing_imei ON operational_billing_rows(imei);
         CREATE INDEX IF NOT EXISTS idx_operational_billing_payment_status ON operational_billing_rows(payment_status);
+        CREATE INDEX IF NOT EXISTS idx_operational_billing_paid_date ON operational_billing_rows(paid_date);
         CREATE INDEX IF NOT EXISTS idx_operational_billing_payment_date ON operational_billing_rows(payment_date);
         CREATE INDEX IF NOT EXISTS idx_operational_billing_created_at ON operational_billing_rows(created_at);
         CREATE INDEX IF NOT EXISTS idx_operational_billing_customer_name ON operational_billing_rows(customer_name);

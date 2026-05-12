@@ -112,21 +112,19 @@ def pull_now_endpoint(background_tasks: BackgroundTasks, runtime=Depends(get_run
 
 @router.post('/refresh-workspace')
 def refresh_workspace_endpoint(
-    background_tasks: BackgroundTasks,
     force_refresh: bool = False,
     runtime=Depends(get_runtime),
 ):
-    background_tasks.add_task(
-        _run_background_sync_job,
-        runtime,
-        'refresh_workspace',
-        force_refresh=force_refresh,
-    )
+    try:
+        result = runtime.refresh_workspace(force_refresh=force_refresh)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     return {
-        'queued': True,
+        'queued': False,
         'job': 'refresh_workspace',
         'force_refresh': force_refresh,
-        'message': 'Workspace refresh queued to run in the background.',
+        **(result if isinstance(result, dict) else {}),
     }
 
 
@@ -233,11 +231,15 @@ def performance_diagnostic_endpoint(runtime=Depends(get_runtime)):
     stock_cache = runtime._load_cached_rows('stock_values') or []
     
     # Build diagnostic payload
+    perf = runtime.get_performance_metrics() if hasattr(runtime, 'get_performance_metrics') else {}
+
     diagnostics = {
         'timestamp': time.time(),
         'database': {
             'postgres_ready': postgres_ready,
-            'postgres_host': runtime.postgres_sync_manager.dsn_host if runtime.postgres_sync_manager else 'N/A',
+            'postgres_host': runtime._postgres_dsn_host() if hasattr(runtime, '_postgres_dsn_host') else 'unknown',
+            'postgres_manager_ready': bool(runtime.postgres_sync_manager and runtime.postgres_sync_manager.ready),
+            'sync_ready_flag': bool(sync_state.get('ready')),
             'last_status': sync_state.get('last_status', 'unknown'),
             'last_error': sync_state.get('last_error', ''),
             'last_successful_pull': sync_state.get('last_successful_pull', None),
@@ -252,9 +254,18 @@ def performance_diagnostic_endpoint(runtime=Depends(get_runtime)):
             'last_sheet_error': sync_state.get('last_sheet_error', ''),
         },
         'operations': {
-            'pending_queue_size': len(runtime.pending_queue) if hasattr(runtime, 'pending_queue') else 0,
-            'pending_failed_size': len(runtime.pending_failed_queue) if hasattr(runtime, 'pending_failed_queue') else 0,
+            'pending_queue_size': len(runtime.postgres_sync_manager.fetch_pending_operations(limit=500)) if runtime.postgres_ready else 0,
+            'pending_failed_size': len(runtime.postgres_sync_manager.fetchall_dict(
+                """
+                SELECT id
+                FROM sync_queue
+                WHERE status = 'failed'
+                ORDER BY updated_at DESC
+                LIMIT 500
+                """
+            )) if runtime.postgres_ready else 0,
         },
+        'performance': perf,
         'message': 'All systems ready' if postgres_ready else 'Awaiting PostgreSQL connection',
     }
     

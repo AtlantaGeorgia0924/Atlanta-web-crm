@@ -120,6 +120,17 @@ def create_app():
         response = await call_next(request)
         duration_ms = round((time.monotonic() - start_time) * 1000)
         response.headers['X-Response-Time-Ms'] = str(duration_ms)
+        runtime = getattr(app.state, 'runtime', None)
+        if runtime is not None and hasattr(runtime, 'record_endpoint_timing'):
+            try:
+                runtime.record_endpoint_timing(
+                    request.method,
+                    request.url.path,
+                    response.status_code,
+                    duration_ms,
+                )
+            except Exception:
+                pass
         return response
 
     @app.middleware('http')

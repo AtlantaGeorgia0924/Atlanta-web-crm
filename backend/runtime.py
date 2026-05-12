@@ -118,6 +118,12 @@ class BackendRuntime:
         }
         # In-memory cache for health endpoint — avoids live DB queries on /health
         self._health_cache: dict = {}
+        self._perf_lock = threading.RLock()
+        self._performance_metrics = {
+            'latest': {},
+            'slowest_endpoint': {},
+            'samples': [],
+        }
 
     @staticmethod
     def _normalize_optional_header_name(value):
@@ -6604,16 +6610,26 @@ class BackendRuntime:
         """
         import time as _time
         start_time = _time.monotonic()
-        
-        # Only do database refresh - no Sheet operations
-        pull_result = {}
+
+        # Only use Supabase cache/metadata reads here.
+        # Never trigger sheet pulls from this fast refresh endpoint.
+        pull_result = {
+            'main_rows_cached': 0,
+            'stock_rows_cached': 0,
+            'cashflow_rows_cached': 0,
+        }
         if self.postgres_ready:
             try:
-                pull_result = self.pull_once() if self.postgres_ready else {}
+                pull_result = {
+                    'main_rows_cached': len(self._load_cached_rows('main_values') or []),
+                    'stock_rows_cached': len(self._load_cached_rows('stock_values') or []),
+                    'cashflow_rows_cached': len(self._load_cached_rows('cashflow_expense_values') or []),
+                }
             except Exception as exc:
-                self.logger.warning('refresh_workspace: pull_once failed: %s', exc)
+                self.logger.warning('refresh_workspace: cache read failed: %s', exc)
         
         duration_ms = round((_time.monotonic() - start_time) * 1000)
+        self.record_performance_metric('refresh_workspace', duration_ms)
         
         return {
             'status': 'success',
@@ -7566,6 +7582,7 @@ class BackendRuntime:
         }
 
     def apply_payment(self, name_input, payment_amount, manual_service_row_idx=None, force_refresh=False):
+        started = time.perf_counter()
         values = self.get_main_values(force_refresh=force_refresh)
         if not values:
             return {'error': 'No data in sheet.'}
@@ -7620,65 +7637,18 @@ class BackendRuntime:
                     )
                 )
 
-        try:
-            self.replay_pending_queue_now(limit=120)
-        except Exception:
-            pass
-
-        # Mirror payment recognition to cashflow sheet using payment date (today).
-        try:
-            payment_date_iso = datetime.now(timezone.utc).date().isoformat()
-            for item in plan.get('updates', []):
-                if str(item.get('new_status') or '').strip().upper() != 'PAID':
-                    continue
-
-                row_idx = int(item.get('row_idx'))
-                if row_idx < 0 or row_idx >= len(values):
-                    continue
-
-                row_values = values[row_idx] if row_idx < len(values) else []
-                customer_name = str(row_values[name_col] if name_col is not None and name_col < len(row_values) else name_input or '').strip().upper()
-                description_text = str(row_values[description_col] if description_col is not None and description_col < len(row_values) else '').strip().upper()
-                imei_value = str(row_values[imei_col] if imei_col is not None and imei_col < len(row_values) else '').strip()
-                sale_amount = clean_amount(row_values[price_col]) if price_col is not None and price_col < len(row_values) else clean_amount(item.get('new_paid'))
-                cost_amount = clean_amount(row_values[cost_col]) if cost_col is not None and cost_col < len(row_values) else 0
-
-                entry_type = 'phone' if imei_value else 'service'
-                cashflow_description = description_text or imei_value
-                realized_amount = sale_amount if entry_type == 'service' else max(0.0, sale_amount - max(0.0, cost_amount))
-                updated_row = self.mark_cashflow_income_paid(
-                    entry_type=entry_type,
-                    description=cashflow_description,
-                    created_by=customer_name,
-                    payment_date_text=payment_date_iso,
-                    amount=realized_amount if realized_amount > 0 else None,
-                    cost_price=cost_amount if entry_type == 'phone' and cost_amount > 0 else None,
-                )
-                if updated_row is None and realized_amount > 0 and not self.has_cashflow_income_paid_record(
-                    entry_type=entry_type,
-                    description=cashflow_description,
-                    created_by=customer_name,
-                    payment_date_text=payment_date_iso,
-                ):
-                    self.append_cashflow_income_record(
-                        amount=realized_amount,
-                        category='PHONE PROFIT' if entry_type == 'phone' else 'SERVICE PROFIT',
-                        description=cashflow_description,
-                        date_text=payment_date_iso,
-                        created_by=customer_name or 'payment',
-                        payment_status='PAID',
-                        entry_type=entry_type,
-                        cost_price=cost_amount if entry_type == 'phone' and cost_amount > 0 else '',
-                        payment_date_text=payment_date_iso,
-                    )
-        except Exception as cashflow_exc:
-            self.logger.warning('Failed to sync apply_payment to cashflow rows: %s', cashflow_exc)
+        # Keep apply_payment write path fast: queue DB updates and return immediately.
+        # Cashflow summary rebuild is triggered asynchronously by the caller.
+        self.queue_cashflow_summary_rebuild(reason='apply_payment')
 
         self.last_payment_action = self._clone_payment_action({
             'customer': plan.get('name_input', ''),
             'rows': plan.get('undo_rows', []),
         })
         self.last_undone_payment_action = None
+
+        duration_ms = round((time.perf_counter() - started) * 1000)
+        self.record_performance_metric('apply_payment', duration_ms)
 
         return {
             'status_text': plan['status_text'],
@@ -7687,6 +7657,87 @@ class BackendRuntime:
             'updates_count': len(plan['updates']),
             'undo_available': bool(self.last_payment_action and self.last_payment_action.get('rows')),
             'redo_available': False,
+            'cashflow_rebuild_queued': True,
+            'timing_ms': duration_ms,
+        }
+
+    def queue_cashflow_summary_rebuild(self, reason='manual'):
+        if not self.postgres_ready:
+            self.logger.warning('Cashflow rebuild skipped (%s): postgres is not ready', reason)
+            return False
+
+        def _worker():
+            started = time.perf_counter()
+            try:
+                self.financial_data_service.rebuild_cashflow_summary_rows()
+                duration_ms = round((time.perf_counter() - started) * 1000)
+                self.record_performance_metric('cashflow_rebuild_async', duration_ms)
+                self.logger.info('cashflow_rebuild_async status=success reason=%s duration_ms=%s', reason, duration_ms)
+            except Exception as exc:
+                self.logger.warning('cashflow_rebuild_async status=failed reason=%s error=%s', reason, exc)
+
+        threading.Thread(target=_worker, daemon=True, name='cashflow-rebuild-async').start()
+        return True
+
+    def record_endpoint_timing(self, method, path, status_code, duration_ms):
+        method_text = str(method or '').upper()
+        path_text = str(path or '').strip()
+        status = int(status_code or 0)
+        duration = round(float(duration_ms or 0), 2)
+        with self._perf_lock:
+            sample = {
+                'kind': 'endpoint',
+                'method': method_text,
+                'path': path_text,
+                'status': status,
+                'duration_ms': duration,
+                'at': datetime.now(timezone.utc).isoformat(),
+            }
+            samples = list(self._performance_metrics.get('samples') or [])
+            samples.insert(0, sample)
+            self._performance_metrics['samples'] = samples[:200]
+
+            slowest = dict(self._performance_metrics.get('slowest_endpoint') or {})
+            if not slowest or duration >= float(slowest.get('duration_ms') or 0):
+                self._performance_metrics['slowest_endpoint'] = sample
+
+    def record_performance_metric(self, metric_name, duration_ms):
+        key = str(metric_name or '').strip()
+        if not key:
+            return
+        duration = round(float(duration_ms or 0), 2)
+        with self._perf_lock:
+            latest = dict(self._performance_metrics.get('latest') or {})
+            latest[key] = {
+                'duration_ms': duration,
+                'at': datetime.now(timezone.utc).isoformat(),
+            }
+            self._performance_metrics['latest'] = latest
+
+    def get_performance_metrics(self):
+        with self._perf_lock:
+            latest = dict(self._performance_metrics.get('latest') or {})
+            slowest_endpoint = dict(self._performance_metrics.get('slowest_endpoint') or {})
+            samples = list(self._performance_metrics.get('samples') or [])
+
+        root_cause = ''
+        if not self.postgres_sync_manager or not self.postgres_sync_manager.ready:
+            root_cause = 'postgres_sync_manager_not_ready'
+        elif not bool(self.sync_state.get('ready')):
+            root_cause = f"sync_state_not_ready:{self.sync_state.get('last_status') or 'unknown'}"
+        elif self.sync_state.get('last_error'):
+            root_cause = str(self.sync_state.get('last_error'))
+        elif not bool(self.sync_state.get('sheets_connected')):
+            root_cause = 'google_sheets_unavailable (write-back only; reads are db-first)'
+        else:
+            root_cause = 'healthy'
+
+        return {
+            'apply_payment_duration_ms': (latest.get('apply_payment') or {}).get('duration_ms'),
+            'refresh_workspace_duration_ms': (latest.get('refresh_workspace') or {}).get('duration_ms'),
+            'slowest_endpoint': slowest_endpoint,
+            'root_cause': root_cause,
+            'recent_sample_count': len(samples),
         }
 
     def update_main_record_fields(self, record_idx, updates_by_header, force_refresh=False):
@@ -7944,6 +7995,9 @@ class BackendRuntime:
             'status': 'ok' if self.postgres_ready else 'degraded',
             'active_db_host': self._postgres_dsn_host() or 'unknown',
             'postgres_ready': bool(self.postgres_ready),
+            'postgres_manager_ready': bool(self.postgres_sync_manager and self.postgres_sync_manager.ready),
+            'sync_ready_flag': bool(self.sync_state.get('ready')),
+            'sync_last_status': self.sync_state.get('last_status') or '',
             'postgres_last_error': self.sync_state.get('last_error') or '' if not self.postgres_ready else '',
             'mirror_refresh_status': h.get('mirror_refresh_status', {}),
             'mirror_verification': h.get('mirror_verification', {}),
