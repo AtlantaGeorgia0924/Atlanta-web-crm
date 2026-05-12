@@ -4000,6 +4000,9 @@ function CartView({
             </div>
 
             <div className="button-row button-row--end">
+              <button type="button" className="secondary-button" onClick={handleImportContactsFromSheet} disabled={contactImportBusy}>
+                {contactImportBusy ? 'Importing Contacts...' : 'Import Contacts from Sheet'}
+              </button>
               <button type="button" className="primary-button" onClick={onCheckoutCart} disabled={cartBusy || !cartItems.length || hasPaidPhoneWithoutCost}>
                 {cartBusy ? 'Selling Phones...' : 'Sell Out Cart'}
               </button>
@@ -4209,6 +4212,9 @@ function CartView({
             </div>
 
             <div className="button-row button-row--end">
+              <button type="button" className="secondary-button" onClick={handleImportContactsFromSheet} disabled={contactImportBusy}>
+                {contactImportBusy ? 'Importing Contacts...' : 'Import Contacts from Sheet'}
+              </button>
               <button type="button" className="primary-button" onClick={onSubmitService} disabled={serviceBusy}>
                 {serviceBusy ? 'Adding Service...' : 'Add Service'}
               </button>
@@ -4543,6 +4549,8 @@ function DebtorsView({
   serviceActionBusy,
   onUpdateServiceRow,
   onReturnServiceRow,
+  onImportContactsFromSheet,
+  contactImportBusy,
 }) {
   const rowsPerPage = 10;
   const totalPages = Math.max(1, Math.ceil(debtors.length / rowsPerPage));
@@ -4642,6 +4650,9 @@ function DebtorsView({
             </button>
             <button type="button" className="secondary-button" onClick={onRefreshTodayUnpaid} disabled={sendingTodayBills || refreshingDebtorsSection}>
               {sendingTodayBills ? 'Loading Today List...' : 'Refresh Today Unpaid List'}
+            </button>
+            <button type="button" className="secondary-button" onClick={onImportContactsFromSheet} disabled={contactImportBusy}>
+              {contactImportBusy ? 'Importing Contacts...' : 'Import Contacts from Sheet'}
             </button>
           </div>
         </div>
@@ -5671,7 +5682,7 @@ function StolenDevicesView({ data, busy, form, onFormChange, onLoad, onCreate, o
   );
 }
 
-function BillNotificationsView({ entries, onOpenDebtors, onSendEntry, sendingKey = '' }) {
+function BillNotificationsView({ entries, onOpenDebtors, onSendEntry, sendingKey = '', onImportContactsFromSheet, contactImportBusy = false }) {
   const rows = Array.isArray(entries) ? entries : [];
 
   return (
@@ -5689,6 +5700,9 @@ function BillNotificationsView({ entries, onOpenDebtors, onSendEntry, sendingKey
         <div className="button-row" style={{ marginBottom: '10px' }}>
           <button type="button" className="secondary-button" onClick={onOpenDebtors}>
             Open Debtors
+          </button>
+          <button type="button" className="secondary-button" onClick={onImportContactsFromSheet} disabled={contactImportBusy}>
+            {contactImportBusy ? 'Importing Contacts...' : 'Import Contacts from Sheet'}
           </button>
         </div>
 
@@ -7850,13 +7864,32 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         paymentAmount: parsedAmount,
         manualServiceRowIdx: selectedServiceRow === 'automatic' ? null : Number(selectedServiceRow),
       });
+
+      // Show success toast immediately — before any reload.
+      const toastId = `payment-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const successToast = {
+        id: toastId,
+        status: 'success',
+        table: 'payment',
+        record_id: `${result.timing_ms ?? '?'}ms`,
+        saved_at: new Date().toISOString(),
+        message: `Payment applied for ${selectedDebtor} ✓`,
+        details: result.status_text || `${result.updates_count ?? 0} row(s) updated`,
+      };
+      setDatabaseWriteToasts((current) => [...current, successToast].slice(-5));
+      window.setTimeout(() => {
+        setDatabaseWriteToasts((current) => current.filter((t) => t.id !== toastId));
+      }, 5000);
+
       setUndoEnabled(Boolean(result.undo_available));
       setRedoEnabled(Boolean(result.redo_available));
       setPaymentAmount('');
       setPaymentPlan(null);
+      setStatusText(result.status_text || 'Payment applied.');
+
+      // Reload data after toast is already visible.
       await loadCoreWorkspace(true);
       await loadSelectedDebtorDetails(selectedDebtor, true);
-      setStatusText(result.status_text || 'Payment applied.');
     } catch (error) {
       setStatusText(error.message || 'Could not apply the payment.');
     } finally {
@@ -9156,6 +9189,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           onApplyFullPayment={handleApplyFullPayment}
           onUpdateServiceRow={handleUpdateDebtorServiceRow}
           onReturnServiceRow={handleReturnDebtorServiceRow}
+          onImportContactsFromSheet={handleImportContactsFromSheet}
+          contactImportBusy={contactImportBusy}
         />
       );
     }
@@ -9195,6 +9230,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
           onOpenDebtors={() => startTransition(() => setActiveView('debtors'))}
           onSendEntry={handleSendBillNotificationCustomer}
           sendingKey={sendingBillNotificationKey}
+          onImportContactsFromSheet={handleImportContactsFromSheet}
+          contactImportBusy={contactImportBusy}
         />
       );
     }

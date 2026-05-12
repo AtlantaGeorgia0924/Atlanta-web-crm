@@ -7583,16 +7583,21 @@ class BackendRuntime:
 
     def apply_payment(self, name_input, payment_amount, manual_service_row_idx=None, force_refresh=False):
         started = time.perf_counter()
+
+        cache_start = time.perf_counter()
         values = self.get_main_values(force_refresh=force_refresh)
+        cache_ms = round((time.perf_counter() - cache_start) * 1000)
         if not values:
             return {'error': 'No data in sheet.'}
 
+        plan_start = time.perf_counter()
         plan = build_payment_plan(
             name_input,
             payment_amount,
             values,
             manual_service_row_idx=manual_service_row_idx,
         )
+        plan_ms = round((time.perf_counter() - plan_start) * 1000)
         if plan.get('error'):
             return plan
 
@@ -7609,6 +7614,7 @@ class BackendRuntime:
         paid_field_name = header[paid_col] if paid_col < len(header) else 'Amount paid'
         status_field_name = header[status_col] if status_col < len(header) else 'STATUS'
         queue_ids = []
+        db_write_start = time.perf_counter()
 
         for item in plan['updates']:
             row_idx = item['row_idx']
@@ -7639,6 +7645,7 @@ class BackendRuntime:
 
         # Keep apply_payment write path fast: queue DB updates and return immediately.
         # Cashflow summary rebuild is triggered asynchronously by the caller.
+        db_write_ms = round((time.perf_counter() - db_write_start) * 1000)
         self.queue_cashflow_summary_rebuild(reason='apply_payment')
 
         self.last_payment_action = self._clone_payment_action({
@@ -7649,6 +7656,12 @@ class BackendRuntime:
 
         duration_ms = round((time.perf_counter() - started) * 1000)
         self.record_performance_metric('apply_payment', duration_ms)
+        self.logger.info(
+            'apply_payment_steps cache_ms=%s plan_ms=%s db_write_ms=%s total_ms=%s updates=%s customer=%r',
+            cache_ms, plan_ms, db_write_ms, duration_ms,
+            len(plan.get('updates', [])),
+            str(name_input or '')[:60],
+        )
 
         return {
             'status_text': plan['status_text'],
