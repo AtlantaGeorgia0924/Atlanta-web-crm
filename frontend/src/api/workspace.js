@@ -66,6 +66,7 @@ export function applyPayment({ nameInput, paymentAmount, manualServiceRowIdx = n
       manual_service_row_idx: manualServiceRowIdx,
       force_refresh: forceRefresh,
     },
+    timeoutMs: 8_000,
     writeTable: 'operational_billing_rows',
   });
 }

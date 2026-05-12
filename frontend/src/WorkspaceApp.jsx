@@ -7865,6 +7865,9 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         manualServiceRowIdx: selectedServiceRow === 'automatic' ? null : Number(selectedServiceRow),
       });
 
+      // Payment succeeded — unlock the button immediately.
+      setIsApplyingPayment(false);
+
       // Show success toast immediately — before any reload.
       const toastId = `payment-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       const successToast = {
@@ -7887,13 +7890,14 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       setPaymentPlan(null);
       setStatusText(result.status_text || 'Payment applied.');
 
-      // Reload data after toast is already visible.
-      await loadCoreWorkspace(true);
-      await loadSelectedDebtorDetails(selectedDebtor, true);
+      // Reload data in the background — button is already unlocked above.
+      Promise.allSettled([
+        loadCoreWorkspace(true),
+        loadSelectedDebtorDetails(selectedDebtor, true),
+      ]);
     } catch (error) {
-      setStatusText(error.message || 'Could not apply the payment.');
-    } finally {
       setIsApplyingPayment(false);
+      setStatusText(error.message || 'Could not apply the payment.');
     }
   }
 
