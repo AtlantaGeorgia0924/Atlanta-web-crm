@@ -1,4 +1,5 @@
 import { requestJson } from './http';
+import { fetchPendingServiceDeals, fetchStockDashboard } from './stock';
 
 const SHORT_CACHE_MS = 8_000;
 const MEDIUM_CACHE_MS = 20_000;
