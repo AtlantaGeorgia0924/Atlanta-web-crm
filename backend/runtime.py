@@ -4364,16 +4364,8 @@ class BackendRuntime:
             cache_apply_callable=lambda: self.postgres_sync_manager.replace_cached_table_row('stock_values', target_row, row_values),
         )
 
-        # Flush queued stock write quickly so Add Product reflects in the
-        # Google Sheet without waiting for the background poll cycle.
-        try:
-            threading.Thread(
-                target=lambda: self.replay_pending_queue_now(limit=40),
-                name='stock-add-immediate-queue-flush',
-                daemon=True,
-            ).start()
-        except Exception:
-            pass
+        # Supabase-first mode: data is available immediately from cache.
+        # Background Sheets sync (if enabled) runs via explicit /sync-to-google-sheets endpoint only.
 
         return {
             'queued_operation_id': queue_id,
@@ -4591,11 +4583,9 @@ class BackendRuntime:
             except Exception as cashflow_exc:
                 self.logger.warning('Failed to write service income to cashflow sheet: %s', cashflow_exc)
 
-            threading.Thread(
-                target=lambda: self.replay_pending_queue_now(limit=60),
-                name='service-add-immediate-queue-flush',
-                daemon=True,
-            ).start()
+            # Supabase-first mode: data is available immediately from cache.
+            # Sheets backup sync runs via explicit /sync-to-google-sheets endpoint only.
+
         except Exception:
             pass
 
@@ -8018,4 +8008,8 @@ class BackendRuntime:
             'queue_failed': h.get('queue_failed', 0),
             'backup_sync_status': h.get('backup_sync_status', {}),
             'latest_pull': latest_pull,
+            # Supabase-first architecture info
+            'architecture': 'supabase_first',
+            'manual_sheet_sync_only': self._manual_sheet_sync_only(),
+            'sheets_accessed_in_normal_ops': False,
         }

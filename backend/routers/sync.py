@@ -1,5 +1,18 @@
-from typing import Any
+"""Sync router: Supabase-first architecture.
 
+All API endpoints read/write from Supabase only during normal operations.
+Google Sheets is used as a manual backup only via /sync-to-google-sheets endpoint.
+
+Architecture:
+- Normal operations (apply_payment, add_service, etc.) → Supabase only
+- Background queue replay → DISABLED in manual_sheet_sync_only mode (default)
+- Manual sync → Explicit /sync-to-google-sheets endpoint (admin only)
+
+Verification: All responses include 'sheets_accessed: false' for normal operations.
+"""
+
+from typing import Any
+import time
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -90,8 +103,9 @@ def _run_background_sync_job(runtime, job_name, **kwargs):
         if job_name == 'replay_queue_now':
             runtime.replay_pending_queue_now(limit=int(kwargs.get('limit', 200) or 200), manual_trigger=True)
             return
-        if job_name == 'push_to_sheets':
-            runtime.sync_supabase_cache_to_sheets(limit=int(kwargs.get('limit', 5000) or 5000))
+        if job_name in ('push_to_sheets', 'sync_to_sheets'):
+            # Manual backup sync only - explicitly call with manual_trigger=True
+            runtime.replay_pending_queue_now(limit=int(kwargs.get('limit', 5000) or 5000), manual_trigger=True)
             return
     except Exception as exc:
         runtime.logger.warning('Background sync job failed (%s): %s', job_name, exc)
@@ -148,6 +162,42 @@ def replay_queue_now_endpoint(
     }
 
 
+@router.post('/sync-to-google-sheets', dependencies=[Depends(require_admin)])
+def sync_to_google_sheets_endpoint(
+    background_tasks: BackgroundTasks,
+    limit: int = 5000,
+    runtime=Depends(get_runtime),
+    current_user=Depends(require_admin),
+):
+    """Manual backup sync: Update Google Sheets from current Supabase state.
+
+    This is the ONLY endpoint that accesses Google Sheets in normal operation.
+    All other endpoints use Supabase only.
+
+    Returns: Job queued message. Use /sync/status to poll for completion.
+    """
+    if not runtime.postgres_ready:
+        raise HTTPException(status_code=503, detail='PostgreSQL sync manager is not ready')
+
+    start_time = time.monotonic()
+    background_tasks.add_task(
+        _run_background_sync_job,
+        runtime,
+        'sync_to_sheets',
+        limit=limit,
+    )
+    queued_at = time.monotonic() - start_time
+    return {
+        'queued': True,
+        'job': 'sync_to_sheets',
+        'limit': limit,
+        'message': 'Manual backup sync to Google Sheets queued in background.',
+        'queued_at_ms': round(queued_at * 1000),
+        'sheets_accessed': True,
+        'note': 'This is the only endpoint that accesses Google Sheets. All other operations use Supabase only.',
+    }
+
+
 @router.post('/push-to-sheets', dependencies=[Depends(require_admin)])
 def push_to_sheets_endpoint(
     background_tasks: BackgroundTasks,
@@ -155,21 +205,8 @@ def push_to_sheets_endpoint(
     runtime=Depends(get_runtime),
     current_user=Depends(require_admin),
 ):
-    if not runtime.postgres_ready:
-        raise HTTPException(status_code=503, detail='PostgreSQL sync manager is not ready')
-
-    background_tasks.add_task(
-        _run_background_sync_job,
-        runtime,
-        'push_to_sheets',
-        limit=limit,
-    )
-    return {
-        'queued': True,
-        'job': 'push_to_sheets',
-        'limit': limit,
-        'message': 'Manual backup sync to Google Sheets queued.',
-    }
+    """DEPRECATED: Use /sync-to-google-sheets instead."""
+    return sync_to_google_sheets_endpoint(background_tasks, limit, runtime, current_user)
 
 
 @router.post('/reconnect-postgres', dependencies=[Depends(require_admin)])

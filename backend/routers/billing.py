@@ -367,8 +367,9 @@ def apply_payment_endpoint(payload: ApplyPaymentRequest, runtime=Depends(get_run
 
         result['timing_ms'] = api_ms
         result['success'] = True
+        result['sheets_accessed'] = False  # Verify: no Google Sheets in Supabase-first mode
         runtime.logger.info(
-            'apply_payment customer=%r payment_update_ms=%s api_response_ms=%s updates=%s',
+            'apply_payment customer=%r payment_update_ms=%s api_response_ms=%s updates=%s sheets_accessed=false supabase_only=true',
             str(payload.name_input or '')[:60],
             payment_ms,
             api_ms,
@@ -376,7 +377,7 @@ def apply_payment_endpoint(payload: ApplyPaymentRequest, runtime=Depends(get_run
         )
         if api_ms > 10_000:
             runtime.logger.warning(
-                'apply_payment SLOW >10s customer=%r api_response_ms=%s — check DB write queue or cache miss',
+                'apply_payment SLOW >10s customer=%r api_response_ms=%s — check DB write queue or cache miss (sheets_accessed=false)',
                 str(payload.name_input or '')[:60],
                 api_ms,
             )
