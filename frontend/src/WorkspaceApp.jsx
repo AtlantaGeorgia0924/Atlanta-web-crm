@@ -7241,7 +7241,34 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
       if (refreshResult.errors.length > 0) {
         const errorSummary = refreshResult.errors.map((e) => e.endpoint).join(', ');
-        setWorkspaceError(`Refresh completed with errors: ${errorSummary}`);
+        const errorMessages = refreshResult.errors
+          .map((entry) => String(entry?.error || '').trim())
+          .filter(Boolean);
+        const normalizedMessages = errorMessages.map((message) => message.toLowerCase());
+        const allUnauthenticated =
+          normalizedMessages.length > 0 &&
+          normalizedMessages.every((message) => message.includes('not authenticated'));
+        const allNetworkRelated =
+          normalizedMessages.length > 0 &&
+          normalizedMessages.every(
+            (message) =>
+              message.includes('could not reach the api') ||
+              message.includes('request timed out while contacting the api') ||
+              message.includes('failed to fetch') ||
+              message.includes('networkerror'),
+          );
+
+        let hint = '';
+        if (allUnauthenticated) {
+          hint = 'Your session expired. Please sign in again and retry refresh.';
+        } else if (allNetworkRelated) {
+          hint = 'Could not reach the backend API. Confirm backend server is running, then retry.';
+        } else if (errorMessages.length > 0) {
+          hint = `First error: ${errorMessages[0]}`;
+        }
+
+        const suffix = hint ? ` | ${hint}` : '';
+        setWorkspaceError(`Refresh completed with errors: ${errorSummary}${suffix}`);
       } else {
         setWorkspaceError('');
       }
