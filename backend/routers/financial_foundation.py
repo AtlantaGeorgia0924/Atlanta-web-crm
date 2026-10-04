@@ -40,6 +40,13 @@ def _load_cashflow_cache() -> dict | None:
         return dict(_cashflow_cache['payload'])
 
 
+def _to_number(value):
+    try:
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
 def _run_with_timeout(func, timeout_seconds: float, timeout_message: str):
     result_holder = {'value': None}
     error_holder = {'error': None}
@@ -109,12 +116,6 @@ def _rebuild_cashflow_from_live(runtime, force_refresh=False):
 
 
 def _build_sheet_cashflow_fallback(runtime, force_refresh: bool = False):
-    def _to_number(value):
-        try:
-            return float(value or 0)
-        except Exception:
-            return 0.0
-
     try:
         summary = runtime.get_cashflow_summary_from_sheet(force_refresh=force_refresh) or {}
     except Exception as exc:
@@ -133,11 +134,13 @@ def _build_sheet_cashflow_fallback(runtime, force_refresh: bool = False):
         runtime.logger.exception('Sheet fallback capital failed: %s', exc)
         capital = {'month_total': 0, 'week_total': 0, 'entries': []}
 
-    weekly_allowance = summary.get('weekly_allowance') or {}
+    weekly_allowance = dict(summary.get('weekly_allowance') or {})
     expense_items = expenses_payload.get('items') or []
 
     week_allowance_amount = _to_number(
-        weekly_allowance.get('suggested_allowance')
+        weekly_allowance.get('allowance_this_week')
+        or weekly_allowance.get('suggested_allowance')
+        or summary.get('allowance_this_week')
         or summary.get('next_week_allowance')
         or 0
     )
@@ -169,6 +172,19 @@ def _build_sheet_cashflow_fallback(runtime, force_refresh: bool = False):
     summary_payload = dict(summary)
     summary_payload['week'] = week_row
     summary_payload['month'] = month_row
+    summary_payload['last_week_profit'] = _to_number(
+        weekly_allowance.get('last_week_profit')
+        or weekly_allowance.get('previous_week_profit')
+        or summary.get('last_week_profit')
+        or 0
+    )
+    summary_payload['allowance_this_week'] = week_allowance_amount
+    summary_payload['next_week_allowance'] = _to_number(
+        weekly_allowance.get('next_week_allowance')
+        or summary.get('next_week_allowance')
+        or 0
+    )
+    summary_payload['previous_week_profit'] = summary_payload['last_week_profit']
 
     normalized_transactions = [
         {
@@ -194,7 +210,10 @@ def _build_sheet_cashflow_fallback(runtime, force_refresh: bool = False):
         'total_weekly_profit': _to_number(summary.get('current_week_gross_profit') or summary.get('weekly_realized_profit') or 0),
         'total_weekly_expenses': _to_number(summary.get('current_week_expenses') or 0),
         'weekly_net_profit': _to_number(summary.get('current_week_net_profit') or 0),
-        'suggested_allowance': _to_number(weekly_allowance.get('suggested_allowance') or summary.get('next_week_allowance') or 0),
+        'suggested_allowance': week_allowance_amount,
+        'allowance_this_week': week_allowance_amount,
+        'last_week_profit': summary_payload['last_week_profit'],
+        'next_week_allowance': summary_payload['next_week_allowance'],
         'total_monthly_profit': _to_number(summary.get('monthly_gross_profit') or summary.get('total_cash_in') or 0),
         'total_monthly_expenses': _to_number(summary.get('total_expenses') or 0),
         'monthly_net_profit': _to_number(summary.get('monthly_net_profit') or summary.get('net_profit') or 0),
@@ -204,7 +223,14 @@ def _build_sheet_cashflow_fallback(runtime, force_refresh: bool = False):
     return {
         'summary': summary_payload,
         'rows': [week_row, month_row],
-        'weekly_allowance': weekly_allowance,
+        'weekly_allowance': {
+            **weekly_allowance,
+            'suggested_allowance': week_allowance_amount,
+            'allowance_this_week': week_allowance_amount,
+            'last_week_profit': summary_payload['last_week_profit'],
+            'previous_week_profit': summary_payload['last_week_profit'],
+            'next_week_allowance': summary_payload['next_week_allowance'],
+        },
         'monthly_allowance': month_row,
         'expenses': expense_items,
         'expense_source': expenses_payload.get('source') or summary.get('expense_source') or 'sheet',
@@ -465,7 +491,15 @@ def _fast_degraded_cashflow_response(reason: str = 'postgres_not_ready'):
     return {
         'summary': {},
         'rows': [],
-        'weekly_allowance': dict(empty_row, period_type='week'),
+        'weekly_allowance': dict(
+            empty_row,
+            period_type='week',
+            suggested_allowance=0,
+            allowance_this_week=0,
+            next_week_allowance=0,
+            last_week_profit=0,
+            previous_week_profit=0,
+        ),
         'monthly_allowance': dict(empty_row, period_type='month'),
         'expenses': [],
         'expense_source': 'degraded',
@@ -547,6 +581,32 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
         return _fast_degraded_cashflow_response(str(exc))
 
     summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
+    try:
+        weekly_allowance_context = _run_with_timeout(
+            lambda: runtime.financial_data_service.build_weekly_allowance_context(),
+            _CASHFLOW_READ_TIMEOUT_SECONDS,
+            'weekly_allowance_context_timeout',
+        ) or {}
+    except Exception as exc:
+        runtime.logger.warning('Weekly allowance context unavailable: %s', exc)
+        weekly_allowance_context = {}
+    week_row = dict(summary.get('week') or {})
+    weekly_allowance = {
+        **week_row,
+        **weekly_allowance_context,
+        'suggested_allowance': _to_number(
+            weekly_allowance_context.get('allowance_this_week')
+            if weekly_allowance_context
+            else week_row.get('allowance_amount')
+        ),
+    }
+    if weekly_allowance_context:
+        summary_payload = dict(summary)
+        summary_payload['last_week_profit'] = weekly_allowance_context.get('last_week_profit', 0)
+        summary_payload['allowance_this_week'] = weekly_allowance_context.get('allowance_this_week', 0)
+        summary_payload['next_week_allowance'] = weekly_allowance_context.get('next_week_allowance', 0)
+        summary_payload['previous_week_profit'] = weekly_allowance_context.get('previous_week_profit', 0)
+        summary = summary_payload
     normalized_transactions = [
         {
             'date': item.get('expense_date'),
@@ -570,7 +630,7 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
     ]
     result = {
         'summary': summary,
-        'weekly_allowance': summary.get('week') or {},
+        'weekly_allowance': weekly_allowance,
         'monthly_allowance': summary.get('month') or {},
         'expenses': expense_items,
         'expense_source': 'database',
@@ -598,8 +658,8 @@ def get_cashflow_dashboard(force_refresh: bool = False, runtime=Depends(get_runt
 @router.get('/weekly-allowance', dependencies=[Depends(require_admin)])
 def get_weekly_allowance(runtime=Depends(get_runtime), current_user=Depends(get_current_user)):
     try:
-        summary_rows = _run_with_timeout(
-            lambda: runtime.financial_data_service.get_current_cashflow_summary_rows(),
+        return _run_with_timeout(
+            lambda: runtime.financial_data_service.build_weekly_allowance_context(),
             _CASHFLOW_READ_TIMEOUT_SECONDS,
             'weekly_allowance_timeout',
         )
@@ -614,9 +674,6 @@ def get_weekly_allowance(runtime=Depends(get_runtime), current_user=Depends(get_
         return dict(_fast_degraded_cashflow_response(str(exc)).get('weekly_allowance') or {})
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-
-    summary = {str(row.get('period_type') or '').lower(): row for row in summary_rows}
-    return summary.get('week') or {}
 
 
 @router.post('/allowance/undo-last', dependencies=[Depends(require_admin)])
