@@ -169,6 +169,37 @@ class FinancialFoundationService:
         return allowance
 
     @staticmethod
+    def _normalize_pin(value):
+        digits = ''.join(ch for ch in str(value or '') if ch.isdigit())
+        return digits
+
+    def _read_cashflow_pin(self):
+        self.ensure_default_app_config()
+        raw_value = self._config_value('cashflow_pin', '1111')
+        parsed = self._safe_json_parse('cashflow_pin', raw_value)
+        if isinstance(parsed, dict):
+            parsed = parsed.get('value') or parsed.get('pin') or '1111'
+        pin = self._normalize_pin(parsed)
+        return pin if len(pin) == 4 else '1111'
+
+    def verify_cashflow_pin(self, pin, actor_role=None):
+        self._require_admin(actor_role)
+        provided = self._normalize_pin(pin)
+        expected = self._read_cashflow_pin()
+        return provided == expected and len(provided) == 4
+
+    def change_cashflow_pin(self, current_pin, new_pin, actor_role=None):
+        self._require_admin(actor_role)
+        current = self._normalize_pin(current_pin)
+        next_pin = self._normalize_pin(new_pin)
+        if len(current) != 4 or len(next_pin) != 4:
+            return {'ok': False, 'error': 'PIN must be exactly 4 digits.'}
+        if not self.verify_cashflow_pin(current, actor_role=actor_role):
+            return {'ok': False, 'error': 'Current PIN is incorrect.'}
+        self.set_app_config('cashflow_pin', next_pin, actor_role=actor_role)
+        return {'ok': True}
+
+    @staticmethod
     def _most_recent_saturday(today=None):
         today = today or date.today()
         # Python weekday: Monday=0 ... Saturday=5 ... Sunday=6

@@ -266,6 +266,15 @@ export function createFoundationAllowanceWithdrawal({ weekStart = '', allowanceA
   });
 }
 
+export function verifyCashflowPin({ pin }) {
+  return requestJson('/api/foundation/cashflow-pin/verify', {
+    method: 'POST',
+    body: {
+      pin: String(pin || '').trim(),
+    },
+  });
+}
+
 export function changeCashflowPin({ currentPin, newPin }) {
   return requestJson('/api/foundation/cashflow-pin/change', {
     method: 'POST',
