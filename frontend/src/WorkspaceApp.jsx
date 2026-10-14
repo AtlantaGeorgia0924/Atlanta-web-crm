@@ -48,6 +48,7 @@ import {
   updateDebtorService,
   upsertClient,
   importContactsFromSheet,
+  verifyCashflowPin,
 } from './api/workspace';
 
 const PRODUCT_FILTERS = [
@@ -86,8 +87,8 @@ const ACTION_ITEMS = [
   {
     key: 'home',
     type: 'view',
-    title: 'Home Page',
-    description: 'See live summary cards, statistics, and graphs in one place.',
+    title: 'Dashboard',
+    description: 'PIN-protected live summary cards, statistics, and graphs.',
   },
   {
     key: 'products',
@@ -135,7 +136,7 @@ const ACTION_ITEMS = [
     key: 'cashflow',
     type: 'view',
     title: 'Cash Flow',
-    description: 'Track expenses, allowance withdrawals, and financial summaries.',
+    description: 'PIN-protected expenses, allowance withdrawals, and financial summaries.',
   },
   {
     key: 'bill_notifications',
@@ -183,8 +184,8 @@ const ACTION_ITEMS = [
 
 const VIEW_META = {
   home: {
-    title: 'Home Page',
-    description: 'Live summary, business statistics, and the graphs you need at a glance.',
+    title: 'Dashboard',
+    description: 'PIN-protected live summary, business statistics, and graphs.',
   },
   products: {
     title: 'Products',
@@ -196,7 +197,7 @@ const VIEW_META = {
   },
   cashflow: {
     title: 'Cash Flow',
-    description: 'Simple cash movement view based on live sales and outstanding balances.',
+    description: 'PIN-protected expenses, allowance withdrawals, and financial summaries.',
   },
   clients: {
     title: 'Clients',
@@ -236,7 +237,8 @@ const STAFF_ALLOWED_VIEWS = new Set(['products', 'cart', 'bill_notifications']);
 const STOCK_VIEW_CACHE_KEY = 'atlanta_stock_view_cache_v1';
 const STOCK_FORM_CACHE_KEY = 'atlanta_stock_form_cache_v1';
 const WORKSPACE_CORE_CACHE_KEY = 'atlanta_workspace_core_cache_v1';
-const CASHFLOW_UNLOCK_CACHE_KEY = 'atlanta_cashflow_unlocked_v1';
+const SENSITIVE_UNLOCK_CACHE_KEY = 'atlanta_sensitive_unlocked_v1';
+const PIN_PROTECTED_VIEWS = new Set(['home', 'cashflow']);
 const SECRET_CASHFLOW_TAPS_REQUIRED = 7;
 
 const STATUS_CLASS_MAP = {
@@ -1073,6 +1075,86 @@ function ActionSidebar({ activeView, undoEnabled, redoEnabled, onTrigger, action
         })}
       </div>
     </aside>
+  );
+}
+
+function SensitivePinModal({
+  open,
+  title = 'Enter PIN',
+  subtitle = 'This section is PIN protected.',
+  busy = false,
+  errorText = '',
+  onSubmit,
+  onCancel,
+}) {
+  const [pin, setPin] = useState('');
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) {
+      setPin('');
+      return undefined;
+    }
+    const timer = setTimeout(() => inputRef.current?.focus?.(), 50);
+    return () => clearTimeout(timer);
+  }, [open]);
+
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onCancel}>
+      <div
+        className="modal-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(event) => event.stopPropagation()}
+        style={{ maxWidth: '420px' }}
+      >
+        <div className="modal-sheet__header">
+          <div>
+            <h2 style={{ margin: 0 }}>{title}</h2>
+            <p className="metric-note" style={{ marginTop: '6px' }}>{subtitle}</p>
+          </div>
+        </div>
+        <form
+          className="form-grid form-grid--modal"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmit?.(pin);
+          }}
+        >
+          <label>
+            <span>4-digit PIN</span>
+            <input
+              ref={inputRef}
+              type="password"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              pattern="[0-9]{4}"
+              maxLength={4}
+              value={pin}
+              onChange={(event) => setPin(event.target.value.replace(/\D/g, '').slice(0, 4))}
+              placeholder="••••"
+              disabled={busy}
+            />
+          </label>
+          {errorText ? (
+            <div className="notice notice-error">{errorText}</div>
+          ) : null}
+          <div className="button-row" style={{ marginTop: '4px' }}>
+            <button type="button" className="secondary-button" onClick={onCancel} disabled={busy}>
+              Cancel
+            </button>
+            <button type="submit" className="primary-button" disabled={busy || pin.length !== 4}>
+              {busy ? 'Checking...' : 'Unlock'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
@@ -6040,13 +6122,17 @@ const MemoClientsView = React.memo(ClientsView);
 function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   const isAdmin = String(currentUser?.role || '').toLowerCase() === 'admin';
   const [activeView, setActiveView] = useState('products');
-  const [cashflowNavUnlocked, setCashflowNavUnlocked] = useState(() => {
+  const [sensitiveUnlocked, setSensitiveUnlocked] = useState(() => {
     try {
-      return sessionStorage.getItem(CASHFLOW_UNLOCK_CACHE_KEY) === '1';
+      return sessionStorage.getItem(SENSITIVE_UNLOCK_CACHE_KEY) === '1';
     } catch {
       return false;
     }
   });
+  const [pinModalOpen, setPinModalOpen] = useState(false);
+  const [pinModalTarget, setPinModalTarget] = useState('');
+  const [pinBusy, setPinBusy] = useState(false);
+  const [pinError, setPinError] = useState('');
   const [statusText, setStatusText] = useState('Ready');
   const [workspaceError, setWorkspaceError] = useState('');
   const [lastLoadedAt, setLastLoadedAt] = useState(null);
@@ -6187,26 +6273,72 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
 
   const allowedViews = useMemo(() => {
     if (isAdmin) {
-      const adminViews = new Set(Object.keys(VIEW_META));
-      if (!cashflowNavUnlocked) {
-        adminViews.delete('cashflow');
-      }
-      return adminViews;
+      return new Set(Object.keys(VIEW_META));
     }
     return new Set(STAFF_ALLOWED_VIEWS);
-  }, [cashflowNavUnlocked, isAdmin]);
+  }, [isAdmin]);
 
   useEffect(() => {
     try {
-      if (cashflowNavUnlocked) {
-        sessionStorage.setItem(CASHFLOW_UNLOCK_CACHE_KEY, '1');
+      if (sensitiveUnlocked) {
+        sessionStorage.setItem(SENSITIVE_UNLOCK_CACHE_KEY, '1');
       } else {
-        sessionStorage.removeItem(CASHFLOW_UNLOCK_CACHE_KEY);
+        sessionStorage.removeItem(SENSITIVE_UNLOCK_CACHE_KEY);
       }
     } catch {
       // Ignore storage errors.
     }
-  }, [cashflowNavUnlocked]);
+  }, [sensitiveUnlocked]);
+
+  function requestSensitiveUnlock(targetView) {
+    if (!isAdmin) {
+      setStatusText('You do not have permission to access this section.');
+      return;
+    }
+    if (sensitiveUnlocked) {
+      startTransition(() => setActiveView(targetView));
+      setStatusText(VIEW_META[targetView]?.title || 'Ready');
+      return;
+    }
+    setPinModalTarget(targetView);
+    setPinError('');
+    setPinModalOpen(true);
+  }
+
+  async function handlePinUnlock(pinValue) {
+    const pin = String(pinValue || '').replace(/\D/g, '').slice(0, 4);
+    if (pin.length !== 4) {
+      setPinError('Enter the 4-digit PIN.');
+      return;
+    }
+    setPinBusy(true);
+    setPinError('');
+    try {
+      await verifyCashflowPin({ pin });
+      setSensitiveUnlocked(true);
+      setPinModalOpen(false);
+      const nextView = PIN_PROTECTED_VIEWS.has(pinModalTarget) ? pinModalTarget : 'home';
+      startTransition(() => setActiveView(nextView));
+      setStatusText(`${VIEW_META[nextView]?.title || 'Section'} unlocked.`);
+      setPinModalTarget('');
+    } catch (error) {
+      setPinError(error?.message || 'Incorrect PIN.');
+    } finally {
+      setPinBusy(false);
+    }
+  }
+
+  function handlePinCancel() {
+    if (pinBusy) {
+      return;
+    }
+    setPinModalOpen(false);
+    setPinModalTarget('');
+    setPinError('');
+    if (PIN_PROTECTED_VIEWS.has(activeView) && !sensitiveUnlocked) {
+      startTransition(() => setActiveView('products'));
+    }
+  }
 
   const billNotificationEntries = useMemo(() => {
     const now = Date.now();
@@ -6260,9 +6392,6 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       if (item.key === 'exit') {
         return true;
       }
-      if (item.key === 'cashflow') {
-        return isAdmin && cashflowNavUnlocked;
-      }
       if (item.type === 'action') {
         return isAdmin || item.key === 'import_phones' || item.key === 'logout' || item.key === 'refresh' || item.key === 'bill_notifications';
       }
@@ -6274,9 +6403,15 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       if (item.key === 'bill_notifications') {
         return { ...item, badge: billNotificationCount };
       }
+      if (item.key === 'home') {
+        return { ...item, title: 'Dashboard', description: 'PIN-protected live summary, statistics, and graphs.' };
+      }
+      if (item.key === 'cashflow') {
+        return { ...item, description: 'PIN-protected expenses, allowance, and financial summaries.' };
+      }
       return item;
     })
-  ), [billNotificationCount, cashflowNavUnlocked, isAdmin]);
+  ), [billNotificationCount, isAdmin]);
 
   const productSummaryColumns = useMemo(() => {
     const baseKeys = ['description', 'colour', 'storage', 'imei', 'seller'];
@@ -7372,7 +7507,8 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       return;
     }
 
-    startTransition(() => setActiveView(isAdmin ? 'home' : 'products'));
+    // Keep landing on Products until Dashboard/Cash Flow are unlocked with PIN.
+    startTransition(() => setActiveView('products'));
   }, [activeView, allowedViews, isAdmin]);
 
   useEffect(() => {
@@ -7492,13 +7628,13 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   }, [activeView, isAdmin]);
 
   useEffect(() => {
-    if (activeView !== 'cashflow' || !isAdmin) {
+    if (activeView !== 'cashflow' || !isAdmin || !sensitiveUnlocked) {
       return;
     }
 
     invalidateApiCache('/api/foundation/');
     loadCashflowDashboard(false);
-  }, [activeView, isAdmin]);
+  }, [activeView, isAdmin, sensitiveUnlocked]);
 
   useEffect(() => {
     if (activeView !== 'services_today') {
@@ -8902,6 +9038,10 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
       if (item.key === 'cart') {
         setCartFilterMode('available');
       }
+      if (PIN_PROTECTED_VIEWS.has(item.key)) {
+        requestSensitiveUnlock(item.key);
+        return;
+      }
       startTransition(() => setActiveView(item.key));
       setStatusText(VIEW_META[item.key]?.title || 'Ready');
       return;
@@ -8948,6 +9088,33 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
   }
 
   function renderActiveView() {
+    if (PIN_PROTECTED_VIEWS.has(activeView) && !sensitiveUnlocked) {
+      return (
+        <section className="summary-frame">
+          <h2>{VIEW_META[activeView]?.title || 'Protected section'}</h2>
+          <p className="metric-note" style={{ marginTop: '8px' }}>
+            Enter the PIN to open this section.
+          </p>
+          <div className="button-row" style={{ marginTop: '12px' }}>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => requestSensitiveUnlock(activeView)}
+            >
+              Enter PIN
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => startTransition(() => setActiveView('products'))}
+            >
+              Back to Products
+            </button>
+          </div>
+        </section>
+      );
+    }
+
     if (!allowedViews.has(activeView)) {
       return (
         <ProductsView
@@ -9301,19 +9468,7 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         revealedMetric={revealedMetric}
         setRevealedMetric={setRevealedMetric}
         onSecretCashflow={() => {
-          setCashflowNavUnlocked((current) => {
-            const next = !current;
-            if (next) {
-              startTransition(() => setActiveView('cashflow'));
-              setStatusText('Cash Flow unlocked.');
-            } else {
-              if (activeView === 'cashflow') {
-                startTransition(() => setActiveView('home'));
-              }
-              setStatusText('Cash Flow hidden from Home Page actions.');
-            }
-            return next;
-          });
+          requestSensitiveUnlock('cashflow');
         }}
         onStatisticClick={(label) => {
           switch (label) {
@@ -9426,6 +9581,16 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
             ))}
           </div>
         ) : null}
+
+        <SensitivePinModal
+          open={pinModalOpen}
+          title={pinModalTarget === 'cashflow' ? 'Unlock Cash Flow' : 'Unlock Dashboard'}
+          subtitle="Enter the 4-digit PIN to open this section."
+          busy={pinBusy}
+          errorText={pinError}
+          onSubmit={handlePinUnlock}
+          onCancel={handlePinCancel}
+        />
       </main>
     </div>
   );
