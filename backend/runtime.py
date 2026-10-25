@@ -1505,8 +1505,10 @@ class BackendRuntime:
         current_month_start = current_day.replace(day=1)
         current_week_start = current_day - timedelta(days=(current_day.weekday() + 1) % 7)
         current_week_end_date = current_day
+        previous_week_start = current_week_start - timedelta(days=7)
+        previous_week_end = current_week_start - timedelta(days=1)
 
-        allowance_percentage = 0.25
+        allowance_percentage = self._normalized_allowance_percentage()
         monthly_gross_profit = 0.0
         monthly_phone_profit = 0.0
         monthly_service_profit = 0.0
@@ -1520,6 +1522,10 @@ class BackendRuntime:
         current_week_service_profit = 0.0
         current_week_service_profit_done_this_week = 0.0
         current_week_service_profit_previous_weeks_paid_this_week = 0.0
+        previous_week_gross_profit = 0.0
+        previous_week_expenses = 0.0
+        previous_week_phone_profit = 0.0
+        previous_week_service_profit = 0.0
         excluded_phone_missing_cost_rows_week = []
         excluded_phone_missing_cost_rows_month = []
         current_week_realized_profit_rows = []
@@ -1588,6 +1594,7 @@ class BackendRuntime:
 
             in_current_month = current_month_start <= entry_date <= current_day
             in_current_week = current_week_start <= entry_date <= current_week_end_date
+            in_previous_week = previous_week_start <= entry_date <= previous_week_end
 
             if is_weekly_allowance_withdrawal:
                 if in_current_month:
@@ -1598,6 +1605,8 @@ class BackendRuntime:
                 monthly_manual_expenses += amount
             if in_current_week:
                 current_week_expenses += amount
+            if in_previous_week:
+                previous_week_expenses += amount
 
         for record in main_records:
             status_text = str(self._record_value(record, 'STATUS', 'PAYMENT STATUS') or '').strip().upper()
@@ -1631,6 +1640,7 @@ class BackendRuntime:
             imei_value = str(self._record_value(record, 'IMEI') or '').strip()
             in_current_month = current_month_start <= payment_date <= current_day
             in_current_week = current_week_start <= payment_date <= current_week_end_date
+            in_previous_week = previous_week_start <= payment_date <= previous_week_end
 
             if imei_value:
                 cost_price = max(0.0, clean_amount(self._record_value(record, 'COST PRICE', 'COST')))
@@ -1689,6 +1699,9 @@ class BackendRuntime:
                         'payment_status': 'PAID',
                         'type': 'phone',
                     })
+                if in_previous_week:
+                    previous_week_phone_profit += phone_profit
+                    previous_week_gross_profit += phone_profit
                 continue
 
             service_expense = max(0.0, clean_amount(
@@ -1716,6 +1729,9 @@ class BackendRuntime:
                     'payment_status': 'PAID',
                     'type': 'service',
                 })
+            if in_previous_week:
+                previous_week_service_profit += service_profit
+                previous_week_gross_profit += service_profit
 
         total_cash_in = round(monthly_gross_profit, 2)
         expected_income = round(total_owing_income, 2)
@@ -1728,8 +1744,10 @@ class BackendRuntime:
         current_week_net_profit = round(weekly_realized_profit - current_week_expenses, 2)
         current_week_net_cash_flow = current_week_net_profit
         allowance_base_net_profit = current_week_net_profit
-        suggested_allowance = round(max(0.0, current_week_net_profit) * allowance_percentage, 2)
-        next_week_allowance = suggested_allowance
+        previous_week_net_profit = round(previous_week_gross_profit - previous_week_expenses, 2)
+        allowance_this_week = round(max(0.0, previous_week_net_profit) * allowance_percentage, 2)
+        next_week_allowance = round(max(0.0, current_week_net_profit) * allowance_percentage, 2)
+        suggested_allowance = allowance_this_week
 
         monthly_remaining_profit = round(net_profit - monthly_allowance_paid, 2)
 
@@ -1801,6 +1819,13 @@ class BackendRuntime:
             'current_week_available_cash_after_reserve': round(weekly_available_after_reserve, 2),
             'allowance_base_net_profit': allowance_base_net_profit,
             'next_week_allowance': next_week_allowance,
+            'allowance_this_week': allowance_this_week,
+            'last_week_profit': round(previous_week_net_profit, 2),
+            'previous_week_profit': round(previous_week_net_profit, 2),
+            'last_week_gross_profit': round(previous_week_gross_profit, 2),
+            'last_week_expenses': round(previous_week_expenses, 2),
+            'last_week_start': previous_week_start.isoformat(),
+            'last_week_end': previous_week_end.isoformat(),
             'current_week_allowance_expenses': round(current_week_allowance_expenses, 2),
             'current_week_business_only_expenses': round(current_week_business_only_expenses, 2),
             'monthly_fixed_overhead': round(monthly_fixed_overhead, 2),
@@ -1823,8 +1848,15 @@ class BackendRuntime:
             'monthly_remaining_profit': monthly_remaining_profit,
             'weekly_allowance': {
                 'suggested_allowance': suggested_allowance,
+                'allowance_this_week': allowance_this_week,
+                'next_week_allowance': next_week_allowance,
                 'calculation_date': current_day.isoformat(),
-                'previous_week_profit': weekly_realized_profit,
+                'previous_week_profit': round(previous_week_net_profit, 2),
+                'last_week_profit': round(previous_week_net_profit, 2),
+                'last_week_gross_profit': round(previous_week_gross_profit, 2),
+                'last_week_expenses': round(previous_week_expenses, 2),
+                'last_week_start': previous_week_start.isoformat(),
+                'last_week_end': previous_week_end.isoformat(),
                 'allowance_base_net_profit': allowance_base_net_profit,
                 'allowance_expenses': round(current_week_allowance_expenses, 2),
                 'business_only_expenses': round(current_week_business_only_expenses, 2),

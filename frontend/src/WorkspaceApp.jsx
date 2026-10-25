@@ -280,7 +280,26 @@ function normalizeCashflowPayload(rawSummary, rawAllowance, defaultSummary, defa
   const weekProfitSeen = roundCurrency(weekRow.profit_seen ?? summary.current_week_gross_profit ?? 0);
   const weekExpenses = roundCurrency(weekRow.expenses_total ?? summary.current_week_expenses ?? 0);
   const weekNetProfit = roundCurrency(weekRow.net_profit ?? summary.current_week_net_profit ?? (weekProfitSeen - weekExpenses));
-  const weekAllowance = roundCurrency(weekRow.allowance_amount ?? sourceAllowance.suggested_allowance ?? 0);
+  const nextWeekAllowance = roundCurrency(
+    sourceAllowance.next_week_allowance
+    ?? summary.next_week_allowance
+    ?? weekRow.allowance_amount
+    ?? 0
+  );
+  const lastWeekProfit = roundCurrency(
+    sourceAllowance.last_week_profit
+    ?? sourceAllowance.previous_week_profit
+    ?? summary.last_week_profit
+    ?? summary.previous_week_profit
+    ?? 0
+  );
+  const allowancePercentage = Number(sourceAllowance.allowance_percentage || summary.allowance_percentage || 0.25);
+  const allowanceThisWeek = roundCurrency(
+    sourceAllowance.allowance_this_week
+    ?? sourceAllowance.suggested_allowance
+    ?? summary.allowance_this_week
+    ?? Math.max(0, lastWeekProfit) * allowancePercentage
+  );
   const monthNetProfit = roundCurrency(monthRow.net_profit ?? summary.monthly_net_profit ?? 0);
   const monthAllowance = roundCurrency(monthRow.allowance_amount ?? summary.monthly_allowance_paid ?? 0);
 
@@ -292,20 +311,22 @@ function normalizeCashflowPayload(rawSummary, rawAllowance, defaultSummary, defa
   summary.current_week_net_profit = weekNetProfit;
   summary.current_week_net_cash_flow = weekNetProfit;
   summary.allowance_base_net_profit = weekNetProfit;
-  summary.current_week_allowance_expenses = weekAllowance;
+  summary.current_week_allowance_expenses = allowanceThisWeek;
   summary.monthly_net_profit = monthNetProfit;
   summary.monthly_allowance_paid = monthAllowance;
   summary.monthly_remaining_profit = roundCurrency(monthRow.profit_left ?? summary.monthly_remaining_profit ?? (monthNetProfit - monthAllowance));
-  summary.next_week_allowance = weekAllowance;
+  summary.next_week_allowance = nextWeekAllowance || roundCurrency(Math.max(0, weekNetProfit) * allowancePercentage);
+  summary.last_week_profit = lastWeekProfit;
+  summary.previous_week_profit = lastWeekProfit;
+  summary.allowance_this_week = allowanceThisWeek;
 
-  const allowancePercentage = Number(sourceAllowance.allowance_percentage || 0.25);
-  allowance.suggested_allowance = roundCurrency(
-    sourceAllowance.suggested_allowance ?? weekAllowance ?? Math.max(0, summary.allowance_base_net_profit || 0) * allowancePercentage
-  );
-
+  allowance.suggested_allowance = allowanceThisWeek;
+  allowance.allowance_this_week = allowanceThisWeek;
+  allowance.next_week_allowance = summary.next_week_allowance;
   allowance.allowance_base_net_profit = roundCurrency(summary.allowance_base_net_profit || 0);
   allowance.allowance_expenses = roundCurrency(summary.current_week_allowance_expenses || 0);
-  allowance.previous_week_profit = roundCurrency(weekProfitSeen);
+  allowance.previous_week_profit = lastWeekProfit;
+  allowance.last_week_profit = lastWeekProfit;
   allowance.allowance_percentage = allowancePercentage;
 
   return { summary, allowance };
@@ -1548,7 +1569,25 @@ function CashFlowView({
   const withdrawnAllowanceThisWeek = weeklyAllowanceEntriesThisWeek
     .filter((tx) => (tx._amount || 0) > 0)
     .reduce((sum, tx) => sum + (tx._amount || 0), 0);
-  const suggestedAllowanceAmount = Number(allowance?.suggested_allowance || 0);
+  const allowanceThisWeekAmount = Number(
+    allowance?.allowance_this_week
+    ?? allowance?.suggested_allowance
+    ?? summary.allowance_this_week
+    ?? 0
+  );
+  const lastWeekProfitAmount = Number(
+    allowance?.last_week_profit
+    ?? allowance?.previous_week_profit
+    ?? summary.last_week_profit
+    ?? summary.previous_week_profit
+    ?? 0
+  );
+  const nextWeekAllowanceAmount = Number(
+    allowance?.next_week_allowance
+    ?? summary.next_week_allowance
+    ?? 0
+  );
+  const suggestedAllowanceAmount = allowanceThisWeekAmount;
   const remainingAllowanceToWithdraw = Math.max(0, suggestedAllowanceAmount - withdrawnAllowanceThisWeek);
   const latestWeeklyAllowanceEntry = weeklyAllowanceEntriesThisWeek[0] || null;
   const canUndoLatestWeeklyAllowance = Boolean(
@@ -1740,6 +1779,18 @@ function CashFlowView({
     : [];
   const allowanceFormulaCards = [
     {
+      key: 'allowance-formula-last-week',
+      label: 'Last Week Profit',
+      value: formatCurrency(lastWeekProfitAmount),
+      note: 'Last week\'s net profit (gross paid profit minus manual expenses). This week\'s allowance is based on this.',
+    },
+    {
+      key: 'allowance-formula-this-week',
+      label: 'Allowance This Week',
+      value: formatCurrency(allowanceThisWeekAmount),
+      note: `Allowance this week = ${Math.round((allowance.allowance_percentage || 0.25) * 100)}% of last week's profit.`,
+    },
+    {
       key: 'allowance-formula-gross',
       label: 'Weekly Gross Profit',
       value: formatCurrency(weekGrossProfit),
@@ -1760,7 +1811,7 @@ function CashFlowView({
     {
       key: 'allowance-formula-final',
       label: 'Next Week Allowance',
-      value: formatCurrency(allowance.suggested_allowance || 0),
+      value: formatCurrency(nextWeekAllowanceAmount),
       note: `Next week allowance = ${Math.round((allowance.allowance_percentage || 0.25) * 100)}% of this week's net profit.`,
     },
   ];
@@ -1800,6 +1851,20 @@ function CashFlowView({
     },
     // ── This week ───────────────────────────────────────────────────────────
     {
+      key: 'last-week-profit',
+      label: 'Last Week Profit',
+      value: formatCurrency(lastWeekProfitAmount),
+      note: 'Net profit from last week. Used to calculate this week\'s allowance.',
+      className: 'metric-card--profit',
+    },
+    {
+      key: 'allowance-this-week',
+      label: 'Allowance This Week',
+      value: formatCurrency(allowanceThisWeekAmount),
+      note: `25% of last week's profit. Suggested withdrawal for this week.`,
+      className: 'metric-card--allowance',
+    },
+    {
       key: 'week-gross',
       label: 'This Week Realized Profit',
       value: formatCurrency(weekGrossProfit),
@@ -1831,7 +1896,7 @@ function CashFlowView({
     {
       key: 'allowance',
       label: 'Next Week Allowance',
-      value: formatCurrency(allowance.suggested_allowance || 0),
+      value: formatCurrency(nextWeekAllowanceAmount),
       note: 'Calculated as 25% of this week\'s net profit.',
       className: 'metric-card--allowance',
     },
@@ -1938,7 +2003,7 @@ function CashFlowView({
           </button>
         </div>
         <div className="notice compact" style={{ marginTop: '10px' }}>
-          Suggested: {formatCurrency(suggestedAllowanceAmount)} | Withdrawn this week: {formatCurrency(withdrawnAllowanceThisWeek)} | Remaining: {formatCurrency(remainingAllowanceToWithdraw)}
+          Suggested this week: {formatCurrency(suggestedAllowanceAmount)} | Last week profit: {formatCurrency(lastWeekProfitAmount)} | Withdrawn this week: {formatCurrency(withdrawnAllowanceThisWeek)} | Remaining: {formatCurrency(remainingAllowanceToWithdraw)}
           {latestWeeklyAllowanceEntry
             ? ` | Last withdrawal: ${latestWeeklyAllowanceEntry.date || latestWeeklyAllowanceEntry.payment_date || 'No date'} (${formatCurrency(latestWeeklyAllowanceEntry._amount || 0)})`
             : ' | No allowance withdrawal recorded yet this week.'}
@@ -6667,8 +6732,11 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
     };
     const defaultAllowance = {
       suggested_allowance: 0,
+      allowance_this_week: 0,
+      next_week_allowance: 0,
       calculation_date: '',
       previous_week_profit: 0,
+      last_week_profit: 0,
     };
 
     setCashflowLoading(true);
@@ -6712,9 +6780,32 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         const weeklyFallback = await fetchFoundationWeeklyAllowance();
         if (weeklyFallback && typeof weeklyFallback === 'object') {
           const fallbackAllowance = {
-            suggested_allowance: Number(weeklyFallback.allowance_amount || 0),
-            calculation_date: weeklyFallback.generated_at || '',
-            previous_week_profit: Number(weeklyFallback.profit_seen || 0),
+            suggested_allowance: Number(
+              weeklyFallback.allowance_this_week
+              ?? weeklyFallback.suggested_allowance
+              ?? weeklyFallback.allowance_amount
+              ?? 0
+            ),
+            allowance_this_week: Number(
+              weeklyFallback.allowance_this_week
+              ?? weeklyFallback.suggested_allowance
+              ?? weeklyFallback.allowance_amount
+              ?? 0
+            ),
+            next_week_allowance: Number(weeklyFallback.next_week_allowance ?? 0),
+            calculation_date: weeklyFallback.calculation_date || weeklyFallback.generated_at || '',
+            previous_week_profit: Number(
+              weeklyFallback.last_week_profit
+              ?? weeklyFallback.previous_week_profit
+              ?? weeklyFallback.profit_seen
+              ?? 0
+            ),
+            last_week_profit: Number(
+              weeklyFallback.last_week_profit
+              ?? weeklyFallback.previous_week_profit
+              ?? weeklyFallback.profit_seen
+              ?? 0
+            ),
           };
           setWeeklyAllowance(fallbackAllowance);
           weeklyFallbackApplied = true;
@@ -7200,8 +7291,11 @@ function WorkspaceApp({ currentUser, onLogout, userLoading = false }) {
         };
         const defaultAllowance = {
           suggested_allowance: 0,
+          allowance_this_week: 0,
+          next_week_allowance: 0,
           calculation_date: '',
           previous_week_profit: 0,
+          last_week_profit: 0,
         };
         const normalized = normalizeCashflowPayload(
           cashflowData?.summary,

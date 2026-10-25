@@ -1027,28 +1027,63 @@ class FinancialFoundationService:
         
         return self._to_number(profit_row.get('total_profit', 0.0))
 
-    def get_weekly_allowance_summary(self, actor_role=None):
-        self._require_admin(actor_role)
+    def build_weekly_allowance_context(self, *, anchor_date=None):
+        """Return this-week allowance and last-week profit for cashflow UI.
 
+        Allowance this week is the configured percentage of last week's net profit.
+        Next-week allowance is the configured percentage of this week's net profit.
+        """
+        anchor_date = anchor_date or date.today()
         allowance_percentage = self._normalized_allowance_percentage()
-        
-        # Calculate previous week's profit
-        # Current week ends on most_recent_saturday
-        current_week_end = self._most_recent_saturday()
-        
-        # Previous week: starts 14 days before current_week_end, ends 7 days before
-        previous_week_end = current_week_end - timedelta(days=7)
-        previous_week_start = current_week_end - timedelta(days=14)
-        
-        # Get profit for previous week
-        previous_week_profit = self._get_week_profit(previous_week_start, previous_week_end)
-        
-        # Suggested allowance is configured percentage of previous week's profit
-        suggested_allowance = round(max(0.0, previous_week_profit) * allowance_percentage, 2)
-        calculation_date = current_week_end.isoformat()
+        this_week_start, this_week_end = self._week_bounds(anchor_date)
+        last_week_start = this_week_start - timedelta(days=7)
+        last_week_end = this_week_end - timedelta(days=7)
+
+        last_week_gross = round(
+            self._sum_paid_profit('operational_billing_rows', last_week_start, last_week_end)
+            + self._sum_paid_profit('operational_stock_rows', last_week_start, last_week_end),
+            2,
+        )
+        last_week_expenses = round(self._sum_manual_expenses(last_week_start, last_week_end), 2)
+        last_week_net = round(last_week_gross - last_week_expenses, 2)
+        allowance_this_week = round(max(0.0, last_week_net) * allowance_percentage, 2)
+
+        this_week_gross = round(
+            self._sum_paid_profit('operational_billing_rows', this_week_start, this_week_end)
+            + self._sum_paid_profit('operational_stock_rows', this_week_start, this_week_end),
+            2,
+        )
+        this_week_expenses = round(self._sum_manual_expenses(this_week_start, this_week_end), 2)
+        this_week_net = round(this_week_gross - this_week_expenses, 2)
+        next_week_allowance = round(max(0.0, this_week_net) * allowance_percentage, 2)
 
         return {
-            'suggested_allowance': suggested_allowance,
-            'calculation_date': calculation_date,
-            'previous_week_profit': round(previous_week_profit, 2),
+            'allowance_percentage': allowance_percentage,
+            'calculation_date': this_week_end.isoformat(),
+            'this_week_start': this_week_start.isoformat(),
+            'this_week_end': this_week_end.isoformat(),
+            'last_week_start': last_week_start.isoformat(),
+            'last_week_end': last_week_end.isoformat(),
+            'last_week_gross_profit': last_week_gross,
+            'last_week_expenses': last_week_expenses,
+            'last_week_profit': last_week_net,
+            'last_week_net_profit': last_week_net,
+            'previous_week_profit': last_week_net,
+            'allowance_this_week': allowance_this_week,
+            'suggested_allowance': allowance_this_week,
+            'next_week_allowance': next_week_allowance,
+            'allowance_base_net_profit': this_week_net,
+        }
+
+    def get_weekly_allowance_summary(self, actor_role=None):
+        self._require_admin(actor_role)
+        context = self.build_weekly_allowance_context()
+        return {
+            'suggested_allowance': context['suggested_allowance'],
+            'allowance_this_week': context['allowance_this_week'],
+            'next_week_allowance': context['next_week_allowance'],
+            'calculation_date': context['calculation_date'],
+            'previous_week_profit': context['previous_week_profit'],
+            'last_week_profit': context['last_week_profit'],
+            'allowance_percentage': context['allowance_percentage'],
         }
