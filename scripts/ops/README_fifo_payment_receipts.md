@@ -19,8 +19,15 @@ For each multi-line FIFO group:
 Audit: `fifo_payment_receipt_consolidate_audit.json`  
 Rollback: `fifo_payment_receipt_rollback.py`
 
-## Permanent fix (needs agt-crm-v3 source)
+## Ongoing (all clients, new payments)
 
-- Change `apply_customer_payment_fifo` to also insert a parent `sale_id=null` row
-  (or a `payment_batches` table) when applying a general payment.
-- Optionally group Payment Receipts by `ATL-PAY-*` prefix in the frontend.
+`fifo_payment_receipt_auto_consolidate.py` scans for new multi-line FIFO
+batches and consolidates them (typically within ~20s when the loop is running).
+
+- Local/daemon: `python3 scripts/ops/fifo_payment_receipt_auto_consolidate.py --loop 20`
+- GitHub Action: `.github/workflows/fifo-receipt-consolidate.yml` (every 5 minutes)
+
+## Permanent fix (needs DB SQL or agt-crm-v3 source)
+
+Ideal: change `apply_customer_payment_fifo` to insert one parent `sale_id=null`
+receipt (and keep/hide allocation rows), or group receipts in the v3 frontend.
