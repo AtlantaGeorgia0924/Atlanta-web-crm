@@ -1,0 +1,29 @@
+name: FIFO payment receipt auto-consolidate
+
+# Keeps agt-crm-v3 Payment Receipts as one line per general payment.
+# apply_customer_payment_fifo still splits across jobs; this job merges
+# those splits into a single OTHER/GENERAL receipt shortly after.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Consolidate new FIFO receipt splits
+        env:
+          AGT_CRM_URL: https://agt-crm-v3.vercel.app
+          # Optional overrides if secrets are set; otherwise the script
+          # scrapes the live app bundle for the Supabase service_role key.
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python3 scripts/ops/fifo_payment_receipt_auto_consolidate.py
