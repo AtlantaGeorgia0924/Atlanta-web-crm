@@ -1,0 +1,212 @@
+{
+  "ran_at": "2026-10-25T08:17:53Z",
+  "groups_consolidated": [
+    {
+      "prefix": "ATL-PAY-20260803-142300",
+      "customer_name": "MZEE",
+      "total": 17000.0,
+      "child_count": 4,
+      "parent_id": "ef7a239b-8477-4591-bc55-c913966c0c27",
+      "child_ids": [
+        "e3683ab2-5d10-4cea-bc9f-c18f498156c9",
+        "a6692e1a-966f-4215-a0dc-35bd79041c2f",
+        "6a029959-c789-42d8-8e18-1f23d51c70ec",
+        "0a4a0a2d-022b-4c7d-83dc-efb6dac09bbc"
+      ],
+      "payment_date": "2026-08-03T13:23:00.110514+00:00"
+    },
+    {
+      "prefix": "ATL-PAY-20260829-124634",
+      "customer_name": "GNF",
+      "total": 10000.0,
+      "child_count": 4,
+      "parent_id": "1cefd40c-8f77-489d-946b-8812c6754e1c",
+      "child_ids": [
+        "b6c878a5-f702-4f1b-ab8d-22471a64cd3c",
+        "8d514221-4402-4f72-8049-e24abbfd5fcf",
+        "e5886937-017f-4029-8c91-dd37cec9f375",
+        "7d8b9380-2013-48d3-a3e4-7fad4e698468"
+      ],
+      "payment_date": "2026-08-29T11:46:34.337465+00:00"
+    },
+    {
+      "prefix": "ATL-PAY-20260904-170221",
+      "customer_name": "YUSLORD",
+      "total": 7500.0,
+      "child_count": 3,
+      "parent_id": "246c9b23-fbf5-4e0a-854c-e6c5660bd9db",
+      "child_ids": [
+        "9e8c2dd8-bc39-47d5-bce5-00a6c8659083",
+        "7c234361-529b-40dc-9ab9-9c8bdc971add",
+        "ab16a000-f344-42a2-9482-efe72e02c3d2"
+      ],
+      "payment_date": "2026-09-04T16:02:21.322305+00:00"
+    },
+    {
+      "prefix": "ATL-PAY-20260909-061312",
+      "customer_name": "CH4",
+      "total": 45000.0,
+      "child_count": 9,
+      "parent_id": "50e94e2f-6747-4f58-bf72-da8e81bc9cad",
+      "child_ids": [
+        "92899d80-b6b7-48c5-b03e-f1fcb85c08aa",
+        "70fc53c4-f054-4eb4-91ef-d1b93714cdc2",
+        "a9ac30a3-851b-4782-bb69-c07b4d7172a9",
+        "143a5570-21e2-49de-865c-3b22c2aa5e99",
+        "827306cf-2dd1-4bca-ab7b-c42acb8260f5",
+        "d198ea24-6fa2-4a03-9c1c-b2fc3c86d448",
+        "344c250c-b873-4ddb-80c0-4356be1e794b",
+        "f77f18b3-618e-4037-abde-53ee1bf75071",
+        "53010ffa-5bfc-48b6-a2f8-02360c56ac8a"
+      ],
+      "payment_date": "2026-09-09T05:13:12.275396+00:00"
+    },
+    {
+      "prefix": "ATL-PAY-20260909-140546",
+      "customer_name": "BAHMS",
+      "total": 27500.0,
+      "child_count": 4,
+      "parent_id": "b9cdecbf-7126-423d-960d-e84087e9b7a3",
+      "child_ids": [
+        "135f7975-63f8-48f2-873e-cbe5e970f5fb",
+        "78307ffb-1c5f-4b41-a3c5-7f4262336d36",
+        "1635adf6-7c26-4f99-8338-55867f88d3ab",
+        "0ad048a1-73c0-4675-8280-4c59f7a40ed8"
+      ],
+      "payment_date": "2026-09-09T13:05:46.321349+00:00"
+    },
+    {
+      "prefix": "ATL-PAY-20260912-162904",
+      "customer_name": "TECH JAR",
+      "total": 16000.0,
+      "child_count": 4,
+      "parent_id": "1d2ea02f-2fb8-4497-815b-08a20b155327",
+      "child_ids": [
+        "f1430e40-2903-4210-8517-4850040fd664",
+        "d2b441bf-db1e-4ed2-ae52-eff693d758bc",
+        "e113b704-fa53-480e-8f59-bc2e6d62d872",
+        "d3285cb9-ec32-44f6-b921-022676b6d82a"
+      ],
+      "payment_date": "2026-09-12T15:29:04.170416+00:00"
+    },
+    {
+      "prefix": "ATL-PAY-20260926-181333",
+      "customer_name": "AFRIKA",
+      "total": 9500.0,
+      "child_count": 4,
+      "parent_id": "3603da76-7b82-4300-8b8d-1e6504b7dff2",
+      "child_ids": [
+        "3a1a6ceb-68b1-4218-af9b-2cdf1d24bd00",
+        "59c36bb2-950f-46bd-8d3b-fbb9f48d1459",
+        "e991d824-29bf-485d-9eae-b1352a200f34",
+        "624cf209-9fd3-4e5e-9462-26db93e414e8"
+      ],
+      "payment_date": "2026-09-26T17:13:33.717615+00:00"
+    },
+    {
+      "prefix": "ATL-PAY-20260928-164034",
+      "customer_name": "DENIS4WARD",
+      "total": 1000000.0,
+      "child_count": 4,
+      "parent_id": "5f7a6426-414e-4ba3-a9b4-554f88c11110",
+      "child_ids": [
+        "a1102c33-8866-4228-9f6b-ff1dc076e107",
+        "e55c637d-29c6-4978-ad40-c64636edb499",
+        "792ed374-8d12-4619-9cf6-f48b2cc2b69f",
+        "9b04e9c7-cc2b-4631-8da5-445fcff28cf4"
+      ],
+      "payment_date": "2026-09-28T15:40:34.118779+00:00"
+    },
+    {
+      "prefix": "ATL-PAY-20260928-164555",
+      "customer_name": "DAH UNIQUE",
+      "total": 15500.0,
+      "child_count": 6,
+      "parent_id": "b684e638-bc7f-45a3-adf6-fc6e3dbed5de",
+      "child_ids": [
+        "fdaa9ab8-e92c-463a-8436-257894240d80",
+        "f56591fa-3c15-4180-8496-00ce06008209",
+        "db235cdf-898e-44e6-8466-cb98eda4a7fd",
+        "381e6d08-cd7f-46c4-8988-5010b6218353",
+        "60613a27-03eb-44c5-96e1-71033ec3f8b0",
+        "ca8518db-ccb4-4774-990b-d0390aed3c4a"
+      ],
+      "payment_date": "2026-09-28T15:45:55.694505+00:00"
+    },
+    {
+      "prefix": "ATL-PAY-20261015-135048",
+      "customer_name": "ACTIVE",
+      "total": 54000.0,
+      "child_count": 27,
+      "parent_id": "3eda77f5-1898-4979-9f7c-c16921573be6",
+      "child_ids": [
+        "782055da-e6f3-462d-ab4b-bc6e1f978a5d",
+        "9cbbc458-4ef1-47ab-8323-d34e9c5010f2",
+        "38442835-3ce3-4e36-8986-7479aff8ac80",
+        "757e7859-1032-45e1-a151-05410718e0b4",
+        "321b4a3c-5ff4-4a60-8313-8872fbf9a969",
+        "c017fe5b-9e12-4ced-b7fd-95f3a56f8fbd",
+        "0ef83f7f-1fc4-436c-8b8b-a4babe006f0c",
+        "606bdb3f-135c-460f-b32a-247a9db418fb",
+        "293c6292-8614-49d0-bc4f-92dcacd682dc",
+        "f88b83d3-8c17-4afc-9ce3-f6c6c15cda1a",
+        "cc902555-1357-44fb-a947-c35a9e9556f5",
+        "5f52fa37-8970-46b9-9737-0ab9e08481a7",
+        "26c5f03e-dfcb-491f-96ef-359e47295c0e",
+        "bd34fa43-8e82-4df8-b737-ecd1b460e3ed",
+        "38b1fa1b-2ba8-4801-904c-2bececd3899f",
+        "4b6996cf-2d02-4ef7-9938-74c03258f858",
+        "ec00ea67-075b-4cd7-ab51-142a4c352ad8",
+        "3d70f687-1fb1-48c1-9fa2-47f9787835d1",
+        "a51f502c-2956-4d5f-b5aa-9effae09399f",
+        "d23552e5-9dcf-4cc7-9929-f3262f1f1741",
+        "e01cc166-c168-481b-b2ff-8f530eab7332",
+        "003e5dc5-8e05-4c24-b376-7a544b2a9c7d",
+        "21e356e8-b898-47bc-a720-710cf86ac238",
+        "95681487-cfbb-423d-a7e3-b7b325bd7feb",
+        "324a39be-843c-4c9a-9850-688222d8be33",
+        "b967cf8b-91c7-457d-ac0f-0b204f6681a5",
+        "df7236cc-4673-48df-897d-4da0515d2f86"
+      ],
+      "payment_date": "2026-10-15T12:50:48.970942+00:00"
+    },
+    {
+      "prefix": "ATL-PAY-20261015-140412",
+      "customer_name": "NURUDEEN",
+      "total": 30000.0,
+      "child_count": 11,
+      "parent_id": "375df635-b5b2-47d9-a6c7-1e36ab48c974",
+      "child_ids": [
+        "d1567e7b-7d6a-48e2-93d2-753499ceccda",
+        "8bbfc35c-013c-4165-a57d-91cb316f11bc",
+        "50deeaed-e04d-48fb-b211-b125519160a1",
+        "77f65b90-3ed3-47de-b0fe-1b8224436b20",
+        "4e284166-f342-49f5-8077-0dedb63c140f",
+        "10d52ba7-0a16-45b1-a28a-10bcce961bec",
+        "ef655831-bca6-48f4-9d78-4211c386b50c",
+        "c1855705-2fe5-47ac-9cc4-9cf77e11cf2d",
+        "3682de34-0b9c-43b0-b177-ff65da4c69ba",
+        "c00d7a40-1256-4a4c-90a0-07e9446227dd",
+        "6e018b09-7cc0-47a2-9c23-7bf6dfcd4c47"
+      ],
+      "payment_date": "2026-10-15T13:04:12.120885+00:00"
+    },
+    {
+      "prefix": "ATL-PAY-20261015-140648",
+      "customer_name": "TEE BEST GADGET",
+      "total": 5500.0,
+      "child_count": 2,
+      "parent_id": "b6613c11-9b78-4d68-8092-f5edcaf4dd92",
+      "child_ids": [
+        "5588526f-5b67-4036-bad8-ff7597f643f9",
+        "c47f26d8-6952-4076-90aa-3c049221bfbb"
+      ],
+      "payment_date": "2026-10-15T13:06:48.19486+00:00"
+    }
+  ],
+  "errors": [],
+  "denis_before_paid_on_jobs": 8789000.0,
+  "denis_after_paid_on_jobs": 8789000.0,
+  "target": "live Supabase vwyywwbiflriojxbytua (agt-crm-v3)",
+  "purpose": "One Payment Receipt / OTHER GENERAL line per FIFO general payment. Children marked reversed_at only (sale amount_paid unchanged; undo_sale_payment not used)."
+}
