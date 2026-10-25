@@ -238,6 +238,10 @@ class CashflowPinChangeRequest(BaseModel):
     new_pin: str = Field(min_length=4, max_length=4, pattern=r'^\d{4}$')
 
 
+class CashflowPinVerifyRequest(BaseModel):
+    pin: str = Field(min_length=4, max_length=4, pattern=r'^\d{4}$')
+
+
 class AllowanceWithdrawalRequest(BaseModel):
     week_start: str = ''
     allowance_amount: float = Field(ge=0)
@@ -362,6 +366,52 @@ def list_audit_log(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
     return {'audit_log': items, 'count': len(items)}
+
+
+@router.post('/cashflow-pin/verify', dependencies=[Depends(require_admin)])
+def verify_cashflow_pin(
+    payload: CashflowPinVerifyRequest,
+    runtime=Depends(get_runtime),
+    current_user=Depends(get_current_user),
+):
+    try:
+        ok = runtime.financial_data_service.verify_cashflow_pin(
+            pin=payload.pin,
+            actor_role=str((current_user or {}).get('role') or ''),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Incorrect PIN.')
+    return {'ok': True}
+
+
+@router.post('/cashflow-pin/change', dependencies=[Depends(require_admin)])
+def change_cashflow_pin(
+    payload: CashflowPinChangeRequest,
+    runtime=Depends(get_runtime),
+    current_user=Depends(get_current_user),
+):
+    try:
+        result = runtime.financial_data_service.change_cashflow_pin(
+            current_pin=payload.current_pin,
+            new_pin=payload.new_pin,
+            actor_role=str((current_user or {}).get('role') or ''),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    if not result.get('ok'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(result.get('error') or 'Could not change PIN.'),
+        )
+    return {'ok': True}
 
 
 @router.get('/app-config', dependencies=[Depends(require_admin)])
